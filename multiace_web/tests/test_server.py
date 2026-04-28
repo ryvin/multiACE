@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +22,16 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
     monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
     monkeypatch.delenv("MULTIACE_TOKEN", raising=False)
+
+    # Patch MoonrakerClient so lifespan uses a mock instance instead of real HTTP client.
+    mock_moonraker_class = MagicMock()
+    mock_instance = MagicMock()
+    mock_instance.close = AsyncMock()
+    mock_instance.run_gcode = AsyncMock(return_value="ok")
+    mock_instance.get_logs = AsyncMock(return_value=[])
+    mock_moonraker_class.return_value = mock_instance
+    monkeypatch.setattr("multiace_web.server.MoonrakerClient", mock_moonraker_class)
+
     return create_app(static_dir=static_dir, start_background_tasks=False)
 
 
@@ -55,3 +66,60 @@ def test_config_get_returns_current_values(app):
     body = resp.json()
     assert body["values"]["feed_speed"] == "80"
     assert body["values"]["load_length"] == "880"
+
+
+def test_command_endpoint_proxies_to_moonraker(app):
+    with TestClient(app) as client:
+        app.state.moonraker.run_gcode = AsyncMock(return_value="ok")
+        resp = client.post("/api/command", json={"macro": "ACEC__Load_T1"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["result"] == "ok"
+    app.state.moonraker.run_gcode.assert_awaited_with("ACEC__Load_T1")
+
+
+def test_command_endpoint_rejects_missing_macro(app):
+    with TestClient(app) as client:
+        resp = client.post("/api/command", json={})
+    assert resp.status_code == 400
+
+
+def test_command_endpoint_returns_502_on_moonraker_error(app):
+    from multiace_web.moonraker import MoonrakerError
+    with TestClient(app) as client:
+        app.state.moonraker.run_gcode = AsyncMock(side_effect=MoonrakerError("timeout"))
+        resp = client.post("/api/command", json={"macro": "ACEC__Load_T1"})
+    assert resp.status_code == 502
+    assert "timeout" in resp.json()["detail"]
+
+
+def test_config_put_writes_and_restarts(app):
+    with TestClient(app) as client:
+        app.state.moonraker.run_gcode = AsyncMock(return_value="ok")
+        resp = client.put("/api/config", json={"values": {"feed_speed": "100"}})
+    assert resp.status_code == 200
+    assert resp.json()["restarted"] is True
+    app.state.moonraker.run_gcode.assert_awaited_with("RESTART")
+    text = app.state.config_path.read_text()
+    assert "feed_speed: 100" in text
+
+
+def test_config_put_rejects_empty_body(app):
+    with TestClient(app) as client:
+        resp = client.put("/api/config", json={})
+    assert resp.status_code == 400
+
+
+def test_logs_klippy_returns_lines(app):
+    with TestClient(app) as client:
+        app.state.moonraker.get_logs = AsyncMock(return_value=["line 1", "line 2"])
+        resp = client.get("/api/logs/klippy")
+    assert resp.status_code == 200
+    assert resp.json()["lines"] == ["line 1", "line 2"]
+
+
+def test_logs_unknown_kind_returns_400(app):
+    with TestClient(app) as client:
+        resp = client.get("/api/logs/nonsense")
+    assert resp.status_code == 400

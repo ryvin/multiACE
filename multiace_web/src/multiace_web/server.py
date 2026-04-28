@@ -36,13 +36,19 @@ async def lifespan(app: FastAPI):
 
     state = CurrentState()
     events = EventBuffer(maxlen=200)
-    moonraker = MoonrakerClient(moonraker_url)
     ws_clients: set = set()
 
     app.state.state = state
     app.state.events = events
-    app.state.moonraker = moonraker
     app.state.ws_clients = ws_clients
+
+    # Allow tests to inject a mock before lifespan runs.
+    _lifespan_owns_moonraker = not hasattr(app.state, "moonraker")
+    if _lifespan_owns_moonraker:
+        moonraker = MoonrakerClient(moonraker_url)
+        app.state.moonraker = moonraker
+    else:
+        moonraker = app.state.moonraker
 
     async def on_state_line(line: str) -> None:
         parsed = parse_state_log_line(line + "\n")
@@ -81,7 +87,8 @@ async def lifespan(app: FastAPI):
                 t.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-        await moonraker.close()
+        if _lifespan_owns_moonraker:
+            await moonraker.close()
 
 
 async def _broadcast(clients: set, message: str) -> None:
@@ -130,6 +137,42 @@ def create_app(
         except OSError as e:
             raise HTTPException(500, f"read config failed: {e}")
         return {"values": values}
+
+    @app.post("/api/command")
+    async def post_command(request: Request, body: dict) -> dict:
+        macro = body.get("macro")
+        if not macro or not isinstance(macro, str):
+            raise HTTPException(400, "body must include 'macro' string")
+        try:
+            result = await request.app.state.moonraker.run_gcode(macro)
+        except MoonrakerError as e:
+            raise HTTPException(502, str(e))
+        return {"ok": True, "result": result}
+
+    @app.put("/api/config")
+    async def put_config(request: Request, body: dict) -> dict:
+        updates = body.get("values") or {}
+        if not isinstance(updates, dict) or not updates:
+            raise HTTPException(400, "body must include non-empty 'values' dict")
+        try:
+            write_ace_config(request.app.state.config_path, {k: str(v) for k, v in updates.items()})
+        except OSError as e:
+            raise HTTPException(500, f"write config failed: {e}")
+        try:
+            await request.app.state.moonraker.run_gcode("RESTART")
+        except MoonrakerError as e:
+            raise HTTPException(502, f"saved but RESTART failed: {e}")
+        return {"ok": True, "restarted": True}
+
+    @app.get("/api/logs/{kind}")
+    async def get_logs(request: Request, kind: str, lines: int = 200) -> dict:
+        if kind not in ("klippy",):
+            raise HTTPException(400, f"unknown log kind: {kind}")
+        try:
+            content = await request.app.state.moonraker.get_logs(kind=kind, lines=lines)
+        except MoonrakerError as e:
+            raise HTTPException(502, str(e))
+        return {"lines": content}
 
     if static_dir and static_dir.exists():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
