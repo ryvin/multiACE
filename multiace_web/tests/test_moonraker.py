@@ -90,3 +90,75 @@ async def test_get_logs_rejects_path_traversal():
     with pytest.raises(MoonrakerError, match="invalid log kind"):
         await client.get_logs(kind="../etc/passwd")
     await client.close()
+
+
+# ---- query_objects ----
+
+@pytest.mark.asyncio
+async def test_query_objects_passes_through_klipper_status():
+    """Wraps Moonraker /printer/objects/query and returns the status dict."""
+    sample = {
+        "result": {
+            "eventtime": 12345.6,
+            "status": {
+                "print_stats": {"state": "printing", "filename": "x.gcode"},
+                "ace": {"dryer_status": {"status": "drying"}},
+            },
+        }
+    }
+    async with respx.mock(base_url="http://printer:7125") as mock:
+        route = mock.get("/printer/objects/query").respond(200, json=sample)
+        client = MoonrakerClient("http://printer:7125")
+        result = await client.query_objects(["print_stats", "ace"])
+        assert result["print_stats"]["state"] == "printing"
+        assert result["ace"]["dryer_status"]["status"] == "drying"
+        # Each object should appear in the query string
+        url = str(route.calls[0].request.url)
+        assert "print_stats" in url
+        assert "ace" in url
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_query_objects_url_encodes_object_with_space():
+    """Klipper objects like 'temperature_sensor cavity' have a literal space."""
+    async with respx.mock(base_url="http://printer:7125") as mock:
+        route = mock.get("/printer/objects/query").respond(
+            200, json={"result": {"status": {"temperature_sensor cavity": {"temperature": 42.0}}}}
+        )
+        client = MoonrakerClient("http://printer:7125")
+        result = await client.query_objects(["temperature_sensor cavity"])
+        assert result["temperature_sensor cavity"]["temperature"] == 42.0
+        # Space must be percent-encoded in the URL
+        url = str(route.calls[0].request.url)
+        assert "temperature_sensor%20cavity" in url
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_query_objects_empty_list_returns_empty():
+    """Don't make a request if there's nothing to query."""
+    client = MoonrakerClient("http://printer:7125")
+    result = await client.query_objects([])
+    assert result == {}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_query_objects_raises_on_http_error():
+    async with respx.mock(base_url="http://printer:7125") as mock:
+        mock.get("/printer/objects/query").respond(500, json={"error": "kaboom"})
+        client = MoonrakerClient("http://printer:7125")
+        with pytest.raises(MoonrakerError):
+            await client.query_objects(["print_stats"])
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_query_objects_raises_on_connection_error():
+    async with respx.mock(base_url="http://printer:7125") as mock:
+        mock.get("/printer/objects/query").mock(side_effect=httpx.ConnectError("nope"))
+        client = MoonrakerClient("http://printer:7125")
+        with pytest.raises(MoonrakerError):
+            await client.query_objects(["print_stats"])
+        await client.close()

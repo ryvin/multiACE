@@ -217,6 +217,232 @@ def test_websocket_rejects_missing_token_when_configured(monkeypatch, tmp_path):
                 ws.receive_json()
 
 
+# =====================================================================
+# /api/print — proxies Moonraker print_stats / virtual_sdcard / toolhead
+# / ace / temperature_sensor cavity, and includes external humidity.
+# =====================================================================
+
+def _print_query_payload(**overrides):
+    """Default Moonraker query_objects() return shape; tweak with overrides."""
+    payload = {
+        "print_stats": {
+            "state": "printing",
+            "filename": "1234-abc_plate_1.gcode",
+            "print_duration": 1000.0,
+            "total_duration": 1100.0,
+            "info": {"current_layer": 50, "total_layer": 200},
+            "exception": {},
+            "message": "",
+        },
+        "virtual_sdcard": {"progress": 0.25},
+        "toolhead": {"extruder": "extruder2"},
+        "ace": {
+            "dryer_status": {
+                "status": "drying",
+                "target_temp": 50,
+                "duration": 240,        # MINUTES (Klipper convention)
+                "remain_time": 14400,   # SECONDS (Klipper convention)
+            }
+        },
+        "temperature_sensor cavity": {"temperature": 46.5},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_print_endpoint_summarizes_state(app):
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=_print_query_payload())
+        resp = client.get("/api/print")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "printing"
+    # Filename returned verbatim (frontend strips slicer prefix)
+    assert body["filename"] == "1234-abc_plate_1.gcode"
+    assert body["progress"] == 0.25
+    assert body["layer"] == 50
+    assert body["total_layer"] == 200
+
+
+def test_print_endpoint_eta_extrapolation(app):
+    """ETA = (print_duration / progress) - print_duration when progress > 0."""
+    payload = _print_query_payload()
+    payload["print_stats"]["print_duration"] = 1000.0
+    payload["virtual_sdcard"]["progress"] = 0.25
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    body = resp.json()
+    assert body["eta_sec"] == pytest.approx(3000.0)
+
+
+def test_print_endpoint_eta_none_when_no_progress(app):
+    """No ETA when virtual_sdcard.progress is ~0 (avoids division blow-up)."""
+    payload = _print_query_payload()
+    payload["virtual_sdcard"]["progress"] = 0.0
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    assert resp.json()["eta_sec"] is None
+
+
+@pytest.mark.parametrize("ext_name,expected", [
+    ("extruder", 0),
+    ("extruder1", 1),
+    ("extruder2", 2),
+    ("extruder3", 3),
+    ("", None),
+    (None, None),
+    ("extruder_weird", None),
+])
+def test_print_endpoint_maps_extruder_name_to_head_index(app, ext_name, expected):
+    """Klipper uses 'extruder' (T0) and 'extruderN' for the rest."""
+    payload = _print_query_payload()
+    payload["toolhead"]["extruder"] = ext_name
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    assert resp.json()["current_extruder"] == expected
+
+
+def test_print_endpoint_normalizes_empty_exception_to_none(app):
+    """Klipper sometimes returns exception={}; treat as None for the dashboard."""
+    payload = _print_query_payload()
+    payload["print_stats"]["exception"] = {}
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    assert resp.json()["exception"] is None
+
+
+def test_print_endpoint_passes_real_exception_through(app):
+    payload = _print_query_payload()
+    payload["print_stats"]["state"] = "paused"
+    payload["print_stats"]["exception"] = {
+        "code": 45, "message": "Extruder pickup failed", "level": 2,
+    }
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    body = resp.json()
+    assert body["state"] == "paused"
+    assert body["exception"]["code"] == 45
+    assert "pickup failed" in body["exception"]["message"]
+
+
+def test_print_endpoint_dryer_unit_conversion(app):
+    """duration is minutes; remain_time is seconds; backend normalizes both to minutes."""
+    payload = _print_query_payload()
+    payload["ace"]["dryer_status"] = {
+        "status": "drying",
+        "target_temp": 50,
+        "duration": 240,        # 4h in minutes
+        "remain_time": 14353,   # ~239 minutes in seconds
+    }
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    dryer = resp.json()["dryer"]
+    assert dryer["status"] == "drying"
+    assert dryer["target_temp"] == 50
+    assert dryer["duration_min"] == 240
+    assert dryer["remain_min"] == 239   # rounded from 14353/60
+    assert dryer["remain_sec"] == 14353
+
+
+def test_print_endpoint_dryer_idle_when_stop(app):
+    payload = _print_query_payload()
+    payload["ace"]["dryer_status"] = {
+        "status": "stop", "target_temp": 0, "duration": 0, "remain_time": 0,
+    }
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    assert resp.json()["dryer"]["status"] == "stop"
+
+
+def test_print_endpoint_includes_cavity_temp(app):
+    payload = _print_query_payload()
+    payload["temperature_sensor cavity"] = {"temperature": 47.2}
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    assert resp.json()["cavity_temp_c"] == pytest.approx(47.2)
+
+
+def test_print_endpoint_humidity_unconfigured_when_no_url(app, monkeypatch):
+    monkeypatch.delenv("MULTIACE_HUMIDITY_URL", raising=False)
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=_print_query_payload())
+        resp = client.get("/api/print")
+    assert resp.json()["humidity"] == {"configured": False}
+
+
+def test_print_endpoint_502_when_moonraker_fails(app):
+    from multiace_web.moonraker import MoonrakerError
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(side_effect=MoonrakerError("dead"))
+        resp = client.get("/api/print")
+    assert resp.status_code == 502
+
+
+def test_print_endpoint_handles_missing_optional_objects(app):
+    """If Klipper hasn't created an object yet (e.g. cavity sensor offline),
+    the endpoint should still return cleanly with None where applicable."""
+    payload = _print_query_payload()
+    del payload["temperature_sensor cavity"]
+    del payload["ace"]
+    with TestClient(app) as client:
+        app.state.moonraker.query_objects = AsyncMock(return_value=payload)
+        resp = client.get("/api/print")
+    body = resp.json()
+    assert body["cavity_temp_c"] is None
+    assert body["dryer"]["status"] == "stop"  # default
+
+
+# =====================================================================
+# /api/dry — Pydantic-validated wrapper around ACE_DRY ACE=N TEMP=T DURATION=D
+# =====================================================================
+
+def test_dry_endpoint_emits_correct_gcode(app):
+    with TestClient(app) as client:
+        app.state.moonraker.run_gcode = AsyncMock(return_value="ok")
+        resp = client.post("/api/dry", json={
+            "ace": 0, "temp_c": 50, "duration_min": 240,
+        })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["gcode"] == "ACE_DRY ACE=0 TEMP=50 DURATION=240"
+    app.state.moonraker.run_gcode.assert_awaited_with("ACE_DRY ACE=0 TEMP=50 DURATION=240")
+
+
+@pytest.mark.parametrize("payload,reason", [
+    ({"ace": -1, "temp_c": 50, "duration_min": 240}, "ace below range"),
+    ({"ace": 8,  "temp_c": 50, "duration_min": 240}, "ace above range"),
+    ({"ace": 0,  "temp_c": 25, "duration_min": 240}, "temp too low"),
+    ({"ace": 0,  "temp_c": 130,"duration_min": 240}, "temp too high"),
+    ({"ace": 0,  "temp_c": 50, "duration_min": 0},   "duration too short"),
+    ({"ace": 0,  "temp_c": 50, "duration_min": 3000},"duration too long (>48h)"),
+    ({"ace": 0,  "temp_c": 50},                       "duration missing"),
+    ({"temp_c": 50, "duration_min": 240},             "ace missing"),
+])
+def test_dry_endpoint_validation(app, payload, reason):
+    with TestClient(app) as client:
+        resp = client.post("/api/dry", json=payload)
+    assert resp.status_code == 422, f"expected 422 for {reason} but got {resp.status_code}"
+
+
+def test_dry_endpoint_502_on_moonraker_failure(app):
+    from multiace_web.moonraker import MoonrakerError
+    with TestClient(app) as client:
+        app.state.moonraker.run_gcode = AsyncMock(side_effect=MoonrakerError("klipper down"))
+        resp = client.post("/api/dry", json={
+            "ace": 0, "temp_c": 50, "duration_min": 240,
+        })
+    assert resp.status_code == 502
+
+
 def test_websocket_accepts_correct_token_via_query(monkeypatch, tmp_path):
     """WS with ?token=secret should connect when MULTIACE_TOKEN is configured."""
     log_dir = tmp_path / "logs"

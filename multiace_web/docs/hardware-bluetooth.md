@@ -1,0 +1,214 @@
+# Hardware: BLE humidity sensor + USB Bluetooth dongle
+
+This guide walks through wiring a Govee BLE humidity sensor into the dashboard
+end-to-end, using the Snapmaker U1 itself as the Bluetooth host (no separate
+Raspberry Pi or Home Assistant server needed).
+
+## Why this setup
+
+The ACE Pro has no humidity sensor of its own (verified — `ace.py` has zero
+references to humidity, the Klipper `[ace]` printer object exposes `temp` but
+not RH, and Anycubic doesn't market one). The cleanest add-on is a small BLE
+hygrometer placed inside the chamber that broadcasts readings to whatever's
+listening. We make the U1 itself listen.
+
+The U1's onboard Bluetooth chip (Broadcom BCM4343-class on UART) is wired in
+but not brought up by PAXX firmware — the `btattach` userspace utility is
+missing. Rather than patch firmware, we plug in a $10 USB BT dongle. The
+kernel has `CONFIG_BT_HCIBTUSB=y` already, so a dongle auto-enumerates as
+`/dev/hci0` and the existing `bluetoothd` (PID 552 by default) picks it up
+over DBus. No firmware modifications.
+
+## Bill of materials
+
+| Part | Why | Approx cost |
+|---|---|---|
+| **GoveeLife H5104** (3-pack) | BLE hygrometer, Swiss-made sensor, ±3% RH, 0–60 °C operating, supported by HA's Govee BLE integration and `bleak` directly | ~$22 |
+| **TP-Link UB500** USB BT 5.0 dongle | RTL8761B chipset, native Linux support via the in-kernel `btusb_rtl` driver | ~$10 |
+| **Total** | | **~$32** |
+
+Alternatives:
+- Govee H5075 (single, ~$11) — same protocol family, slightly older.
+- GoveeLife H5105 (e-ink display, ~$15–18) — same protocol but lower 0–50 °C operating range; you'd cap the dryer at 50 °C in `ace.cfg`.
+- Generic ~$5 BT 5.0 dongles work too if they're RTL8761B / CSR-based, but the TP-Link is the cheapest "buy once, forget about it" option.
+
+## Important: dryer temp cap
+
+The H5104 is rated 0–60 °C operating. The ACE Pro can dry up to 70 °C
+(`max_dryer_temperature: 70` in `ace.cfg`). With the H5104 inside the chamber,
+**reduce `max_dryer_temperature` to 60** before running aggressive cycles:
+
+1. Open the **Config** tab in the dashboard
+2. Find `max_dryer_temperature`, change `70` → `60`
+3. Click **Save & Restart**
+
+Note that this triggers a Klipper RESTART, which interrupts an active print.
+Do this between prints. The change persists in `ace.cfg`.
+
+If you regularly dry nylon, ASA, or PC at 70 °C, use the H5105 with its
+external probe, or temporarily remove the H5104 before high-temp dries.
+
+## Step-by-step setup (when the parts arrive)
+
+### 1. Plug in the dongle
+
+Plug the TP-Link UB500 into any free USB port on the U1. Verify it
+enumerates:
+
+```bash
+ssh root@<printer-ip>
+lsusb | grep -i bluetooth
+# Expected: Bus 003 Device 0XX: ID 2357:0604 TP-Link UB500 Adapter
+dmesg | tail -30 | grep -iE "bluetooth|hci|btusb"
+# Expected lines like: Bluetooth: hci0: RTL: examining hci_ver
+ls /sys/class/bluetooth/
+# Expected: hci0
+```
+
+If `hci0` doesn't appear, check `dmesg` for firmware-load errors. The RTL8761B
+needs `rtl8761bu_fw.bin` and `rtl8761bu_config.bin` in `/lib/firmware/rtlbt/`.
+PAXX has the `rtlbt` directory at `/lib/firmware/rtlbt` already (verified) so
+this should just work.
+
+### 2. Pair / unpause the Govee
+
+The H5104 doesn't pair in the traditional BLE sense — it broadcasts
+unencrypted advertisements every 2 seconds. Just power it on (insert the
+included AAA batteries) and place it inside the ACE Pro chamber. The radio
+range is plenty for ACE-to-printer distance.
+
+Verify the printer can see the broadcast:
+
+```bash
+ssh root@<printer-ip>
+hcitool lescan --duplicates 2>&1 | head -20  # if hcitool is present
+# OR
+# (after we install bleak in the venv)
+/userdata/multiace-web/venv/bin/python -c "
+import asyncio
+from bleak import BleakScanner
+async def main():
+    devices = await BleakScanner.discover(timeout=8)
+    for d in devices:
+        print(d.address, d.name, d.rssi)
+asyncio.run(main())
+"
+# Expected: a line for each Govee device, name like 'GVH5104_XXXX' or 'GVH5075_XXXX'
+```
+
+Note the device's MAC address — you'll plug it into the bridge config below.
+
+### 3. Install the BLE bridge
+
+The bridge is a tiny Python service that scans Govee BLE advertisements and
+exposes the readings as a JSON HTTP endpoint that the multiace-web backend
+already knows how to read.
+
+> **Forward-looking:** this script is committed in the repo at
+> `multiace_web/tools/govee_bridge.py` (added separately when the hardware is
+> in your hands). The flow:
+
+```bash
+# add bleak to the venv (one-time)
+/userdata/multiace-web/venv/bin/pip install bleak
+
+# install + enable the bridge as its own init script
+cp /tmp/multiace_web/tools/S63govee-bridge /etc/init.d/
+chmod +x /etc/init.d/S63govee-bridge
+
+# configure (one-time): edit /userdata/multiace-web/app/.env and add:
+#   GOVEE_BRIDGE_MAC=A4:C1:38:XX:XX:XX     # your H5104's MAC
+#   GOVEE_BRIDGE_PORT=7127
+
+/etc/init.d/S63govee-bridge start
+```
+
+Verify it works:
+
+```bash
+wget -qO- http://127.0.0.1:7127/sensor
+# Expected: {"humidity": 47.2, "temperature": 23.4, "battery": 95, "rssi": -45, "age_s": 1.2}
+```
+
+### 4. Wire the bridge into the dashboard
+
+Edit `/userdata/multiace-web/app/.env`:
+
+```
+MULTIACE_HUMIDITY_URL=http://127.0.0.1:7127/sensor
+MULTIACE_HUMIDITY_LABEL=ACE Pro chamber
+```
+
+Restart the web service:
+
+```bash
+/etc/init.d/S62multiace-web restart
+```
+
+Within ~5 s the dashboard's environment strip shows a new tile:
+
+```
+ACE PRO CHAMBER
+47%
+23.4°C ambient
+```
+
+Color-coded: <25% green (dry), 25–45% neutral, 45–60% amber (getting damp),
+≥60% red (re-dry needed).
+
+## Troubleshooting
+
+**`hci0` doesn't appear after plugging in the dongle.**
+Check `dmesg | tail -50` for firmware errors. RTL chips need firmware blobs;
+the U1 already has `/lib/firmware/rtlbt/` so the TP-Link should work, but
+some no-name dongles ship with chips needing other firmware.
+
+**`bleak` scan finds nothing.**
+- Confirm the Govee has fresh batteries (LCD lights up).
+- Confirm `bluetoothd` is running: `pgrep -af bluetoothd`. If not, start it:
+  `/etc/init.d/S40bluetoothd start` (script name varies).
+- Try a longer scan: `BleakScanner.discover(timeout=20)`. The Govee
+  advertises every 2 s but other traffic can drown it out briefly.
+
+**Bridge sees the device but humidity reads 0%.**
+The Govee H5104's BLE encoding is documented in
+[GoveeBTTempLogger](https://github.com/wcbonner/GoveeBTTempLogger) — the
+manufacturer data byte layout differs slightly between H5074 / H5075 /
+H5104 / H5105. The bridge handles all four; if your model isn't decoded
+correctly, capture a raw advertisement with `bleak`'s `detection_callback`
+and post it as an issue.
+
+**Sensor offline tile in the dashboard.**
+The `/api/print` adapter shows "sensor offline" when the upstream fetch
+returns non-200 or times out. Check `wget -qO- http://127.0.0.1:7127/sensor`
+directly. If the bridge is dead, restart it; if it can't see the Govee,
+move the sensor closer to the printer or check batteries.
+
+**The Govee LCD reads X but the dashboard reads Y.**
+The Govee's onboard sensor sample rate is ~2 s. The bridge keeps the most
+recent advertisement and serves it; the multiace-web backend caches the
+upstream fetch for 30 s. Worst-case lag is ~32 s. For tighter feedback,
+lower the cache TTL in `server._HUMIDITY_TTL_SEC` (test override exists).
+
+## Future: enabling onboard BT instead of using the dongle
+
+The U1's Broadcom combo chip is wired in (see `dmesg | grep Bluetooth`).
+Bringing it up requires:
+
+1. Cross-compiling a matching `btattach` binary from BlueZ 5.66 against the
+   PAXX rootfs's glibc.
+2. Dropping it into `/oem/overlay/usr/sbin/` (preserved by `/oem/.debug`).
+3. Adding an `/etc/init.d/S35bt-attach` script:
+   `btattach -B /dev/ttyS6 -P bcm -S 1500000 &`
+
+Doable but fragile across PAXX firmware updates. Better as a contribution to
+PAXX itself (see "Upstreaming to PAXX" in the project's design notes). The USB
+dongle is the right answer for individual users today.
+
+## Reference
+
+- [Govee BTTempLogger — protocol decoder for H5074 / H5075 / H5104 / H5105 / etc.](https://github.com/wcbonner/GoveeBTTempLogger)
+- [Bleak — Python BLE library, talks to BlueZ over DBus on Linux](https://github.com/hbldh/bleak)
+- [Home Assistant Govee BLE integration](https://www.home-assistant.io/integrations/govee_ble/)
+- [TP-Link UB500 (RTL8761B chipset)](https://www.amazon.com/TP-Link-UB500-Bluetooth-Compatibility-Receiver/dp/B09DPL3X62)
+- [GoveeLife H5104 3-pack](https://www.amazon.com/GoveeLife-Hygrometer-Thermometer-Bluetooth-Temperature/dp/B0CGRDQ2WB)

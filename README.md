@@ -73,9 +73,22 @@ Use the Fluidd macros **ACEA__Switch_0..3** to switch between ACE units.
 
 ## Web Console (optional)
 
-multiACE includes an optional web console at `http://<printer-ip>/multiace/`. Provides live ACE state, all macro commands, dryer controls, inline `ace.cfg` editor, and diagnostics. Mobile-responsive (works on phones), no Fluidd plugin needed.
+multiACE includes an optional web console at `http://<printer-ip>/multiace/`. The Dashboard is the home view — it shows print state (filename, progress, layer, ETA, Pause/Resume/Cancel), filament grid (4 toolheads with color band, source slot, status), an ACE slots strip, recent activity, and the dryer status when one is running. Other tabs cover the full activity log, dryer profiles (PLA / PETG / TPU / ABS / Nylon / PC / PVA + Custom), inline `ace.cfg` editor, and diagnostics.
 
-The console installs automatically when you run `install_multiace.sh`. See `multiace_web/README.md` for details.
+The console also surfaces:
+
+- The U1's enclosure cavity temperature (free, from Klipper).
+- An optional external humidity sensor (SwitchBot, Govee, Home Assistant entity, or any HTTP/JSON source — see `multiace_web/docs/hardware-bluetooth.md`).
+- Per-filament dryer profiles with parameterized `ACE_DRY` commands so you can dry while a print runs (capped at safe-during-print temps per material).
+
+Mobile-responsive (works on phones); no Fluidd plugin needed. Dark mode automatic.
+
+The console installs automatically when you run `install_multiace.sh`. See `multiace_web/README.md` for the architecture overview and `multiace_web/docs/` for:
+
+- `dashboard-guide.md` — section-by-section walkthrough
+- `api-reference.md` — every endpoint, with curl examples
+- `hardware-bluetooth.md` — wiring a Govee BLE sensor + USB BT dongle for humidity-driven monitoring
+- `auto-dry-design.md` — design notes for the upcoming humidity-driven auto-dry FSM
 
 ## Requirements
 

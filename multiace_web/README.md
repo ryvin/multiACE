@@ -1,66 +1,169 @@
 # multiACE Web Console
 
-Web console for managing Anycubic ACE Pro filament changers on a Snapmaker U1 running multiACE.
+Mobile-responsive web console for managing Anycubic ACE Pro filament changers
+on a Snapmaker U1 running [multiACE](../multiace/).
 
-Mobile-responsive UI accessible on the LAN at `http://<printer-ip>/multiace/` (or via your existing FilamentHub Cloudflare tunnel). Provides:
+Reach it at `http://<printer-ip>/multiace/` from any browser on your LAN.
 
-- Live state for ACE slots and toolheads
-- Per-toolhead Load / Unload, ACE switching, dryer controls
-- Activity feed of all multiACE events with error highlighting
-- Inline `ace.cfg` editor with Klipper RESTART trigger
-- Diagnostics view with state log, klippy.log slice, per-ACE detail
+## What it does
+
+| Tab | What you'll see |
+|---|---|
+| **Dashboard** | Print state (filename, progress, layer, ETA, Pause/Resume/Cancel), filament grid (4 toolheads with color band, source slot, status), ACE slot strip, recent activity, dryer status (when active), environment strip (cavity temp + humidity) |
+| **Activity** | Full multiACE event log, latest first, with red highlighting on `*_FAILED` events |
+| **Dryer** | Per-ACE dryer profile picker (PLA / PETG / TPU / ABS / Nylon / PC / PVA / Quick / Custom), temp + duration overrides, Start / Stop. Profiles persist in browser localStorage |
+| **Config** | Live `ace.cfg` editor — saving triggers a Klipper `RESTART` |
+| **Diag** | Current state JSON, klippy.log tail, raw `ACE_HEAD_STATUS` / `ACE_LIST` / `ACE_CLEAR_HEADS` buttons |
+
+The dashboard is the home view and answers the five things you open the app to ask:
+*is everything OK*, *what's printing*, *what's loaded where*, *what just happened*,
+*what can I do next*. Action buttons reveal contextually — Resume only when paused,
+Cancel only during a print, Stop drying only when a dry is running.
+
+See [`docs/dashboard-guide.md`](docs/dashboard-guide.md) for screenshots and a
+walkthrough.
 
 ## Architecture
 
-FastAPI backend on the printer (port 7126), reverse-proxied through nginx at `/multiace/`. Frontend is vanilla HTML/JS/CSS — no framework, no build step, matches FilamentHub's stack.
+```
+Browser ←──HTTPS/WS──→ nginx (port 80, fluidd site)
+                          │
+                          ├─ /multiace/*   →  uvicorn :7126 (this app)
+                          ├─ /printer/*    →  Moonraker :7125
+                          └─ /server/*     →  Moonraker :7125
+                          
+uvicorn :7126 ──┬─→ tails  /home/lava/printer_data/logs/multiace_state.log
+                ├─→ polls  Moonraker /printer/gcode/script (ACE_HEAD_STATUS) every 5s
+                ├─→ polls  Moonraker /printer/objects/query (print_stats, ace, cavity)
+                ├─→ reads  ace.cfg  for the Config editor
+                └─→ optionally fetches an external humidity URL (see below)
+```
 
-The backend tails `multiace_state.log` for activity events and polls `ACE_HEAD_STATUS` every 5s for current state. Commands proxy through Moonraker's existing gcode endpoint. WebSocket pushes live updates to all connected browsers.
+Frontend is **vanilla HTML / JS / CSS** — no build step, no framework. Runtime
+state is split into two parallel models:
+
+- **multiACE state** (slots, head_source, sensors, swap_in_progress, last_error)
+  flows from `multiace_state.log` via the `LogTailer`, and from periodic
+  `ACE_HEAD_STATUS` polls. Pushed to clients over WebSocket.
+- **Print state** (Klipper print_stats, virtual_sdcard, toolhead, ace,
+  temperature_sensor cavity, humidity) is fetched on-demand via `GET /api/print`
+  and polled by the dashboard every 4s.
+
+Everything else (Activity, Dryer, Config, Diag) runs on the multiACE state alone.
+
+## API
+
+Quick reference; full spec in [`docs/api-reference.md`](docs/api-reference.md).
+
+| Endpoint | Method | What it does |
+|---|---|---|
+| `/health` | GET | `{"ok": true}` liveness probe |
+| `/api/state` | GET | Current multiACE state snapshot |
+| `/api/events` | GET | Recent activity events (`?limit=200` default) |
+| `/api/print` | GET | Print, dryer, cavity temp, humidity (Moonraker proxy) |
+| `/api/command` | POST | `{"macro": "ACEC__Load_T1"}` — runs a multiACE Gcode macro |
+| `/api/dry` | POST | `{"ace": 0, "temp_c": 50, "duration_min": 240}` — start a parameterized ACE_DRY |
+| `/api/config` | GET / PUT | Read or write the `[ace]` section of `ace.cfg` (PUT triggers Klipper RESTART) |
+| `/api/logs/{kind}` | GET | klippy.log slice (`?lines=200`) |
+| `/ws` | WebSocket | Live state + event stream |
+
+Pause / Resume / Cancel a print: the dashboard hits Moonraker's
+`/printer/print/{verb}` endpoints directly (same origin via nginx). No multiACE
+proxy in the way.
 
 ## Local development
 
 ```bash
 cd multiace_web
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+. .venv/bin/activate              # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-pytest                                    # all backend tests
+pytest                            # 121 tests, ~13s
 MOONRAKER_URL=http://192.168.1.171:7125 \
   MULTIACE_LOG_DIR=/path/to/synthetic/logs \
   uvicorn multiace_web.server:app --port 7126 --reload
 ```
 
-Open http://localhost:7126/.
+Open <http://localhost:7126/>.
 
-For frontend testing without a real printer, append synthetic events to your `MULTIACE_LOG_DIR/multiace_state.log` and watch the UI update in real time.
+For frontend testing without a real printer, append synthetic events to your
+`MULTIACE_LOG_DIR/multiace_state.log` and watch the UI update in real time.
+The plan in `docs/superpowers/plans/2026-04-27-multiace-web-console.md` has
+sample events you can paste in.
+
+### Visual regression with Playwright
+
+A headless Chromium can drive the live UI for end-to-end smoke testing:
+
+```bash
+pip install playwright
+playwright install chromium
+python tools/visual_regression.py http://192.168.1.171/multiace/
+```
+
+The script captures Dashboard / Activity / Dryer / Config / Diag at 1280×900 and
+390×844 (iPhone 12 Pro), with explicit guards against clicking any action
+button — read-only navigation only.
+
+> **Safety note for testing on hardware.** Never trigger `Save & Restart` in
+> the Config tab, never click slot/toolhead Load/Unload buttons, and never call
+> `/api/dry` against a real printer mid-print without explicit reason. They
+> work; that's the point. They also affect physical hardware.
 
 ## Install on the printer
 
-`install_multiace.sh` runs `install/install_web.sh` automatically as part of its flow. To install just the web console (skipping the rest):
+`install_multiace.sh` runs `install/install_web.sh` automatically as part of
+its flow. To install just the web console without the rest of multiACE:
 
 ```bash
 ssh root@<printer-ip>
-bash /tmp/multiace/multiace_web/install/install_web.sh
+bash /tmp/multiace_web/install/install_web.sh
 ```
 
 Prerequisites:
-- `/oem/.debug` must exist (overlay persistence; the main multiACE installer ensures this).
-- nginx must already be running (it is on PAXX firmware).
+- `/oem/.debug` exists. The PAXX firmware wipes the overlay on boot otherwise;
+  the main multiACE installer ensures it.
+- nginx is running (default on PAXX).
 
-The installer creates a Python venv at `/userdata/multiace-web/venv/` (persistent partition; survives reboots), drops a BusyBox sysvinit script at `/etc/init.d/S62multiace-web` (PAXX firmware is Buildroot, not systemd), and an nginx snippet at `/etc/nginx/fluidd.d/multiace.conf` (loaded inside the existing fluidd `server {}` block).
+The installer:
+1. Copies the package into `/userdata/multiace-web/app/` (persistent partition).
+2. Creates a Python venv at `/userdata/multiace-web/venv/` and `pip install -e`s
+   the package into it.
+3. Drops a BusyBox sysvinit script at `/etc/init.d/S62multiace-web`. The
+   Snapmaker U1 PAXX firmware is Buildroot, not systemd; the script wraps
+   `start-stop-daemon` in `setsid` so the daemon survives the install shell.
+4. Drops an nginx snippet at `/etc/nginx/fluidd.d/multiace.conf`. The fluidd
+   site already includes `fluidd.d/*.conf` so our `location /multiace/` block
+   ends up inside the existing `server { listen 80; }`.
+5. Reloads nginx and starts the service.
 
-Manage the running service with `/etc/init.d/S62multiace-web {start|stop|restart|status}`.
+Manage the running service:
+
+```bash
+/etc/init.d/S62multiace-web {start|stop|restart|status}
+```
+
+Logs go to `/var/log/multiace-web.log` (uvicorn output is captured there by the
+init script).
+
+### Multi-host deploys
+
+The console is single-tenant — one console per Snapmaker U1. To run the same
+codebase against multiple printers, deploy independently to each. There's no
+cross-printer view today.
 
 ## Configuration
 
-Edit `/userdata/multiace-web/app/.env` (sourced by the init script before launch):
+Edit `/userdata/multiace-web/app/.env` (sourced via `set -a; . .env; set +a`
+so any new variables are auto-exported to the uvicorn process):
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `MULTIACE_LOG_DIR` | `/home/lava/printer_data/logs` | Where multiACE writes its logs |
-| `MULTIACE_CONFIG` | `.../config/extended/ace.cfg` | Path to ace.cfg for editor |
+| `MULTIACE_CONFIG` | `/home/lava/printer_data/config/extended/ace.cfg` | Path to ace.cfg |
 | `MOONRAKER_URL` | `http://127.0.0.1:7125` | Moonraker base URL |
-| `MULTIACE_WEB_PORT` | `7126` | Port the FastAPI app binds |
-| `MULTIACE_TOKEN` | (unset) | If set, requires `Authorization: Bearer <token>` |
+| `MULTIACE_WEB_PORT` | `7126` | Port the FastAPI app binds (uvicorn `--host 127.0.0.1`) |
+| `MULTIACE_TOKEN` | (unset) | If set, requires `Authorization: Bearer <token>` on `/api/*` and `/ws` |
 | `MULTIACE_HUMIDITY_URL` | (unset) | External JSON endpoint for humidity / ambient temp |
 | `MULTIACE_HUMIDITY_AUTH` | (unset) | Optional `Authorization` header for the URL |
 | `MULTIACE_HUMIDITY_HUM_PATH` | (auto) | Dot-path into the JSON for the humidity number |
@@ -69,10 +172,12 @@ Edit `/userdata/multiace-web/app/.env` (sourced by the init script before launch
 
 ### Wiring a humidity sensor
 
-The console reads humidity from any HTTP+JSON source. Drop the values into
-`/userdata/multiace-web/app/.env` and restart the service.
+The dashboard reads humidity from any HTTP+JSON source. Drop the values into
+`.env` and restart the service. See
+[`docs/hardware-bluetooth.md`](docs/hardware-bluetooth.md) for the full guide
+to a Govee BLE sensor + USB BT dongle setup.
 
-**Home Assistant** (any humidity sensor exposed as an entity):
+**Home Assistant** (any humidity entity):
 
 ```
 MULTIACE_HUMIDITY_URL=http://homeassistant.local:8123/api/states/sensor.ace_pro_humidity
@@ -90,29 +195,75 @@ MULTIACE_HUMIDITY_AUTH=<your-switchbot-token>
 MULTIACE_HUMIDITY_LABEL=ACE Pro
 ```
 
-**Generic / DIY (ESP32 + AHT20, Tasmota, etc.)** — any endpoint that returns
-JSON like `{"humidity": 47.2, "temperature": 24.1}` works out of the box. For
-nested shapes use the `*_PATH` vars: `MULTIACE_HUMIDITY_HUM_PATH=sensor.0.h`.
+**Generic / DIY** (ESP32 + AHT20, Tasmota, anything that returns JSON):
+`{"humidity": 47.2, "temperature": 24.1}` works out of the box. For nested
+shapes use the `*_PATH` vars (`MULTIACE_HUMIDITY_HUM_PATH=sensor.0.h`).
 
-The dashboard shows a humidity tile only when the source is configured; if the
-fetch fails the tile shows "sensor offline" without disturbing anything else.
+The tile shows only when configured; on fetch failure it shows "sensor
+offline" without disturbing anything else.
 
-## Security & known limitations (v0.1)
+## Dryer profiles
 
-This console is designed for **LAN-only use** behind your home network's perimeter, optionally protected by `MULTIACE_TOKEN`. It is **not hardened against untrusted networks** — do not expose it directly to the internet.
+The Dryer tab ships with sensible defaults sized for ACE Pro's 70 °C cap (60 °C
+when paired with a non-rated humidity sensor — see hardware doc):
 
-- **HTML interpolation in some views.** The Toolheads card renderer interpolates filament-vendor and error strings (sourced from Klipper state) directly into HTML. If your G-code macros or print metadata contain hostile strings, they would render as HTML. The Config editor renders inputs via DOM construction (safe). The Activity feed and Diagnostics views use `textContent` (safe).
-- **Token reload required.** The bearer token is read from `localStorage` once at page load. To update it, paste the new value into DevTools (`localStorage.setItem("multiace_token", "...")`) and refresh the page. There is no in-UI token entry form yet.
-- **Config tab caches once.** The Config view fetches `/api/config` once per page load and caches the result. If you edit `ace.cfg` via SSH while the console is open, refresh the page to see the new values.
-- **Reconnect storm on auth failure.** A WebSocket close due to bad token will retry with exponential backoff (1s, 2s, 4s, ..., 30s capped). If you've configured `MULTIACE_TOKEN` and the browser doesn't have it set, expect noisy reconnect attempts in the server logs until you fix the token.
+| Profile | Temp | Duration |
+|---|---|---|
+| PLA | 50 °C | 4 h |
+| PETG | 65 °C | 6 h |
+| TPU / TPE | 50 °C | 8 h |
+| ABS / ASA | 70 °C | 8 h |
+| Nylon (PA) | 70 °C | 12 h |
+| PC | 70 °C | 8 h |
+| PVA / BVOH | 45 °C | 6 h |
+| Quick freshen | 50 °C | 1 h |
 
-For exposure beyond the LAN, use a reverse proxy with proper auth (e.g., Cloudflare Access, oauth2-proxy) in front of nginx — do not rely on `MULTIACE_TOKEN` alone for internet-facing deployment.
+Profiles persist in browser localStorage under `multiace_dryer_profiles`. Use
+the **Edit profiles…** button on the Dryer tab to customize (validated JSON;
+errors don't clobber the saved values). **Reset to defaults** wipes the saved
+profiles back to ship state.
+
+The future "auto-dry" mode design (humidity-driven, filament-aware,
+print-state-aware) is captured in
+[`docs/auto-dry-design.md`](docs/auto-dry-design.md).
+
+## Security & known limitations
+
+LAN-only console. **Do not expose to untrusted networks.** For
+internet-facing deployment, put a real reverse proxy with auth in front of
+nginx (Cloudflare Access, oauth2-proxy, etc.) — `MULTIACE_TOKEN` is a fence
+not a wall.
+
+- **`renderToolheads` interpolates `cfg.vendor` / error fields into `innerHTML`.** Hostile filament metadata or G-code macro output would render as HTML. The Config, Activity, and Diagnostics renderers all use `textContent` or DOM construction; only the toolhead card has this surface. Threat model: collaborator-supplied gcode, not internet attacker.
+- **Token reload required.** Bearer token is read from `localStorage` at page load. Update via DevTools and refresh.
+- **Config tab caches once.** External edits to `ace.cfg` via SSH require a page reload to show in the editor. Saves go through correctly either way.
+- **Reconnect storm on bad token.** WebSocket exponential backoff caps at 30 s but doesn't detect the close-code-1008 fatal-auth case. Set a token correctly and don't worry about it.
 
 ## Uninstall
 
 ```bash
 bash /userdata/multiace-web/app/install/uninstall_web.sh
 ```
+
+Removes the app, venv, init script, and nginx snippet. nginx is reloaded.
+Klipper / Moonraker / multiACE are untouched.
+
+## Tests
+
+121 tests covering parser, config IO, log tailer, Moonraker client (incl.
+`query_objects` for the dashboard), the optional bearer-token middleware, the
+status poller, the FastAPI server (every endpoint plus the WebSocket auth
+flow), and the humidity adapter (path resolution, common-shape detection,
+caching, gating, error paths).
+
+```bash
+cd multiace_web
+. .venv/bin/activate
+pytest -v
+```
+
+2 tests skip on Windows because they exercise inotify-style file rotation
+detection. They run on Linux.
 
 ## License
 
