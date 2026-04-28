@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -208,6 +208,37 @@ def create_app(
         except MoonrakerError as e:
             raise HTTPException(502, str(e))
         return {"lines": content}
+
+    @app.websocket("/ws")
+    async def ws_endpoint(ws: WebSocket) -> None:
+        # Token check. Browsers can't set Authorization headers on WS, so also
+        # accept ?token=... query param.
+        # NOTE: BaseHTTPMiddleware doesn't run on WS frames; we enforce auth
+        # explicitly here at the handshake.
+        if app.state.token:
+            auth_header = ws.headers.get("authorization", "")
+            header_token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+            query_token = ws.query_params.get("token", "")
+            provided = header_token or query_token
+            if provided != app.state.token:
+                await ws.close(code=4401)
+                return
+        await ws.accept()
+        ws_clients = ws.app.state.ws_clients
+        ws_clients.add(ws)
+        try:
+            # Send initial state on connect
+            snap = json.dumps({"type": "state", "payload": ws.app.state.state.to_dict()})
+            await ws.send_text(snap)
+            while True:
+                msg = await ws.receive_text()
+                # Heartbeat: client sends "ping", server replies "pong"
+                if msg == "ping":
+                    await ws.send_text("pong")
+        except WebSocketDisconnect:
+            pass
+        finally:
+            ws_clients.discard(ws)
 
     if static_dir and static_dir.exists():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")

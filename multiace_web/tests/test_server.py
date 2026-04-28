@@ -171,3 +171,74 @@ def test_config_put_partial_success_when_restart_fails(app):
     # File was still written
     text = app.state.config_path.read_text()
     assert "feed_speed: 100" in text
+
+
+def test_websocket_sends_initial_state_on_connect(app):
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            msg = ws.receive_json()
+    assert msg["type"] == "state"
+    assert "gate_status" in msg["payload"]
+
+
+def test_websocket_responds_to_ping(app):
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # initial state
+            ws.send_text("ping")
+            assert ws.receive_text() == "pong"
+
+
+def test_websocket_rejects_missing_token_when_configured(monkeypatch, tmp_path):
+    """When MULTIACE_TOKEN is set, WS without ?token= or Bearer header is rejected."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    cfg_path = tmp_path / "ace.cfg"
+    cfg_path.write_text("[ace]\nfeed_speed: 80\n")
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    monkeypatch.setenv("MULTIACE_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
+    monkeypatch.setenv("MULTIACE_TOKEN", "secret")
+
+    # Patch MoonrakerClient so lifespan can construct a mock
+    from unittest.mock import AsyncMock, MagicMock
+    mock_class = MagicMock()
+    mock_instance = AsyncMock()
+    mock_instance.close = AsyncMock()
+    mock_class.return_value = mock_instance
+    monkeypatch.setattr("multiace_web.server.MoonrakerClient", mock_class)
+
+    from multiace_web.server import create_app
+    secured_app = create_app(static_dir=static_dir, start_background_tasks=False)
+    with TestClient(secured_app) as client:
+        with pytest.raises(Exception):  # WS handshake will fail with close code
+            with client.websocket_connect("/ws") as ws:
+                ws.receive_json()
+
+
+def test_websocket_accepts_correct_token_via_query(monkeypatch, tmp_path):
+    """WS with ?token=secret should connect when MULTIACE_TOKEN is configured."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    cfg_path = tmp_path / "ace.cfg"
+    cfg_path.write_text("[ace]\nfeed_speed: 80\n")
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    monkeypatch.setenv("MULTIACE_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
+    monkeypatch.setenv("MULTIACE_TOKEN", "secret")
+
+    from unittest.mock import AsyncMock, MagicMock
+    mock_class = MagicMock()
+    mock_instance = AsyncMock()
+    mock_instance.close = AsyncMock()
+    mock_class.return_value = mock_instance
+    monkeypatch.setattr("multiace_web.server.MoonrakerClient", mock_class)
+
+    from multiace_web.server import create_app
+    secured_app = create_app(static_dir=static_dir, start_background_tasks=False)
+    with TestClient(secured_app) as client:
+        with client.websocket_connect("/ws?token=secret") as ws:
+            msg = ws.receive_json()
+    assert msg["type"] == "state"
