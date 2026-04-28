@@ -46,11 +46,13 @@ Prerequisites:
 - `/oem/.debug` must exist (overlay persistence; the main multiACE installer ensures this).
 - nginx must already be running (it is on PAXX firmware).
 
-The installer creates a Python venv at `/userdata/multiace-web/venv/` (persistent partition; survives reboots), drops a systemd unit at `/etc/systemd/system/multiace-web.service`, and an nginx snippet at `/etc/nginx/conf.d/multiace.conf`.
+The installer creates a Python venv at `/userdata/multiace-web/venv/` (persistent partition; survives reboots), drops a BusyBox sysvinit script at `/etc/init.d/S62multiace-web` (PAXX firmware is Buildroot, not systemd), and an nginx snippet at `/etc/nginx/fluidd.d/multiace.conf` (loaded inside the existing fluidd `server {}` block).
+
+Manage the running service with `/etc/init.d/S62multiace-web {start|stop|restart|status}`.
 
 ## Configuration
 
-Set via systemd unit `EnvironmentFile=-/userdata/multiace-web/app/.env`:
+Edit `/userdata/multiace-web/app/.env` (sourced by the init script before launch):
 
 | Variable | Default | Purpose |
 |---|---|---|

@@ -1,0 +1,78 @@
+#!/bin/sh
+#
+# Start/stop multiACE Web Console
+# Modeled on S61moonraker — BusyBox start-stop-daemon, runs as user lava.
+#
+
+VENV=/userdata/multiace-web/venv
+APP_DIR=/userdata/multiace-web/app
+PYTHON="$VENV/bin/python3"
+PIDFILE=/var/run/multiace-web.pid
+
+# Defaults; overridable via /userdata/multiace-web/app/.env
+MULTIACE_LOG_DIR=/home/lava/printer_data/logs
+MULTIACE_CONFIG=/home/lava/printer_data/config/extended/ace.cfg
+MOONRAKER_URL=http://127.0.0.1:7125
+MULTIACE_WEB_PORT=7126
+
+ENV_FILE="$APP_DIR/.env"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
+export MULTIACE_LOG_DIR MULTIACE_CONFIG MOONRAKER_URL MULTIACE_WEB_PORT MULTIACE_TOKEN
+
+UVICORN_ARGS="multiace_web.server:app --host 127.0.0.1 --port $MULTIACE_WEB_PORT"
+
+log()
+{
+	logger -p user.info -t "multiace-web[$$]" -- "$1"
+	echo "$1"
+}
+
+stop_daemon()
+{
+	log "Stopping multiace-web..."
+	start-stop-daemon -K -q -p "$PIDFILE"
+	[ $? = 0 ] && log "OK" || log "FAIL"
+	for i in $(seq 1 25); do
+		if [ ! -f "$PIDFILE" ] || ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+			rm -f "$PIDFILE"
+			return 0
+		fi
+		sleep 0.2
+	done
+	log "force kill multiace-web"
+	start-stop-daemon -K -q -p "$PIDFILE" -s KILL
+	rm -f "$PIDFILE"
+}
+
+case "$1" in
+  start)
+	if [ ! -x "$PYTHON" ]; then
+		log "ERROR: venv missing at $VENV — run install_web.sh first"
+		exit 1
+	fi
+	log "Starting multiace-web on port $MULTIACE_WEB_PORT..."
+	cd "$APP_DIR" || exit 1
+	start-stop-daemon -S -c lava -b -x "$PYTHON" -m -p "$PIDFILE" -- -m uvicorn $UVICORN_ARGS
+	;;
+  stop)
+	stop_daemon
+	;;
+  restart)
+	stop_daemon
+	sleep 0.2
+	"$0" start
+	;;
+  status)
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "running (pid $(cat "$PIDFILE"))"
+		exit 0
+	else
+		echo "stopped"
+		exit 1
+	fi
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart|status}"
+	exit 1
+esac

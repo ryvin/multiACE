@@ -1,5 +1,6 @@
-#!/bin/bash
-# multiACE Web Console installer
+#!/bin/sh
+# multiACE Web Console installer for Snapmaker U1 PAXX firmware (Buildroot/BusyBox).
+# Uses sysvinit /etc/init.d, not systemd.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOURCE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -7,8 +8,8 @@ SOURCE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_BASE="/userdata/multiace-web"
 APP_DIR="$INSTALL_BASE/app"
 VENV_DIR="$INSTALL_BASE/venv"
-NGINX_CONF="/etc/nginx/conf.d/multiace.conf"
-SYSTEMD_UNIT="/etc/systemd/system/multiace-web.service"
+INIT_SCRIPT="/etc/init.d/S62multiace-web"
+NGINX_SNIPPET="/etc/nginx/fluidd.d/multiace.conf"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE-web] $1"; }
 
@@ -25,7 +26,7 @@ log "Source: $SOURCE_DIR"
 log "Target: $INSTALL_BASE"
 
 # Stop existing service if running
-systemctl stop multiace-web 2>/dev/null || true
+[ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" stop || true
 
 # Copy app to persistent partition
 mkdir -p "$INSTALL_BASE"
@@ -33,6 +34,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -r "$SOURCE_DIR/src" "$APP_DIR/"
 cp "$SOURCE_DIR/pyproject.toml" "$APP_DIR/"
+chown -R lava:lava "$APP_DIR"
 log "App files copied to $APP_DIR"
 
 # Create venv on persistent partition
@@ -42,23 +44,25 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
 "$VENV_DIR/bin/pip" install -e "$APP_DIR" --quiet
+chown -R lava:lava "$VENV_DIR"
 log "Python dependencies installed"
 
-# Install systemd unit
-cp "$SCRIPT_DIR/multiace-web.service" "$SYSTEMD_UNIT"
-systemctl daemon-reload
-systemctl enable multiace-web
-systemctl start multiace-web
-log "systemd unit installed and started"
+# Install init.d script (overlay; persisted via /oem/.debug)
+cp "$SCRIPT_DIR/S62multiace-web" "$INIT_SCRIPT"
+chmod +x "$INIT_SCRIPT"
+log "Init script installed at $INIT_SCRIPT"
 
-# Install nginx snippet
-mkdir -p /etc/nginx/conf.d
-cp "$SCRIPT_DIR/nginx-multiace.conf" "$NGINX_CONF"
-nginx -t && systemctl reload nginx
-log "nginx config installed; reloaded"
+# Install nginx snippet into the fluidd include dir (loaded inside fluidd's server{})
+mkdir -p /etc/nginx/fluidd.d
+cp "$SCRIPT_DIR/nginx-multiace.conf" "$NGINX_SNIPPET"
+nginx -t
+/etc/init.d/S50nginx reload 2>/dev/null || nginx -s reload
+log "nginx snippet installed at $NGINX_SNIPPET; reloaded"
 
-log "Service status:"
-systemctl status multiace-web --no-pager -l | head -10 || true
+# Start the service
+"$INIT_SCRIPT" start
+sleep 1
+log "Service status: $("$INIT_SCRIPT" status)"
 
 log ""
 log "=== Install complete ==="

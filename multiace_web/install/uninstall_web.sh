@@ -1,24 +1,22 @@
-#!/bin/bash
-# multiACE Web Console uninstaller
+#!/bin/sh
+# multiACE Web Console uninstaller for Snapmaker U1 PAXX firmware (Buildroot/BusyBox).
 set -e
 
 INSTALL_BASE="/userdata/multiace-web"
-NGINX_CONF="/etc/nginx/conf.d/multiace.conf"
-SYSTEMD_UNIT="/etc/systemd/system/multiace-web.service"
+INIT_SCRIPT="/etc/init.d/S62multiace-web"
+NGINX_SNIPPET="/etc/nginx/fluidd.d/multiace.conf"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE-web] $1"; }
 
 log "=== multiACE Web Console uninstall ==="
 
-systemctl stop multiace-web 2>/dev/null || true
-systemctl disable multiace-web 2>/dev/null || true
-rm -f "$SYSTEMD_UNIT"
-systemctl daemon-reload
-log "systemd unit removed"
+[ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" stop || true
+rm -f "$INIT_SCRIPT"
+log "Init script removed"
 
-rm -f "$NGINX_CONF"
-nginx -t && systemctl reload nginx
-log "nginx config removed; reloaded"
+rm -f "$NGINX_SNIPPET"
+nginx -t && (/etc/init.d/S50nginx reload 2>/dev/null || nginx -s reload)
+log "nginx snippet removed; reloaded"
 
 rm -rf "$INSTALL_BASE"
 log "App + venv removed from $INSTALL_BASE"
