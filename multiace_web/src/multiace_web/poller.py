@@ -17,11 +17,17 @@ log = logging.getLogger(__name__)
 class StatusPoller:
     """Periodically fires ACE_HEAD_STATUS to refresh state.
 
+    Single-shot lifecycle: call `run()` exactly once. After `stop()` is called
+    or `run()` returns, the instance cannot be restarted — create a new one.
+
     Errors are logged but do not stop the loop — Moonraker may be temporarily
-    unreachable and we want to keep trying.
+    unreachable and we want to keep trying. The interval sleep happens after
+    every iteration regardless of success/failure, so the loop never busy-loops.
     """
 
     def __init__(self, moonraker: MoonrakerClient, interval: float = 5.0) -> None:
+        if interval <= 0:
+            raise ValueError(f"interval must be positive, got {interval}")
         self._moonraker = moonraker
         self._interval = interval
         self._stop = asyncio.Event()
