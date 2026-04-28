@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d1117" />
+  <title>multiACE</title>
+  <link rel="stylesheet" href="/static/style.css?v=0.1.0" />
+  <script defer src="/static/app.js?v=0.1.0"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">multiACE</div>
+    <div class="status">
+      <span class="dot" id="conn-dot" data-state="disconnected"></span>
+      <span id="conn-label">Connecting…</span>
+    </div>
+    <div class="active-ace">
+      <span class="muted">Active:</span>
+      <strong id="active-ace-label">—</strong>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button data-view="slots" class="tab active">Slots</button>
+    <button data-view="toolheads" class="tab">Toolheads</button>
+    <button data-view="activity" class="tab">Activity</button>
+    <button data-view="dryer" class="tab">Dryer</button>
+    <button data-view="config" class="tab">Config</button>
+    <button data-view="diag" class="tab">Diag</button>
+  </nav>
+
+  <main class="content">
+    <section data-view="slots" class="view active">
+      <h2>Slots <small id="slots-active-ace">(ACE 0)</small></h2>
+      <div id="slots-grid" class="grid grid-4"></div>
+    </section>
+
+    <section data-view="toolheads" class="view">
+      <h2>Toolheads</h2>
+      <div id="toolheads-grid" class="grid grid-2x2"></div>
+    </section>
+
+    <section data-view="activity" class="view">
+      <h2>Activity</h2>
+      <ul id="activity-list" class="activity"></ul>
+    </section>
+
+    <section data-view="dryer" class="view">
+      <h2>Dryer</h2>
+      <div id="dryer-panel" class="dryer"></div>
+    </section>
+
+    <section data-view="config" class="view">
+      <h2>Config</h2>
+      <form id="config-form" class="config">
+        <p class="muted">Values from <code>ace.cfg</code>. Saving triggers <code>RESTART</code>.</p>
+        <div id="config-fields"></div>
+        <button type="submit">Save &amp; Restart</button>
+      </form>
+    </section>
+
+    <section data-view="diag" class="view">
+      <h2>Diagnostics</h2>
+      <div class="diag-actions">
+        <button data-cmd="ACE_HEAD_STATUS">Run ACE_HEAD_STATUS</button>
+        <button data-cmd="ACE_LIST">Run ACE_LIST</button>
+        <button data-cmd="ACE_CLEAR_HEADS" data-confirm="Reset all head sources?">ACE_CLEAR_HEADS</button>
+      </div>
+      <h3>State JSON</h3>
+      <pre id="diag-state"></pre>
+      <h3>klippy.log tail</h3>
+      <pre id="diag-klippy">Loading…</pre>
+    </section>
+  </main>
+
+  <footer class="actionbar">
+    <button data-cmd="ACEC__Unload_All" data-confirm="Unload all toolheads?">Unload All</button>
+    <button id="autofeed-toggle">Auto-feed: …</button>
+    <button id="mode-toggle">Mode: …</button>
+  </footer>
+
+  <div id="toast-container" class="toast-container"></div>
+  <div id="confirm-modal" class="modal hidden">
+    <div class="modal-card">
+      <p id="confirm-text"></p>
+      <div class="modal-actions">
+        <button id="confirm-cancel">Cancel</button>
+        <button id="confirm-ok" class="primary">Confirm</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
