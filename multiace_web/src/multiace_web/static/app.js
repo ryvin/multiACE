@@ -231,7 +231,8 @@ function renderActivity() {
     const isFail = (ev.action || "").endsWith("_FAILED");
     const isOk = !isFail && ["LOAD_HEAD", "UNLOAD_HEAD", "UNLOAD_ALL", "ACE_SWITCH"]
       .some((a) => (ev.action || "").startsWith(a));
-    li.classList.add(isFail ? "fail" : (isOk ? "ok" : ""));
+    if (isFail) li.classList.add("fail");
+    else if (isOk) li.classList.add("ok");
     const params = ev.params ? JSON.stringify(ev.params) : "";
     li.textContent = `${ev.ts || ""} ${ev.action || "?"} ${params}`;
     list.appendChild(li);
