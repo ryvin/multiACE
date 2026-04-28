@@ -46,3 +46,28 @@ def test_token_does_not_block_non_api_routes():
     """The /health and /static/* paths shouldn't require auth — only /api/* and /ws."""
     client = TestClient(make_app(token="secret"))
     assert client.get("/health").status_code == 200
+
+
+def test_bare_api_path_is_protected():
+    """Without trailing slash, /api should still be protected."""
+    client = TestClient(make_app(token="secret"))
+    assert client.get("/api").status_code == 401
+
+
+def test_bare_ws_path_is_protected_via_http():
+    """The /ws upgrade request goes through HTTP middleware first."""
+    client = TestClient(make_app(token="secret"))
+    assert client.get("/ws").status_code == 401
+
+
+def test_similar_path_prefix_does_not_over_match():
+    """/website should NOT be protected — it's not /ws or /ws/..."""
+    app = FastAPI()
+    app.add_middleware(TokenAuth, token="secret")
+
+    @app.get("/website")
+    async def site():
+        return {"ok": True}
+
+    client = TestClient(app)
+    assert client.get("/website").status_code == 200
