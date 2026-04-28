@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -49,26 +49,23 @@ async def lifespan(app: FastAPI):
         if not parsed:
             return
         ts, data = parsed
-        state.last_action_at = ts
-        state.apply_event(data, ts=ts)
-        eid = events.append({"ts": ts, **data})
+        state.apply_event(data, ts=ts)  # apply_event sets last_action_at when ts given
+        eid = events.append({**data, "ts": ts})  # I6: ts wins over data["ts"] if collision
         msg = json.dumps({"type": "event", "id": eid, "ts": ts, "payload": data})
         await _broadcast(ws_clients, msg)
         snap = json.dumps({"type": "state", "payload": state.to_dict()})
         await _broadcast(ws_clients, snap)
 
     state_log = log_dir / "multiace_state.log"
-    usb_log = log_dir / "multiace_usb.log"
+    # usb_log = log_dir / "multiace_usb.log"  # reserved for v1.x diagnostics endpoint
 
     state_tailer = LogTailer(state_log, on_line=on_state_line)
-    usb_tailer = LogTailer(usb_log, on_line=lambda l: None)  # reserved for v1.x
     poller = StatusPoller(moonraker, interval=5.0)
 
     tasks: list[asyncio.Task] = []
     if app.state.start_background_tasks:
         tasks = [
             asyncio.create_task(state_tailer.run()),
-            asyncio.create_task(usb_tailer.run()),
             asyncio.create_task(poller.run()),
         ]
     app.state.background_tasks = tasks
@@ -77,13 +74,13 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         state_tailer.stop()
-        usb_tailer.stop()
         poller.stop()
-        for t in tasks:
-            try:
-                await asyncio.wait_for(t, timeout=2.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+        if tasks:
+            done, pending = await asyncio.wait(tasks, timeout=2.0)
+            for t in pending:
                 t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         await moonraker.close()
 
 
@@ -147,16 +144,20 @@ def create_app(
 def main() -> None:
     """Entry point for `multiace-web` script."""
     import uvicorn
+
     uvicorn.run(
-        "multiace_web.server:create_app",
-        factory=True,
+        app,
         host="0.0.0.0",
         port=int(_env("MULTIACE_WEB_PORT", "7126")),
         log_level="info",
     )
 
 
-# Module-level app for `uvicorn multiace_web.server:app`
+# Module-level app for `uvicorn multiace_web.server:app`.
+# Construction is cheap (no I/O, no background tasks until lifespan runs).
+# Tests call create_app() directly and never import this symbol.
+# Static dir resolves to src/multiace_web/static/ which is packaged correctly
+# when installed via pip (alongside this file).
 app = create_app(
-    static_dir=Path(__file__).resolve().parent.parent.parent / "static",
+    static_dir=Path(__file__).resolve().parent / "static",
 )

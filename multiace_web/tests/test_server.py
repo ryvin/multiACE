@@ -21,9 +21,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
     monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
     monkeypatch.delenv("MULTIACE_TOKEN", raising=False)
-    app_instance = create_app(static_dir=static_dir, start_background_tasks=False)
-    app_instance.state.config_path = cfg_path  # Override for tests
-    return app_instance
+    return create_app(static_dir=static_dir, start_background_tasks=False)
 
 
 def test_health_endpoint(app):
