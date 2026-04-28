@@ -51,9 +51,19 @@ case "$1" in
 		log "ERROR: venv missing at $VENV — run install_web.sh first"
 		exit 1
 	fi
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		log "Already running (pid $(cat "$PIDFILE"))"
+		exit 0
+	fi
 	log "Starting multiace-web on port $MULTIACE_WEB_PORT..."
 	cd "$APP_DIR" || exit 1
-	start-stop-daemon -S -c lava -b -x "$PYTHON" -m -p "$PIDFILE" -- -m uvicorn $UVICORN_ARGS
+	# Wrap start-stop-daemon in setsid so the daemon's session is independent
+	# of any SSH/install shell that started us. BusyBox start-stop-daemon's -b
+	# only single-forks, so without setsid the daemon's session dies when the
+	# parent shell exits — fine at boot (parent is init), broken when invoked
+	# from an SSH-ran install_web.sh.
+	setsid start-stop-daemon -S -c lava -b -x "$PYTHON" -m -p "$PIDFILE" \
+		-- -m uvicorn $UVICORN_ARGS >>/var/log/multiace-web.log 2>&1 </dev/null
 	;;
   stop)
 	stop_daemon

@@ -30,6 +30,7 @@ log "Target: $INSTALL_BASE"
 
 # Copy app to persistent partition
 mkdir -p "$INSTALL_BASE"
+chmod 0755 "$INSTALL_BASE"  # so user 'lava' can traverse into app/ and venv/
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -r "$SOURCE_DIR/src" "$APP_DIR/"
@@ -66,5 +67,6 @@ log "Service status: $("$INIT_SCRIPT" status)"
 
 log ""
 log "=== Install complete ==="
-log "Open http://$(hostname -I | awk '{print $1}')/multiace/"
+IP=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for (i=1; i<=NF; i++) if ($i == "src") print $(i+1)}' | head -1)
+log "Open http://${IP:-<printer-ip>}/multiace/"
 log ""
