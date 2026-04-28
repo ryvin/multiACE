@@ -1,4 +1,4 @@
-from multiace_web.state import CurrentState, EventBuffer, parse_state_log_line
+from multiace_web.state import CurrentState, EventBuffer, parse_state_log_line, STATE_MARKER
 
 
 def test_parse_state_log_line_returns_timestamp_and_data(sample_state_log_line):
@@ -72,3 +72,49 @@ def test_event_buffer_since_id_returns_only_newer():
     e3 = buf.append({"action": "C"})
     new = buf.since(e1)
     assert [e["action"] for e in new] == ["B", "C"]
+
+
+def test_apply_event_with_ts_updates_last_action_at():
+    state = CurrentState()
+    assert state.last_action_at is None
+    state.apply_event({"action": "LOAD_HEAD", "active_device": 0, "connected": True,
+                       "swap_in_progress": False, "gate_status": [1,1,1,1],
+                       "head_source": {"0": None, "1": None, "2": None, "3": None},
+                       "sensors": {"0": False, "1": False, "2": False, "3": False}},
+                      ts="2026-04-27 23:40:52")
+    assert state.last_action_at == "2026-04-27 23:40:52"
+
+
+def test_event_buffer_recent_zero_returns_empty():
+    buf = EventBuffer(maxlen=10)
+    buf.append({"action": "A"})
+    buf.append({"action": "B"})
+    assert buf.recent(0) == []
+
+
+def test_parse_state_log_line_returns_none_on_non_dict_body():
+    line = "2026-04-27 23:40:52 STATE [1, 2, 3]"
+    result = parse_state_log_line(line)
+    assert result is None
+
+
+def test_load_head_clears_matching_last_error():
+    state = CurrentState()
+    state.apply_event({
+        "action": "LOAD_HEAD_FAILED",
+        "params": {"head": 1, "ace": 0, "slot": 1, "error": "fail"},
+        "active_device": 0, "connected": True, "swap_in_progress": False,
+        "gate_status": [1,1,1,1],
+        "head_source": {"0": None, "1": None, "2": None, "3": None},
+        "sensors": {"0": False, "1": False, "2": False, "3": False},
+    })
+    assert state.last_error is not None
+    state.apply_event({
+        "action": "LOAD_HEAD",
+        "params": {"head": 1, "ace": 0, "slot": 1},
+        "active_device": 0, "connected": True, "swap_in_progress": False,
+        "gate_status": [1,1,1,1],
+        "head_source": {"0": None, "1": {"ace":0,"slot":1}, "2": None, "3": None},
+        "sensors": {"0": False, "1": True, "2": False, "3": False},
+    })
+    assert state.last_error is None

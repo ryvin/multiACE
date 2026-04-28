@@ -8,6 +8,9 @@ from itertools import count
 from typing import Any, Optional
 
 
+STATE_MARKER = " STATE "
+
+
 def parse_state_log_line(line: str) -> Optional[tuple[str, dict[str, Any]]]:
     """Parse one line of multiace_state.log.
 
@@ -15,15 +18,16 @@ def parse_state_log_line(line: str) -> Optional[tuple[str, dict[str, Any]]]:
     Returns (timestamp, data) or None on malformed input.
     """
     line = line.rstrip("\n")
-    marker = " STATE "
-    idx = line.find(marker)
+    idx = line.find(STATE_MARKER)
     if idx < 0:
         return None
     ts = line[:idx]
-    body = line[idx + len(marker):]
+    body = line[idx + len(STATE_MARKER):]
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
         return None
     return ts, data
 
@@ -57,8 +61,10 @@ class CurrentState:
     last_error: Optional[dict] = None
     last_action_at: Optional[str] = None
 
-    def apply_event(self, event: dict[str, Any]) -> None:
+    def apply_event(self, event: dict[str, Any], *, ts: Optional[str] = None) -> None:
         """Update state from a multiace_state.log event payload."""
+        if ts is not None:
+            self.last_action_at = ts
         for field_name in (
             "active_device", "device_count", "connected", "serial",
             "mode", "swap_in_progress", "auto_feed", "feed_assist",
@@ -77,6 +83,9 @@ class CurrentState:
             }
 
         action = event.get("action", "")
+        # TODO(v1.x): When the frontend grows per-toolhead error display, switch to
+        # self.last_errors: dict[int, dict] keyed by head so per-toolhead errors
+        # don't overwrite each other. For v1, last_error tracks the most recent failure.
         if action.endswith("_FAILED"):
             self.last_error = {
                 "action": action,
@@ -125,6 +134,8 @@ class EventBuffer:
         return eid
 
     def recent(self, limit: int = 50) -> list[dict]:
+        if limit <= 0:
+            return []
         return list(self._buf)[-limit:]
 
     def since(self, last_id: int) -> list[dict]:
