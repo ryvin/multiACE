@@ -254,15 +254,16 @@ function renderActionBar() {
   const af = document.getElementById("autofeed-toggle");
   af.textContent = `Auto-feed: ${state.auto_feed ? "ON" : "OFF"}`;
   af.dataset.cmd = state.auto_feed ? "ACEE__Autofeed_Off" : "ACEE__Autofeed_On";
-  af.dataset.confirm = state.auto_feed ? "" : "";
+  af.removeAttribute("data-confirm");
   const mt = document.getElementById("mode-toggle");
   mt.textContent = `Mode: ${state.mode === "normal" ? "Normal" : "Multi"}`;
   mt.dataset.cmd = state.mode === "normal" ? "ACEF__Mode_Multi" : "ACEF__Mode_Normal";
   mt.dataset.confirm = "Switch mode? Reboot required to take effect.";
-  // Disable everything during a swap
+  // Disable the static action-bar buttons during a swap. Per-card Load/Unload
+  // buttons (slots, toolheads) own their own disabled state — don't touch those.
   const disabled = state.swap_in_progress;
-  for (const btn of document.querySelectorAll(".actionbar button, [data-cmd]")) {
-    if (disabled) btn.setAttribute("disabled", "true");
+  for (const btn of document.querySelectorAll(".actionbar button")) {
+    btn.disabled = disabled;
   }
 }
 function renderDiag() { /* impl in Task 17 */ }
