@@ -71,6 +71,12 @@ Use the Fluidd macros **ACEA__Switch_0..3** to switch between ACE units.
 - **PAXX Firmware Compatible** - Works with PAXX firmware which provides display mirroring, allowing full load/unload control from your computer
 - **Clean Install/Uninstall** - One-command scripts with automatic backup and restore
 
+## Web Console (optional)
+
+multiACE includes an optional web console at `http://<printer-ip>/multiace/`. Provides live ACE state, all macro commands, dryer controls, inline `ace.cfg` editor, and diagnostics. Mobile-responsive (works on phones), no Fluidd plugin needed.
+
+The console installs automatically when you run `install_multiace.sh`. See `multiace_web/README.md` for details.
+
 ## Requirements
 
 - Snapmaker U1 printer
