@@ -61,6 +61,41 @@ Edit `/userdata/multiace-web/app/.env` (sourced by the init script before launch
 | `MOONRAKER_URL` | `http://127.0.0.1:7125` | Moonraker base URL |
 | `MULTIACE_WEB_PORT` | `7126` | Port the FastAPI app binds |
 | `MULTIACE_TOKEN` | (unset) | If set, requires `Authorization: Bearer <token>` |
+| `MULTIACE_HUMIDITY_URL` | (unset) | External JSON endpoint for humidity / ambient temp |
+| `MULTIACE_HUMIDITY_AUTH` | (unset) | Optional `Authorization` header for the URL |
+| `MULTIACE_HUMIDITY_HUM_PATH` | (auto) | Dot-path into the JSON for the humidity number |
+| `MULTIACE_HUMIDITY_TEMP_PATH` | (auto) | Dot-path for ambient temperature |
+| `MULTIACE_HUMIDITY_LABEL` | `Sensor` | Display label on the dashboard tile |
+
+### Wiring a humidity sensor
+
+The console reads humidity from any HTTP+JSON source. Drop the values into
+`/userdata/multiace-web/app/.env` and restart the service.
+
+**Home Assistant** (any humidity sensor exposed as an entity):
+
+```
+MULTIACE_HUMIDITY_URL=http://homeassistant.local:8123/api/states/sensor.ace_pro_humidity
+MULTIACE_HUMIDITY_AUTH=Bearer <long-lived-access-token>
+MULTIACE_HUMIDITY_LABEL=ACE Pro
+```
+
+The auto-detector recognizes HA's `state` + `attributes.device_class=humidity` shape.
+
+**SwitchBot Cloud** (Meter / Meter Plus):
+
+```
+MULTIACE_HUMIDITY_URL=https://api.switch-bot.com/v1.0/devices/<deviceId>/status
+MULTIACE_HUMIDITY_AUTH=<your-switchbot-token>
+MULTIACE_HUMIDITY_LABEL=ACE Pro
+```
+
+**Generic / DIY (ESP32 + AHT20, Tasmota, etc.)** — any endpoint that returns
+JSON like `{"humidity": 47.2, "temperature": 24.1}` works out of the box. For
+nested shapes use the `*_PATH` vars: `MULTIACE_HUMIDITY_HUM_PATH=sensor.0.h`.
+
+The dashboard shows a humidity tile only when the source is configured; if the
+fetch fails the tile shows "sensor offline" without disturbing anything else.
 
 ## Security & known limitations (v0.1)
 

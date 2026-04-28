@@ -5,10 +5,12 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +29,118 @@ log = logging.getLogger(__name__)
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
+
+
+# ---- External humidity sensor ----
+# We support any sensor that exposes a JSON HTTP endpoint by configuring:
+#   MULTIACE_HUMIDITY_URL          – required; full URL to GET
+#   MULTIACE_HUMIDITY_AUTH         – optional; sent as `Authorization` header
+#   MULTIACE_HUMIDITY_HUM_PATH     – optional; dot-path into the JSON for humidity %
+#   MULTIACE_HUMIDITY_TEMP_PATH    – optional; dot-path for ambient temperature
+#   MULTIACE_HUMIDITY_LABEL        – optional; display label (default "Sensor")
+# If only HUMIDITY_URL is set, we attempt common shapes (HA states API, generic
+# {humidity, temperature}, SwitchBot Cloud /v1.0/devices/<id>/status, etc.).
+_HUMIDITY_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
+_HUMIDITY_TTL_SEC = 30.0
+
+
+def _resolve_path(obj: Any, path: str) -> Any:
+    cur = obj
+    for part in path.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        else:
+            return None
+    return cur
+
+
+def _guess_humidity(body: Any) -> Any:
+    if not isinstance(body, dict):
+        return None
+    for key in ("humidity", "humidity_pct", "rh", "RH"):
+        if key in body and body[key] is not None:
+            return body[key]
+    # Home Assistant /api/states/<entity> shape
+    attrs = body.get("attributes") or {}
+    if attrs.get("device_class") == "humidity" and "state" in body:
+        return body["state"]
+    if "%" in str(attrs.get("unit_of_measurement", "")) and "state" in body:
+        return body["state"]
+    # SwitchBot Cloud /v1.0/devices/<id>/status shape
+    if isinstance(body.get("body"), dict) and "humidity" in body["body"]:
+        return body["body"]["humidity"]
+    return None
+
+
+def _guess_temperature(body: Any) -> Any:
+    if not isinstance(body, dict):
+        return None
+    for key in ("temperature", "temperature_c", "temp", "temp_c"):
+        if key in body and body[key] is not None:
+            return body[key]
+    attrs = body.get("attributes") or {}
+    if attrs.get("device_class") == "temperature" and "state" in body:
+        return body["state"]
+    if isinstance(body.get("body"), dict) and "temperature" in body["body"]:
+        return body["body"]["temperature"]
+    return None
+
+
+async def _read_humidity() -> dict:
+    url = os.environ.get("MULTIACE_HUMIDITY_URL", "").strip()
+    if not url:
+        return {"configured": False}
+
+    now = time.time()
+    cached = _HUMIDITY_CACHE.get("data")
+    if cached is not None and (now - _HUMIDITY_CACHE["ts"]) < _HUMIDITY_TTL_SEC:
+        return cached
+
+    headers: dict[str, str] = {}
+    auth = os.environ.get("MULTIACE_HUMIDITY_AUTH", "").strip()
+    if auth:
+        headers["Authorization"] = auth
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            body = resp.json()
+    except Exception as e:
+        out = {
+            "configured": True, "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+        }
+        _HUMIDITY_CACHE.update(data=out, ts=now)
+        return out
+
+    hum_path = os.environ.get("MULTIACE_HUMIDITY_HUM_PATH", "").strip()
+    temp_path = os.environ.get("MULTIACE_HUMIDITY_TEMP_PATH", "").strip()
+    label = os.environ.get("MULTIACE_HUMIDITY_LABEL", "").strip() or "Sensor"
+
+    raw_hum = _resolve_path(body, hum_path) if hum_path else _guess_humidity(body)
+    raw_temp = _resolve_path(body, temp_path) if temp_path else _guess_temperature(body)
+
+    def _to_float(v):
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    out = {
+        "configured": True,
+        "ok": True,
+        "humidity_pct": _to_float(raw_hum),
+        "temp_c": _to_float(raw_temp),
+        "label": label,
+        "fetched_at": now,
+    }
+    _HUMIDITY_CACHE.update(data=out, ts=now)
+    return out
 
 
 # Macro names: ACE_*, ACEA__Switch_*, ACEB__Load_*, ACEC__*, ACED__*, ACEE__*, ACEF__*, ACEG__*
@@ -189,12 +303,14 @@ def create_app(
     async def get_print(request: Request) -> dict:
         """Summarized print state from Moonraker for the Dashboard.
 
-        Also includes the multiACE dryer_status so the Dashboard can show
-        an "ACE drying…" card without a second poll.
+        Also includes the multiACE dryer_status, the U1 cavity temperature,
+        and (when configured) an external humidity reading so the Dashboard
+        can render an environment strip without extra polls.
         """
         try:
             result = await request.app.state.moonraker.query_objects(
-                ["print_stats", "virtual_sdcard", "toolhead", "ace"]
+                ["print_stats", "virtual_sdcard", "toolhead", "ace",
+                 "temperature_sensor cavity"]
             )
         except MoonrakerError as e:
             raise HTTPException(502, str(e))
@@ -203,6 +319,7 @@ def create_app(
         sd = result.get("virtual_sdcard") or {}
         th = result.get("toolhead") or {}
         ace_obj = result.get("ace") or {}
+        cavity = result.get("temperature_sensor cavity") or {}
 
         progress = float(sd.get("progress") or 0.0)
         print_duration = float(ps.get("print_duration") or 0.0)
@@ -242,6 +359,12 @@ def create_app(
             "remain_sec": int(ds.get("remain_time") or 0),
         }
 
+        cavity_temp_raw = cavity.get("temperature")
+        cavity_temp = float(cavity_temp_raw) if cavity_temp_raw is not None else None
+
+        # External humidity is fetched lazily and cached; failures don't poison /api/print.
+        humidity = await _read_humidity()
+
         return {
             "state": ps.get("state") or "standby",
             "filename": ps.get("filename") or None,
@@ -255,6 +378,8 @@ def create_app(
             "exception": exc,
             "message": ps.get("message") or None,
             "dryer": dryer,
+            "cavity_temp_c": cavity_temp,
+            "humidity": humidity,
         }
 
     @app.post("/api/dry")

@@ -536,6 +536,39 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 .status-banner.bad strong { color: var(--bad); }
 .status-banner.warn strong { color: var(--warn); }
 
+/* ---- Environment strip (cavity temp + humidity tiles) ---- */
+.env-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--gap);
+  margin-bottom: var(--gap-lg);
+}
+.env-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--fg-faint);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem;
+  display: flex; flex-direction: column; gap: 0.05rem;
+  box-shadow: var(--shadow-sm);
+}
+.env-tile.env-ok   { border-left-color: var(--good); }
+.env-tile.env-warn { border-left-color: var(--warn); }
+.env-tile.env-bad  { border-left-color: var(--bad); }
+.env-label {
+  font-size: 0.72rem; color: var(--fg-muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.env-val {
+  font-size: 1.35rem; font-weight: 700;
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.env-tile.env-bad .env-val { color: var(--bad); }
+.env-tile.env-warn .env-val { color: var(--warn); }
+.env-sub { font-size: 0.78rem; }
+
 /* ---- Print panel ---- */
 #print-panel { padding: var(--pad); }
 .dash-print-loading { padding: 0.4rem 0; }

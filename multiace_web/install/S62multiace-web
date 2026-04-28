@@ -16,8 +16,12 @@ MOONRAKER_URL=http://127.0.0.1:7125
 MULTIACE_WEB_PORT=7126
 
 ENV_FILE="$APP_DIR/.env"
-[ -f "$ENV_FILE" ] && . "$ENV_FILE"
-
+# `set -a` auto-exports every variable assigned while it's enabled, so any
+# variable defined in .env (including new MULTIACE_HUMIDITY_*, etc.) reaches
+# the uvicorn process without needing to be listed here.
+if [ -f "$ENV_FILE" ]; then
+    set -a; . "$ENV_FILE"; set +a
+fi
 export MULTIACE_LOG_DIR MULTIACE_CONFIG MOONRAKER_URL MULTIACE_WEB_PORT MULTIACE_TOKEN
 
 UVICORN_ARGS="multiace_web.server:app --host 127.0.0.1 --port $MULTIACE_WEB_PORT"

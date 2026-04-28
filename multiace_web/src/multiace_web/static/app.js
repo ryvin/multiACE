@@ -165,6 +165,8 @@ const printState = {
   exception: null,
   message: null,
   dryer: { status: "stop", target_temp: 0, duration_min: 0, remain_min: 0 },
+  cavity_temp_c: null,
+  humidity: { configured: false },
   _last_fetch_ok: false,
 };
 
@@ -184,6 +186,60 @@ async function fetchPrint() {
   renderToolheads();
   renderStatusBanner();
   renderDryerStatus();
+  renderEnvStrip();
+}
+
+function renderEnvStrip() {
+  const strip = document.getElementById("env-strip");
+  if (!strip) return;
+  strip.innerHTML = "";
+
+  const tiles = [];
+
+  if (printState.cavity_temp_c != null && Number.isFinite(printState.cavity_temp_c)) {
+    tiles.push({
+      label: "Cavity",
+      value: printState.cavity_temp_c.toFixed(1) + "°C",
+      kind: printState.cavity_temp_c > 50 ? "warn" : "",
+      sub: "U1 enclosure",
+    });
+  }
+
+  const h = printState.humidity || {};
+  if (h.configured) {
+    if (h.ok && h.humidity_pct != null) {
+      let kind = "";
+      if (h.humidity_pct >= 60) kind = "bad";
+      else if (h.humidity_pct >= 45) kind = "warn";
+      else if (h.humidity_pct < 25) kind = "ok";
+      tiles.push({
+        label: h.label || "Humidity",
+        value: Math.round(h.humidity_pct) + "%",
+        kind,
+        sub: h.temp_c != null ? `${h.temp_c.toFixed(1)}°C ambient` : "humidity",
+      });
+    } else {
+      tiles.push({
+        label: h.label || "Humidity",
+        value: "—",
+        kind: "warn",
+        sub: "sensor offline",
+      });
+    }
+  }
+
+  if (tiles.length === 0) {
+    strip.classList.add("hidden");
+    return;
+  }
+  strip.classList.remove("hidden");
+  for (const t of tiles) {
+    const tile = setEl(strip, "div");
+    tile.className = "env-tile" + (t.kind ? " env-" + t.kind : "");
+    setEl(tile, "div", { className: "env-label", textContent: t.label });
+    setEl(tile, "div", { className: "env-val", textContent: t.value });
+    setEl(tile, "div", { className: "env-sub muted", textContent: t.sub });
+  }
 }
 
 function renderDryerStatus() {
