@@ -2831,7 +2831,6 @@ mkdir -p "$INSTALL_BASE"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -r "$SOURCE_DIR/src" "$APP_DIR/"
-cp -r "$SOURCE_DIR/static" "$APP_DIR/"
 cp "$SOURCE_DIR/pyproject.toml" "$APP_DIR/"
 log "App files copied to $APP_DIR"
 

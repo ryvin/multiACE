@@ -1,0 +1,20 @@
+[Unit]
+Description=multiACE Web Console
+After=network.target moonraker.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+User=lava
+WorkingDirectory=/userdata/multiace-web/app
+Environment=MULTIACE_LOG_DIR=/home/lava/printer_data/logs
+Environment=MULTIACE_CONFIG=/home/lava/printer_data/config/extended/ace.cfg
+Environment=MOONRAKER_URL=http://127.0.0.1:7125
+Environment=MULTIACE_WEB_PORT=7126
+EnvironmentFile=-/userdata/multiace-web/app/.env
+ExecStart=/userdata/multiace-web/venv/bin/uvicorn multiace_web.server:app --host 127.0.0.1 --port 7126
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
