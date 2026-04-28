@@ -82,7 +82,7 @@ def test_command_endpoint_proxies_to_moonraker(app):
 def test_command_endpoint_rejects_missing_macro(app):
     with TestClient(app) as client:
         resp = client.post("/api/command", json={})
-    assert resp.status_code == 400
+    assert resp.status_code == 422  # Pydantic validation
 
 
 def test_command_endpoint_returns_502_on_moonraker_error(app):
@@ -95,6 +95,7 @@ def test_command_endpoint_returns_502_on_moonraker_error(app):
 
 
 def test_config_put_writes_and_restarts(app):
+    # Need 'feed_speed' to already exist in the test ace.cfg (it does)
     with TestClient(app) as client:
         app.state.moonraker.run_gcode = AsyncMock(return_value="ok")
         resp = client.put("/api/config", json={"values": {"feed_speed": "100"}})
@@ -108,7 +109,7 @@ def test_config_put_writes_and_restarts(app):
 def test_config_put_rejects_empty_body(app):
     with TestClient(app) as client:
         resp = client.put("/api/config", json={})
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_logs_klippy_returns_lines(app):
@@ -123,3 +124,50 @@ def test_logs_unknown_kind_returns_400(app):
     with TestClient(app) as client:
         resp = client.get("/api/logs/nonsense")
     assert resp.status_code == 400
+
+
+def test_command_endpoint_rejects_lowercase_macro(app):
+    with TestClient(app) as client:
+        resp = client.post("/api/command", json={"macro": "lowercase_bad"})
+    assert resp.status_code == 422
+
+
+def test_command_endpoint_rejects_special_chars_in_macro(app):
+    with TestClient(app) as client:
+        resp = client.post("/api/command", json={"macro": "ACE; rm -rf /"})
+    assert resp.status_code == 422
+
+
+def test_config_put_rejects_unknown_key(app):
+    """Keys must already exist in ace.cfg — prevents injection of new keys."""
+    with TestClient(app) as client:
+        resp = client.put("/api/config", json={"values": {"evil_new_key": "1"}})
+    assert resp.status_code == 400
+    assert "unknown" in resp.json()["detail"].lower()
+
+
+def test_config_put_rejects_value_with_newline(app):
+    """Newlines in values would inject extra config lines."""
+    with TestClient(app) as client:
+        resp = client.put("/api/config", json={"values": {"feed_speed": "100\nrestart_method: hard"}})
+    assert resp.status_code == 422
+
+
+def test_config_put_rejects_value_with_hash(app):
+    """# would be interpreted as a Klipper comment, mismatching read/write."""
+    with TestClient(app) as client:
+        resp = client.put("/api/config", json={"values": {"feed_speed": "100 # malicious"}})
+    assert resp.status_code == 422
+
+
+def test_config_put_partial_success_when_restart_fails(app):
+    """File written successfully but Moonraker RESTART failed → 502."""
+    from multiace_web.moonraker import MoonrakerError
+    with TestClient(app) as client:
+        app.state.moonraker.run_gcode = AsyncMock(side_effect=MoonrakerError("klipper down"))
+        resp = client.put("/api/config", json={"values": {"feed_speed": "100"}})
+    assert resp.status_code == 502
+    assert "saved but RESTART failed" in resp.json()["detail"]
+    # File was still written
+    text = app.state.config_path.read_text()
+    assert "feed_speed: 100" in text
