@@ -304,7 +304,14 @@ async function renderConfig() {
   fields.innerHTML = "";
   for (const [k, v] of Object.entries(configValues)) {
     const lbl = document.createElement("label");
-    lbl.innerHTML = `<span>${k}</span><input type="text" name="${k}" value="${v}" />`;
+    const span = document.createElement("span");
+    span.textContent = k;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.name = k;
+    input.value = v;
+    lbl.appendChild(span);
+    lbl.appendChild(input);
     fields.appendChild(lbl);
   }
 }
