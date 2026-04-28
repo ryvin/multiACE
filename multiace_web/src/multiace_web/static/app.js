@@ -159,8 +159,69 @@ function renderTopbar() {
   document.getElementById("slots-active-ace").textContent =
     state.active_device !== null ? `(ACE ${state.active_device})` : "(none)";
 }
-function renderSlots() { /* impl in Task 14 */ }
-function renderToolheads() { /* impl in Task 14 */ }
+function slotIcon(filled) {
+  return filled ? "●" : "○";
+}
+
+function rgbFromUint(packed) {
+  // ACE color is uint32 0xAARRGGBB or similar; treat low 24 bits as RGB
+  const r = (packed >> 16) & 0xff;
+  const g = (packed >> 8) & 0xff;
+  const b = packed & 0xff;
+  return `rgb(${r},${g},${b})`;
+}
+
+function renderSlots() {
+  const grid = document.getElementById("slots-grid");
+  grid.innerHTML = "";
+  const ace = state.active_device;
+  for (let i = 0; i < 4; i++) {
+    const filled = state.gate_status[i] === 1;
+    const loadedTo = Object.entries(state.head_source).find(
+      ([, src]) => src && src.ace === ace && src.slot === i
+    );
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <h3>Slot ${i} ${slotIcon(filled)}</h3>
+      <div class="row"><span>Gate:</span><span>${filled ? "filled" : "empty"}</span></div>
+      <div class="row"><span>Loaded to:</span><span>${loadedTo ? `T${loadedTo[0]}` : "—"}</span></div>
+      <div class="actions">
+        <button data-cmd="ACEC__Load_T${i}" ${!filled || state.swap_in_progress ? "disabled" : ""}>Load → T${i}</button>
+        <button data-cmd="ACEC__Unload_T${i}" data-confirm="Unload T${i}?" ${!loadedTo || state.swap_in_progress ? "disabled" : ""}>Unload T${i}</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+}
+
+function renderToolheads() {
+  const grid = document.getElementById("toolheads-grid");
+  grid.innerHTML = "";
+  for (let i = 0; i < 4; i++) {
+    const src = state.head_source[i];
+    const sensor = state.sensors[i];
+    const err = state.last_error && state.last_error.head === i ? state.last_error : null;
+    const cfg = state.print_task_config[i] || {};
+    const card = document.createElement("div");
+    card.className = `card ${err ? "error" : ""}`;
+    const colorSwatch = cfg.color && cfg.color !== 4294967295
+      ? `<span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${rgbFromUint(cfg.color)};vertical-align:middle"></span>`
+      : "";
+    card.innerHTML = `
+      <h3>T${i} ${colorSwatch}</h3>
+      <div class="row"><span>Loaded:</span><span>${src ? `ACE ${src.ace} slot ${src.slot}` : "—"}</span></div>
+      <div class="row"><span>Sensor:</span><span>${sensor ? "filament present" : "empty"}</span></div>
+      <div class="row"><span>Vendor:</span><span class="muted">${cfg.vendor || "—"}</span></div>
+      ${err ? `<div class="err-msg">⚠ ${err.action}: ${err.error || err.reason || ""}</div>` : ""}
+      <div class="actions">
+        <button data-cmd="ACEC__Load_T${i}" ${state.swap_in_progress ? "disabled" : ""}>Load</button>
+        <button data-cmd="ACEC__Unload_T${i}" data-confirm="Unload T${i}?" ${!src || state.swap_in_progress ? "disabled" : ""}>Unload</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+}
 function renderActivity() { /* impl in Task 15 */ }
 function renderActionBar() { /* impl in Task 16 */ }
 function renderDiag() { /* impl in Task 17 */ }
