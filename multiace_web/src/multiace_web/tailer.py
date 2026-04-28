@@ -53,14 +53,26 @@ class LogTailer:
             self._inode = None
 
     def _check_rotation(self) -> bool:
-        """Return True if file was rotated/truncated/recreated."""
+        """Return True if file was rotated, truncated, or recreated."""
         try:
-            current_inode = os.stat(self.path).st_ino
+            st = os.stat(self.path)
         except FileNotFoundError:
             return self._inode is not None
         except OSError:
             return False
-        return self._inode is not None and current_inode != self._inode
+        if self._inode is None:
+            return False
+        if st.st_ino != self._inode:
+            return True  # rotation
+        # Truncation: file size shrank below our read position
+        if self._fh is not None:
+            try:
+                pos = self._fh.tell()
+            except (OSError, ValueError):
+                return False
+            if st.st_size < pos:
+                return True
+        return False
 
     async def _emit(self, line: str) -> None:
         try:

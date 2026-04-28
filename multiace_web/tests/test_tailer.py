@@ -81,3 +81,27 @@ async def test_tailer_recovers_from_missing_file(tmp_path: Path):
     await asyncio.wait_for(task, timeout=2.0)
 
     assert "first line after creation" in received
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows can't truncate open files")
+@pytest.mark.asyncio
+async def test_tailer_handles_truncation(tmp_path: Path):
+    log_path = tmp_path / "test.log"
+    log_path.write_text("first\n")
+
+    received: list[str] = []
+    tailer = LogTailer(log_path, on_line=lambda line: received.append(line),
+                       poll_interval=0.1)
+    task = asyncio.create_task(tailer.run())
+    await asyncio.sleep(0.3)
+
+    # Truncate in place (preserves inode)
+    with open(log_path, "w") as f:
+        f.write("after truncate\n")
+        f.flush()
+    await asyncio.sleep(0.5)
+
+    tailer.stop()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert "after truncate" in received
