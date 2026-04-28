@@ -1,10 +1,13 @@
 """Async client wrapping Moonraker's HTTP API."""
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+
+_KIND_RE = re.compile(r"^[a-z_]+$")
 
 
 class MoonrakerError(Exception):
@@ -51,6 +54,8 @@ class MoonrakerClient:
 
     async def get_logs(self, kind: str = "klippy", lines: int = 200) -> list[str]:
         """Fetch a slice of klippy.log via Moonraker's file API."""
+        if not _KIND_RE.match(kind):
+            raise MoonrakerError(f"invalid log kind: {kind!r}")
         path = f"/server/files/logs/{kind}.log"
         try:
             resp = await self._client.get(path)
