@@ -561,6 +561,10 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
     var(--accent), color-mix(in srgb, var(--accent) 60%, var(--good)));
   transition: width 0.6s var(--ease);
 }
+.progress-fill.progress-warn {
+  background: linear-gradient(90deg,
+    var(--warn), color-mix(in srgb, var(--warn) 70%, #ff7a00));
+}
 .progress-label {
   position: absolute; right: 0.55rem; top: 50%;
   transform: translateY(-50%);

@@ -187,10 +187,14 @@ def create_app(
 
     @app.get("/api/print")
     async def get_print(request: Request) -> dict:
-        """Summarized print state from Moonraker for the Dashboard."""
+        """Summarized print state from Moonraker for the Dashboard.
+
+        Also includes the multiACE dryer_status so the Dashboard can show
+        an "ACE drying…" card without a second poll.
+        """
         try:
             result = await request.app.state.moonraker.query_objects(
-                ["print_stats", "virtual_sdcard", "toolhead"]
+                ["print_stats", "virtual_sdcard", "toolhead", "ace"]
             )
         except MoonrakerError as e:
             raise HTTPException(502, str(e))
@@ -198,6 +202,7 @@ def create_app(
         ps = result.get("print_stats") or {}
         sd = result.get("virtual_sdcard") or {}
         th = result.get("toolhead") or {}
+        ace_obj = result.get("ace") or {}
 
         progress = float(sd.get("progress") or 0.0)
         print_duration = float(ps.get("print_duration") or 0.0)
@@ -224,6 +229,19 @@ def create_app(
         if isinstance(exc, dict) and not exc:
             exc = None
 
+        # Dryer status from multiACE's [ace] printer object.
+        # Field units (verified live): status ("stop" | "drying" | …),
+        # target_temp °C, duration MINUTES, remain_time SECONDS (yes, mixed).
+        # We normalize remain to minutes for the dashboard.
+        ds = ace_obj.get("dryer_status") or {}
+        dryer = {
+            "status": ds.get("status") or "stop",
+            "target_temp": int(ds.get("target_temp") or 0),
+            "duration_min": int(ds.get("duration") or 0),
+            "remain_min": int(round((ds.get("remain_time") or 0) / 60.0)),
+            "remain_sec": int(ds.get("remain_time") or 0),
+        }
+
         return {
             "state": ps.get("state") or "standby",
             "filename": ps.get("filename") or None,
@@ -236,6 +254,7 @@ def create_app(
             "current_extruder": head_idx,
             "exception": exc,
             "message": ps.get("message") or None,
+            "dryer": dryer,
         }
 
     @app.post("/api/dry")

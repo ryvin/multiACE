@@ -164,6 +164,7 @@ const printState = {
   current_extruder: null,
   exception: null,
   message: null,
+  dryer: { status: "stop", target_temp: 0, duration_min: 0, remain_min: 0 },
   _last_fetch_ok: false,
 };
 
@@ -182,6 +183,59 @@ async function fetchPrint() {
   // and printState.state, so refresh those cards too.
   renderToolheads();
   renderStatusBanner();
+  renderDryerStatus();
+}
+
+function renderDryerStatus() {
+  const card = document.getElementById("dryer-status-card");
+  if (!card) return;
+  const d = printState.dryer || {};
+  const isActive = d.status && d.status !== "stop";
+  card.classList.toggle("hidden", !isActive);
+  card.innerHTML = "";
+  if (!isActive) return;
+
+  card.classList.add("card");
+  setEl(card, "div", { className: "color-band" });
+  card.style.setProperty("--card-color", "var(--warn)");
+
+  const head = setEl(card, "div"); head.className = "card-head";
+  setEl(head, "span", { className: "card-id", textContent: "ACE Dryer" });
+  pill(head, "DRYING", "warn");
+
+  // Stats row
+  const main = setEl(card, "div"); main.className = "print-main";
+  const stats = setEl(main, "div"); stats.className = "print-stats";
+  const tStat = setEl(stats, "div"); tStat.className = "stat";
+  setEl(tStat, "span", { className: "stat-label", textContent: "Target" });
+  setEl(tStat, "span", { className: "stat-val", textContent: `${d.target_temp || 0}°C` });
+  const dStat = setEl(stats, "div"); dStat.className = "stat";
+  setEl(dStat, "span", { className: "stat-label", textContent: "Duration" });
+  setEl(dStat, "span", { className: "stat-val", textContent: formatMinutes(d.duration_min || 0) });
+  const rStat = setEl(stats, "div"); rStat.className = "stat";
+  setEl(rStat, "span", { className: "stat-label", textContent: "Remaining" });
+  setEl(rStat, "span", { className: "stat-val", textContent: formatMinutes(d.remain_min || 0) });
+  const eStat = setEl(stats, "div"); eStat.className = "stat";
+  setEl(eStat, "span", { className: "stat-label", textContent: "Done at" });
+  const doneAt = new Date(Date.now() + (d.remain_min || 0) * 60 * 1000);
+  const hh = doneAt.getHours().toString().padStart(2, "0");
+  const mm = doneAt.getMinutes().toString().padStart(2, "0");
+  setEl(eStat, "span", { className: "stat-val", textContent: `${hh}:${mm}` });
+
+  // Progress (elapsed = duration - remaining)
+  const total = d.duration_min || 0;
+  const elapsed = Math.max(0, total - (d.remain_min || 0));
+  const pct = total > 0 ? Math.max(0, Math.min(100, (elapsed / total) * 100)) : 0;
+  const pwrap = setEl(main, "div"); pwrap.className = "progress";
+  const pfill = setEl(pwrap, "div"); pfill.className = "progress-fill progress-warn";
+  pfill.style.width = pct.toFixed(1) + "%";
+  setEl(pwrap, "span", { className: "progress-label", textContent: pct.toFixed(0) + "%" });
+
+  const actions = setEl(card, "div"); actions.className = "actions";
+  const stop = setEl(actions, "button", { textContent: "Stop drying" });
+  stop.dataset.cmd = "ACED__Dry_Stop";
+  stop.dataset.confirm = "Stop dryer?";
+  stop.classList.add("danger");
 }
 
 let _printPollTimer = null;
