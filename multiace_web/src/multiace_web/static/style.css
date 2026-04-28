@@ -500,6 +500,34 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 .config-fields input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 .form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 
+/* ---- Dryer profile UI ---- */
+.dryer-profile { margin-top: 0.4rem; margin-bottom: 0.5rem; }
+.dryer-label { display: flex; flex-direction: column; gap: 0.3rem; }
+.dryer-label .meta-key { font-size: 0.78rem; }
+.dryer-select, .dryer-overrides input {
+  min-height: 38px;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 0.92rem;
+}
+.dryer-select { width: 100%; cursor: pointer; }
+.dryer-select:focus-visible, .dryer-overrides input:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+}
+.dryer-overrides {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+.dryer-overrides label { display: flex; flex-direction: column; gap: 0.25rem; }
+.dryer-overrides input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.dryer-tools {
+  display: flex; gap: 0.5rem; flex-wrap: wrap;
+  margin-top: var(--gap-lg);
+}
+
 /* ---- Loading skeleton (toolhead grid before first state) ---- */
 .skeleton-card {
   background: var(--surface); border: 1px solid var(--border);

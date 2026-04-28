@@ -352,9 +352,70 @@ function renderActionBar() {
     btn.disabled = disabled;
   }
 }
+// ---- Dryer profiles ----
+// Defaults sized for ACE Pro's typical max ~70°C. ABS/Nylon/PC are usually
+// dried at 80°C+ on a dedicated dryer; on ACE Pro they get longer time at
+// the highest the unit can run.
+const DEFAULT_DRYER_PROFILES = [
+  { id: "pla",   name: "PLA",          temp: 50, duration: 240,  note: "4h @ 50°C" },
+  { id: "petg",  name: "PETG",         temp: 65, duration: 360,  note: "6h @ 65°C" },
+  { id: "tpu",   name: "TPU / TPE",    temp: 50, duration: 480,  note: "8h @ 50°C" },
+  { id: "abs",   name: "ABS / ASA",    temp: 70, duration: 480,  note: "8h @ 70°C (ACE max)" },
+  { id: "pa",    name: "Nylon (PA)",   temp: 70, duration: 720,  note: "12h @ 70°C — longer to compensate for cap" },
+  { id: "pc",    name: "PC",           temp: 70, duration: 480,  note: "8h @ 70°C" },
+  { id: "pva",   name: "PVA / BVOH",   temp: 45, duration: 360,  note: "6h @ 45°C — water-soluble, low temp" },
+  { id: "quick", name: "Quick freshen",temp: 50, duration: 60,   note: "1h @ 50°C — a short top-up" },
+];
+
+function loadDryProfiles() {
+  try {
+    const raw = localStorage.getItem("multiace_dryer_profiles");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    }
+  } catch (_) {}
+  return DEFAULT_DRYER_PROFILES;
+}
+
+function saveDryProfiles(profiles) {
+  localStorage.setItem("multiace_dryer_profiles", JSON.stringify(profiles));
+}
+
+// Per-ACE selection state (ace_index -> profile_id), client-only
+const dryerSelection = {};
+
+async function startDry(aceIdx, tempC, durationMin) {
+  try {
+    const resp = await fetch(api("api/dry"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ ace: aceIdx, temp_c: tempC, duration_min: durationMin }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`Dry failed: ${body.detail || resp.statusText}`, "error");
+      return false;
+    }
+    toast(`ACE ${aceIdx}: drying at ${tempC}°C for ${formatMinutes(durationMin)}`, "success");
+    return true;
+  } catch (e) {
+    toast(`Dry failed: ${e.message}`, "error");
+    return false;
+  }
+}
+
+function formatMinutes(m) {
+  if (m < 60) return `${m}min`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r === 0 ? `${h}h` : `${h}h${r}min`;
+}
+
 function renderDryer() {
   const panel = document.getElementById("dryer-panel");
   panel.innerHTML = "";
+  const profiles = loadDryProfiles();
   const count = Math.max(state.device_count, 1);
   for (let i = 0; i < count; i++) {
     const card = setEl(panel, "div"); card.className = "card no-color";
@@ -362,20 +423,118 @@ function renderDryer() {
 
     const head = setEl(card, "div"); head.className = "card-head";
     setEl(head, "span", { className: "card-id", textContent: `ACE ${i}` });
-    pill(head, "Idle");
+    pill(head, "Profile drying");
 
-    const meta = setEl(card, "div"); meta.className = "card-meta";
-    metaRow(meta, "Mode", "—");
-    metaRow(meta, "Duration", "Set in Config tab");
+    // Profile selector
+    const profileBlock = setEl(card, "div"); profileBlock.className = "dryer-profile";
+    const label = setEl(profileBlock, "label"); label.className = "dryer-label";
+    setEl(label, "span", { className: "meta-key", textContent: "Filament" });
+    const select = setEl(label, "select"); select.className = "dryer-select";
+    for (const p of profiles) {
+      const opt = setEl(select, "option");
+      opt.value = p.id;
+      opt.textContent = `${p.name} — ${p.note}`;
+    }
+    const customOpt = setEl(select, "option");
+    customOpt.value = "__custom__";
+    customOpt.textContent = "Custom…";
+    const selectedId = dryerSelection[i] || profiles[0].id;
+    select.value = selectedId;
 
+    // Inline temp/duration override (pre-fills from the selected profile)
+    const overrides = setEl(card, "div"); overrides.className = "dryer-overrides";
+    const tempLabel = setEl(overrides, "label");
+    setEl(tempLabel, "span", { className: "meta-key", textContent: "Temp °C" });
+    const tempIn = setEl(tempLabel, "input");
+    tempIn.type = "number"; tempIn.min = "30"; tempIn.max = "120"; tempIn.step = "1";
+    const durLabel = setEl(overrides, "label");
+    setEl(durLabel, "span", { className: "meta-key", textContent: "Duration (min)" });
+    const durIn = setEl(durLabel, "input");
+    durIn.type = "number"; durIn.min = "1"; durIn.max = "2880"; durIn.step = "5";
+
+    function applySelection() {
+      const profile = profiles.find((p) => p.id === select.value);
+      if (profile) {
+        tempIn.value = profile.temp;
+        durIn.value = profile.duration;
+      }
+    }
+    applySelection();
+    select.addEventListener("change", () => {
+      dryerSelection[i] = select.value;
+      applySelection();
+    });
+
+    // Actions
     const actions = setEl(card, "div"); actions.className = "actions";
     const start = setEl(actions, "button", { textContent: "Start dry" });
-    start.dataset.cmd = `ACED__Dry_Start_${i}`;
     start.classList.add("primary");
+    start.addEventListener("click", async () => {
+      const t = parseInt(tempIn.value, 10);
+      const d = parseInt(durIn.value, 10);
+      if (!Number.isFinite(t) || !Number.isFinite(d)) {
+        toast("Invalid temperature or duration", "error");
+        return;
+      }
+      const profile = profiles.find((p) => p.id === select.value);
+      const profName = profile ? profile.name : "Custom";
+      const ok = await confirmDialog(
+        `Start drying ACE ${i} at ${t}°C for ${formatMinutes(d)} (${profName})?`
+      );
+      if (!ok) return;
+      start.disabled = true;
+      await startDry(i, t, d);
+      start.disabled = false;
+    });
     const stop = setEl(actions, "button", { textContent: "Stop" });
     stop.dataset.cmd = "ACED__Dry_Stop";
     stop.dataset.confirm = "Stop dryer?";
     stop.classList.add("danger");
+  }
+
+  // "Edit profiles" link below the grid
+  const tools = setEl(panel.parentElement, "div");
+  // Avoid stacking duplicates across re-renders: only create once
+  if (!document.getElementById("dryer-tools")) {
+    tools.id = "dryer-tools";
+    tools.className = "dryer-tools";
+    const editBtn = setEl(tools, "button", { textContent: "Edit profiles…" });
+    editBtn.className = "ghost-btn";
+    editBtn.addEventListener("click", () => editDryProfiles());
+    const resetBtn = setEl(tools, "button", { textContent: "Reset to defaults" });
+    resetBtn.addEventListener("click", () => {
+      if (confirm("Reset dryer profiles to defaults?")) {
+        localStorage.removeItem("multiace_dryer_profiles");
+        renderDryer();
+        toast("Profiles reset", "success");
+      }
+    });
+  }
+}
+
+function editDryProfiles() {
+  const current = loadDryProfiles();
+  const text = prompt(
+    "Dryer profiles (JSON). Each entry: { id, name, temp, duration, note }",
+    JSON.stringify(current, null, 2)
+  );
+  if (text == null) return;
+  try {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) throw new Error("must be an array");
+    for (const p of parsed) {
+      if (!p.id || !p.name) throw new Error("each profile needs id and name");
+      p.temp = parseInt(p.temp, 10);
+      p.duration = parseInt(p.duration, 10);
+      if (!Number.isFinite(p.temp) || !Number.isFinite(p.duration)) {
+        throw new Error("temp and duration must be integers");
+      }
+    }
+    saveDryProfiles(parsed);
+    renderDryer();
+    toast("Profiles saved", "success");
+  } catch (e) {
+    toast(`Invalid profiles: ${e.message}`, "error");
   }
 }
 

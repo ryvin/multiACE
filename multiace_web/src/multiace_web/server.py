@@ -40,6 +40,13 @@ class CommandRequest(BaseModel):
     macro: str = Field(min_length=1, max_length=64, pattern=_MACRO_RE)
 
 
+class DryRequest(BaseModel):
+    """Parameterized dryer start request, mapped to ACE_DRY ACE=N TEMP=T DURATION=D."""
+    ace: int = Field(ge=0, le=7)
+    temp_c: int = Field(ge=30, le=120)  # ACE Pro hardware caps; multiACE further enforces max_dryer_temperature
+    duration_min: int = Field(ge=1, le=2880)  # up to 48h
+
+
 class ConfigRequest(BaseModel):
     values: dict[str, str] = Field(min_length=1, max_length=64)
 
@@ -177,6 +184,17 @@ def create_app(
         except MoonrakerError as e:
             raise HTTPException(502, str(e))
         return {"ok": True, "result": result}
+
+    @app.post("/api/dry")
+    async def post_dry(request: Request, body: DryRequest) -> dict:
+        # ACE_DRY accepts ACE=N [TEMP=T] [DURATION=D]; multiACE enforces its own
+        # max_dryer_temperature, so we don't need to read the config to clamp.
+        gcode = f"ACE_DRY ACE={body.ace} TEMP={body.temp_c} DURATION={body.duration_min}"
+        try:
+            result = await request.app.state.moonraker.run_gcode(gcode)
+        except MoonrakerError as e:
+            raise HTTPException(502, str(e))
+        return {"ok": True, "result": result, "gcode": gcode}
 
     @app.put("/api/config")
     async def put_config(request: Request, body: ConfigRequest) -> dict:
