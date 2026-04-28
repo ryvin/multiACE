@@ -154,8 +154,20 @@ function renderAll() {
   renderDiag();
 }
 function renderTopbar() {
-  document.getElementById("active-ace-label").textContent =
-    state.active_device !== null ? `ACE ${state.active_device}` : "—";
+  const label = document.getElementById("active-ace-label");
+  if (state.device_count <= 1) {
+    label.textContent = state.active_device !== null ? `ACE ${state.active_device}` : "—";
+  } else {
+    // Multi-ACE: render a button cluster
+    label.innerHTML = "";
+    for (let i = 0; i < state.device_count; i++) {
+      const b = document.createElement("button");
+      b.textContent = `ACE ${i}`;
+      b.dataset.cmd = `ACEA__Switch_${i}`;
+      if (i === state.active_device) b.classList.add("primary");
+      label.appendChild(b);
+    }
+  }
   document.getElementById("slots-active-ace").textContent =
     state.active_device !== null ? `(ACE ${state.active_device})` : "(none)";
 }
@@ -238,7 +250,21 @@ function renderActivity() {
     list.appendChild(li);
   }
 }
-function renderActionBar() { /* impl in Task 16 */ }
+function renderActionBar() {
+  const af = document.getElementById("autofeed-toggle");
+  af.textContent = `Auto-feed: ${state.auto_feed ? "ON" : "OFF"}`;
+  af.dataset.cmd = state.auto_feed ? "ACEE__Autofeed_Off" : "ACEE__Autofeed_On";
+  af.dataset.confirm = state.auto_feed ? "" : "";
+  const mt = document.getElementById("mode-toggle");
+  mt.textContent = `Mode: ${state.mode === "normal" ? "Normal" : "Multi"}`;
+  mt.dataset.cmd = state.mode === "normal" ? "ACEF__Mode_Multi" : "ACEF__Mode_Normal";
+  mt.dataset.confirm = "Switch mode? Reboot required to take effect.";
+  // Disable everything during a swap
+  const disabled = state.swap_in_progress;
+  for (const btn of document.querySelectorAll(".actionbar button, [data-cmd]")) {
+    if (disabled) btn.setAttribute("disabled", "true");
+  }
+}
 function renderDiag() { /* impl in Task 17 */ }
 
 // View switching (tabs)
