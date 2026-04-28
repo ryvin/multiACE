@@ -222,7 +222,21 @@ function renderToolheads() {
     grid.appendChild(card);
   }
 }
-function renderActivity() { /* impl in Task 15 */ }
+function renderActivity() {
+  const list = document.getElementById("activity-list");
+  list.innerHTML = "";
+  const recent = events.slice(0, 50);
+  for (const ev of recent) {
+    const li = document.createElement("li");
+    const isFail = (ev.action || "").endsWith("_FAILED");
+    const isOk = !isFail && ["LOAD_HEAD", "UNLOAD_HEAD", "UNLOAD_ALL", "ACE_SWITCH"]
+      .some((a) => (ev.action || "").startsWith(a));
+    li.classList.add(isFail ? "fail" : (isOk ? "ok" : ""));
+    const params = ev.params ? JSON.stringify(ev.params) : "";
+    li.textContent = `${ev.ts || ""} ${ev.action || "?"} ${params}`;
+    list.appendChild(li);
+  }
+}
 function renderActionBar() { /* impl in Task 16 */ }
 function renderDiag() { /* impl in Task 17 */ }
 
