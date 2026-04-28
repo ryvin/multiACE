@@ -151,6 +151,8 @@ function renderAll() {
   renderToolheads();
   renderActivity();
   renderActionBar();
+  renderDryer();
+  renderConfig();
   renderDiag();
 }
 function renderTopbar() {
@@ -266,7 +268,98 @@ function renderActionBar() {
     btn.disabled = disabled;
   }
 }
-function renderDiag() { /* impl in Task 17 */ }
+function renderDryer() {
+  const panel = document.getElementById("dryer-panel");
+  panel.innerHTML = "";
+  const count = Math.max(state.device_count, 1);
+  for (let i = 0; i < count; i++) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <h3>ACE ${i}</h3>
+      <div class="actions">
+        <button data-cmd="ACED__Dry_Start_${i}">Start dry</button>
+        <button data-cmd="ACED__Dry_Stop" data-confirm="Stop dryer?">Stop dry</button>
+      </div>
+      <p class="muted">Custom temp/duration via Config tab (per-ACE overrides).</p>
+    `;
+    panel.appendChild(card);
+  }
+}
+
+let configValues = {}; // last fetched config
+
+async function renderConfig() {
+  const fields = document.getElementById("config-fields");
+  if (Object.keys(configValues).length === 0) {
+    try {
+      const resp = await fetch("/api/config", { headers: authHeader() });
+      const body = await resp.json();
+      configValues = body.values || {};
+    } catch (e) {
+      fields.innerHTML = `<p class="muted">Failed to load config.</p>`;
+      return;
+    }
+  }
+  fields.innerHTML = "";
+  for (const [k, v] of Object.entries(configValues)) {
+    const lbl = document.createElement("label");
+    lbl.innerHTML = `<span>${k}</span><input type="text" name="${k}" value="${v}" />`;
+    fields.appendChild(lbl);
+  }
+}
+
+document.addEventListener("submit", async (ev) => {
+  if (ev.target.id !== "config-form") return;
+  ev.preventDefault();
+  if (!(await confirmDialog("Save config and restart Klipper?"))) return;
+  const updates = {};
+  for (const input of ev.target.querySelectorAll("input[name]")) {
+    if (input.value !== configValues[input.name]) {
+      updates[input.name] = input.value;
+    }
+  }
+  if (Object.keys(updates).length === 0) {
+    toast("No changes to save");
+    return;
+  }
+  try {
+    const resp = await fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ values: updates }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      toast(`Save failed: ${err.detail || resp.statusText}`, "error");
+      return;
+    }
+    toast("Saved. Klipper restarting…", "success");
+    configValues = { ...configValues, ...updates };
+  } catch (e) {
+    toast(`Save failed: ${e.message}`, "error");
+  }
+});
+
+function renderDiag() {
+  document.getElementById("diag-state").textContent =
+    JSON.stringify(state, null, 2);
+}
+
+// Lazy-load klippy log slice when diag view opens
+document.addEventListener("click", async (ev) => {
+  const tab = ev.target.closest('.tab[data-view="diag"]');
+  if (!tab) return;
+  const pre = document.getElementById("diag-klippy");
+  pre.textContent = "Loading…";
+  try {
+    const resp = await fetch("/api/logs/klippy?lines=200", { headers: authHeader() });
+    const body = await resp.json();
+    pre.textContent = (body.lines || []).join("\n");
+  } catch (e) {
+    pre.textContent = `Failed: ${e.message}`;
+  }
+});
 
 // View switching (tabs)
 function setView(name) {
