@@ -21,6 +21,11 @@ const ws = { sock: null, retry: 0, alive: false };
 const TOKEN = localStorage.getItem("multiace_token") || null;
 const authHeader = () => (TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {});
 
+// All API paths are resolved relative to the document. When mounted at
+// /multiace/ behind nginx, "api/state" → /multiace/api/state, which nginx
+// proxies to 127.0.0.1:7126/api/state. When mounted at /, it just works.
+const api = (path) => new URL(path, document.baseURI).toString();
+
 function setConnState(label, dotState) {
   document.getElementById("conn-label").textContent = label;
   document.getElementById("conn-dot").dataset.state = dotState;
@@ -36,7 +41,7 @@ function toast(msg, kind = "info") {
 
 async function fetchState() {
   try {
-    const resp = await fetch("/api/state", { headers: authHeader() });
+    const resp = await fetch(api("api/state"), { headers: authHeader() });
     if (!resp.ok) throw new Error(`status ${resp.status}`);
     const body = await resp.json();
     Object.assign(state, body);
@@ -49,7 +54,7 @@ async function fetchState() {
 
 async function fetchEvents() {
   try {
-    const resp = await fetch("/api/events?limit=200", { headers: authHeader() });
+    const resp = await fetch(api("api/events?limit=200"), { headers: authHeader() });
     if (!resp.ok) throw new Error(`status ${resp.status}`);
     const body = await resp.json();
     events.length = 0;
@@ -109,7 +114,7 @@ function connectWS() {
 
 async function sendCommand(macro) {
   try {
-    const resp = await fetch("/api/command", {
+    const resp = await fetch(api("api/command"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeader() },
       body: JSON.stringify({ macro }),
@@ -157,11 +162,16 @@ function renderAll() {
 }
 function renderTopbar() {
   const label = document.getElementById("active-ace-label");
+  label.innerHTML = "";
   if (state.device_count <= 1) {
-    label.textContent = state.active_device !== null ? `ACE ${state.active_device}` : "—";
+    const pill = document.createElement("span");
+    pill.className = "ace-pill";
+    const k = document.createElement("span"); k.className = "muted"; k.textContent = "Active:";
+    const v = document.createElement("strong");
+    v.textContent = state.active_device !== null ? `ACE ${state.active_device}` : "—";
+    pill.append(k, v);
+    label.appendChild(pill);
   } else {
-    // Multi-ACE: render a button cluster
-    label.innerHTML = "";
     for (let i = 0; i < state.device_count; i++) {
       const b = document.createElement("button");
       b.textContent = `ACE ${i}`;
@@ -170,19 +180,37 @@ function renderTopbar() {
       label.appendChild(b);
     }
   }
-  document.getElementById("slots-active-ace").textContent =
-    state.active_device !== null ? `(ACE ${state.active_device})` : "(none)";
-}
-function slotIcon(filled) {
-  return filled ? "●" : "○";
+  const slotsBadge = document.getElementById("slots-active-ace");
+  slotsBadge.textContent = state.active_device !== null ? `ACE ${state.active_device}` : "no ACE";
 }
 
+// ACE color is 0xAARRGGBB (or 0xFFRRGGBB on real data); low 24 bits = RGB.
+// 4294967295 (0xFFFFFFFF) is multiACE's "no color" sentinel.
 function rgbFromUint(packed) {
-  // ACE color is uint32 0xAARRGGBB or similar; treat low 24 bits as RGB
-  const r = (packed >> 16) & 0xff;
-  const g = (packed >> 8) & 0xff;
+  if (packed == null || packed === 4294967295) return null;
+  const r = (packed >>> 16) & 0xff;
+  const g = (packed >>> 8) & 0xff;
   const b = packed & 0xff;
   return `rgb(${r},${g},${b})`;
+}
+
+function setEl(parent, tag, props) {
+  const el = document.createElement(tag);
+  if (props) Object.assign(el, props);
+  parent.appendChild(el);
+  return el;
+}
+
+function metaRow(parent, key, val, valClass) {
+  const row = setEl(parent, "div"); row.className = "meta-row";
+  const k = setEl(row, "span", { className: "meta-key", textContent: key });
+  const v = setEl(row, "span", { className: "meta-val" + (valClass ? " " + valClass : ""), textContent: val });
+  return { row, k, v };
+}
+
+function pill(parent, text, kind) {
+  const el = setEl(parent, "span", { className: "pill" + (kind ? " " + kind : ""), textContent: text });
+  return el;
 }
 
 function renderSlots() {
@@ -191,21 +219,39 @@ function renderSlots() {
   const ace = state.active_device;
   for (let i = 0; i < 4; i++) {
     const filled = state.gate_status[i] === 1;
-    const loadedTo = Object.entries(state.head_source).find(
+    const loadedToEntry = Object.entries(state.head_source).find(
       ([, src]) => src && src.ace === ace && src.slot === i
     );
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
-      <h3>Slot ${i} ${slotIcon(filled)}</h3>
-      <div class="row"><span>Gate:</span><span>${filled ? "filled" : "empty"}</span></div>
-      <div class="row"><span>Loaded to:</span><span>${loadedTo ? `T${loadedTo[0]}` : "—"}</span></div>
-      <div class="actions">
-        <button data-cmd="ACEC__Load_T${i}" ${!filled || state.swap_in_progress ? "disabled" : ""}>Load → T${i}</button>
-        <button data-cmd="ACEC__Unload_T${i}" data-confirm="Unload T${i}?" ${!loadedTo || state.swap_in_progress ? "disabled" : ""}>Unload T${i}</button>
-      </div>
-    `;
-    grid.appendChild(card);
+    const loadedToHead = loadedToEntry ? loadedToEntry[0] : null;
+    // If this slot is feeding head H, derive the filament color from H's task cfg
+    const hcfg = loadedToHead != null ? (state.print_task_config[loadedToHead] || {}) : {};
+    const color = rgbFromUint(hcfg.color);
+
+    const card = setEl(grid, "div");
+    card.className = "card" + (color ? "" : " no-color");
+    if (color) card.style.setProperty("--card-color", color);
+    setEl(card, "div", { className: "color-band" });
+
+    const head = setEl(card, "div"); head.className = "card-head";
+    setEl(head, "span", { className: "card-id", textContent: `Slot ${i}` });
+    setEl(head, "span", { className: "card-swatch" });
+    if (filled) pill(head, "Filled", "ok"); else pill(head, "Empty");
+
+    const meta = setEl(card, "div"); meta.className = "card-meta";
+    metaRow(meta, "Feeding", loadedToHead != null ? `T${loadedToHead}` : "—");
+    metaRow(meta, "Material", hcfg.type || (loadedToHead != null ? "—" : "—"));
+    metaRow(meta, "Vendor", hcfg.vendor || "—");
+
+    const actions = setEl(card, "div"); actions.className = "actions";
+    const loadBtn = setEl(actions, "button", { textContent: `Load → T${i}` });
+    loadBtn.dataset.cmd = `ACEC__Load_T${i}`;
+    loadBtn.classList.add("primary");
+    loadBtn.disabled = !filled || state.swap_in_progress;
+    const unloadBtn = setEl(actions, "button", { textContent: `Unload T${i}` });
+    unloadBtn.dataset.cmd = `ACEC__Unload_T${i}`;
+    unloadBtn.dataset.confirm = `Unload T${i}?`;
+    unloadBtn.classList.add("danger");
+    unloadBtn.disabled = !loadedToEntry || state.swap_in_progress;
   }
 }
 
@@ -217,50 +263,88 @@ function renderToolheads() {
     const sensor = state.sensors[i];
     const err = state.last_error && state.last_error.head === i ? state.last_error : null;
     const cfg = state.print_task_config[i] || {};
-    const card = document.createElement("div");
-    card.className = `card ${err ? "error" : ""}`;
-    const colorSwatch = cfg.color && cfg.color !== 4294967295
-      ? `<span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${rgbFromUint(cfg.color)};vertical-align:middle"></span>`
-      : "";
-    card.innerHTML = `
-      <h3>T${i} ${colorSwatch}</h3>
-      <div class="row"><span>Loaded:</span><span>${src ? `ACE ${src.ace} slot ${src.slot}` : "—"}</span></div>
-      <div class="row"><span>Sensor:</span><span>${sensor ? "filament present" : "empty"}</span></div>
-      <div class="row"><span>Vendor:</span><span class="muted">${cfg.vendor || "—"}</span></div>
-      ${err ? `<div class="err-msg">⚠ ${err.action}: ${err.error || err.reason || ""}</div>` : ""}
-      <div class="actions">
-        <button data-cmd="ACEC__Load_T${i}" ${state.swap_in_progress ? "disabled" : ""}>Load</button>
-        <button data-cmd="ACEC__Unload_T${i}" data-confirm="Unload T${i}?" ${!src || state.swap_in_progress ? "disabled" : ""}>Unload</button>
-      </div>
-    `;
-    grid.appendChild(card);
+    const color = rgbFromUint(cfg.color);
+
+    const card = setEl(grid, "div");
+    card.className = "card" + (color ? "" : " no-color") + (err ? " error" : "");
+    if (color) card.style.setProperty("--card-color", color);
+    setEl(card, "div", { className: "color-band" });
+
+    // Head: id + swatch + status pill
+    const head = setEl(card, "div"); head.className = "card-head";
+    setEl(head, "span", { className: "card-id", textContent: `T${i}` });
+    setEl(head, "span", { className: "card-swatch" });
+    if (err) pill(head, "Error", "bad");
+    else if (src && sensor) pill(head, "Loaded", "ok");
+    else if (src && !sensor) pill(head, "No Filament", "warn");
+    else pill(head, "Idle");
+
+    // Meta
+    const meta = setEl(card, "div"); meta.className = "card-meta";
+    metaRow(meta, "Material", cfg.type || "—");
+    metaRow(meta, "Vendor", cfg.vendor || "—");
+    metaRow(meta, "Source", src ? `ACE ${src.ace} · Slot ${src.slot}` : "—");
+    metaRow(meta, "Sensor", sensor ? "Filament present" : "Empty",
+            sensor ? "" : "muted");
+
+    if (err) {
+      const e = setEl(card, "div", { className: "err-msg" });
+      e.textContent = `⚠ ${err.action}: ${err.error || err.reason || "unknown error"}`;
+    }
+
+    // Actions
+    const actions = setEl(card, "div"); actions.className = "actions";
+    const loadBtn = setEl(actions, "button", { textContent: "Load" });
+    loadBtn.dataset.cmd = `ACEC__Load_T${i}`;
+    loadBtn.classList.add("primary");
+    loadBtn.disabled = state.swap_in_progress;
+    const unloadBtn = setEl(actions, "button", { textContent: "Unload" });
+    unloadBtn.dataset.cmd = `ACEC__Unload_T${i}`;
+    unloadBtn.dataset.confirm = `Unload T${i}?`;
+    unloadBtn.classList.add("danger");
+    unloadBtn.disabled = !src || state.swap_in_progress;
   }
 }
 function renderActivity() {
   const list = document.getElementById("activity-list");
   list.innerHTML = "";
   const recent = events.slice(0, 50);
+  if (recent.length === 0) {
+    const empty = setEl(list, "li");
+    empty.className = "activity-empty";
+    empty.textContent = "No activity yet. Trigger a Load/Unload to see events.";
+    return;
+  }
   for (const ev of recent) {
-    const li = document.createElement("li");
-    const isFail = (ev.action || "").endsWith("_FAILED");
+    const li = setEl(list, "li");
+    const action = ev.action || "?";
+    const isFail = action.endsWith("_FAILED");
     const isOk = !isFail && ["LOAD_HEAD", "UNLOAD_HEAD", "UNLOAD_ALL", "ACE_SWITCH"]
-      .some((a) => (ev.action || "").startsWith(a));
+      .some((a) => action.startsWith(a));
     if (isFail) li.classList.add("fail");
     else if (isOk) li.classList.add("ok");
-    const params = ev.params ? JSON.stringify(ev.params) : "";
-    li.textContent = `${ev.ts || ""} ${ev.action || "?"} ${params}`;
-    list.appendChild(li);
+    setEl(li, "span", { className: "ts", textContent: ev.ts || "" });
+    const right = setEl(li, "span");
+    setEl(right, "span", { className: "action", textContent: action + " " });
+    if (ev.params) {
+      setEl(right, "span", { className: "params", textContent: JSON.stringify(ev.params) });
+    }
   }
 }
 function renderActionBar() {
+  // Topbar toggles (always visible)
   const af = document.getElementById("autofeed-toggle");
-  af.textContent = `Auto-feed: ${state.auto_feed ? "ON" : "OFF"}`;
+  af.querySelector(".ghost-btn-value").textContent = state.auto_feed ? "ON" : "OFF";
   af.dataset.cmd = state.auto_feed ? "ACEE__Autofeed_Off" : "ACEE__Autofeed_On";
   af.removeAttribute("data-confirm");
+  af.setAttribute("aria-pressed", state.auto_feed ? "true" : "false");
+
   const mt = document.getElementById("mode-toggle");
-  mt.textContent = `Mode: ${state.mode === "normal" ? "Normal" : "Multi"}`;
+  mt.querySelector(".ghost-btn-value").textContent = state.mode === "normal" ? "Normal" : "Multi";
   mt.dataset.cmd = state.mode === "normal" ? "ACEF__Mode_Multi" : "ACEF__Mode_Normal";
   mt.dataset.confirm = "Switch mode? Reboot required to take effect.";
+  mt.setAttribute("aria-pressed", state.mode !== "normal" ? "true" : "false");
+
   // Disable the static action-bar buttons during a swap. Per-card Load/Unload
   // buttons (slots, toolheads) own their own disabled state — don't touch those.
   const disabled = state.swap_in_progress;
@@ -273,17 +357,25 @@ function renderDryer() {
   panel.innerHTML = "";
   const count = Math.max(state.device_count, 1);
   for (let i = 0; i < count; i++) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
-      <h3>ACE ${i}</h3>
-      <div class="actions">
-        <button data-cmd="ACED__Dry_Start_${i}">Start dry</button>
-        <button data-cmd="ACED__Dry_Stop" data-confirm="Stop dryer?">Stop dry</button>
-      </div>
-      <p class="muted">Custom temp/duration via Config tab (per-ACE overrides).</p>
-    `;
-    panel.appendChild(card);
+    const card = setEl(panel, "div"); card.className = "card no-color";
+    setEl(card, "div", { className: "color-band" });
+
+    const head = setEl(card, "div"); head.className = "card-head";
+    setEl(head, "span", { className: "card-id", textContent: `ACE ${i}` });
+    pill(head, "Idle");
+
+    const meta = setEl(card, "div"); meta.className = "card-meta";
+    metaRow(meta, "Mode", "—");
+    metaRow(meta, "Duration", "Set in Config tab");
+
+    const actions = setEl(card, "div"); actions.className = "actions";
+    const start = setEl(actions, "button", { textContent: "Start dry" });
+    start.dataset.cmd = `ACED__Dry_Start_${i}`;
+    start.classList.add("primary");
+    const stop = setEl(actions, "button", { textContent: "Stop" });
+    stop.dataset.cmd = "ACED__Dry_Stop";
+    stop.dataset.confirm = "Stop dryer?";
+    stop.classList.add("danger");
   }
 }
 
@@ -293,7 +385,7 @@ async function renderConfig() {
   const fields = document.getElementById("config-fields");
   if (Object.keys(configValues).length === 0) {
     try {
-      const resp = await fetch("/api/config", { headers: authHeader() });
+      const resp = await fetch(api("api/config"), { headers: authHeader() });
       const body = await resp.json();
       configValues = body.values || {};
     } catch (e) {
@@ -331,7 +423,7 @@ document.addEventListener("submit", async (ev) => {
     return;
   }
   try {
-    const resp = await fetch("/api/config", {
+    const resp = await fetch(api("api/config"), {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...authHeader() },
       body: JSON.stringify({ values: updates }),
@@ -360,7 +452,7 @@ document.addEventListener("click", async (ev) => {
   const pre = document.getElementById("diag-klippy");
   pre.textContent = "Loading…";
   try {
-    const resp = await fetch("/api/logs/klippy?lines=200", { headers: authHeader() });
+    const resp = await fetch(api("api/logs/klippy?lines=200"), { headers: authHeader() });
     const body = await resp.json();
     pre.textContent = (body.lines || []).join("\n");
   } catch (e) {

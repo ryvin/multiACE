@@ -5,25 +5,40 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
   <title>multiACE</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.1.0" />
-  <script defer src="/static/app.js?v=0.1.0"></script>
+  <link rel="stylesheet" href="static/style.css?v=0.3.0" />
+  <script defer src="static/app.js?v=0.3.0"></script>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">multiACE</div>
-    <div class="status">
-      <span class="dot" id="conn-dot" data-state="disconnected"></span>
-      <span id="conn-label">Connecting…</span>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">multiACE</span>
     </div>
-    <div class="active-ace">
-      <span class="muted">Active:</span>
-      <strong id="active-ace-label">—</strong>
+
+    <div class="status" role="status">
+      <span class="dot" id="conn-dot" data-state="disconnected"></span>
+      <span id="conn-label" class="muted">Connecting…</span>
+    </div>
+
+    <div class="ace-switcher" id="active-ace-label" aria-label="Active ACE device"></div>
+
+    <div class="topbar-controls">
+      <button id="autofeed-toggle" class="ghost-btn" aria-pressed="false">
+        <span class="kbd-dot" aria-hidden="true"></span>
+        <span class="ghost-btn-label">Auto-feed</span>
+        <span class="ghost-btn-value">…</span>
+      </button>
+      <button id="mode-toggle" class="ghost-btn" aria-pressed="false">
+        <span class="kbd-dot" aria-hidden="true"></span>
+        <span class="ghost-btn-label">Mode</span>
+        <span class="ghost-btn-value">…</span>
+      </button>
     </div>
   </header>
 
-  <nav class="tabs" role="tablist">
-    <button data-view="slots" class="tab active">Slots</button>
-    <button data-view="toolheads" class="tab">Toolheads</button>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button data-view="toolheads" class="tab active">Toolheads</button>
+    <button data-view="slots" class="tab">Slots</button>
     <button data-view="activity" class="tab">Activity</button>
     <button data-view="dryer" class="tab">Dryer</button>
     <button data-view="config" class="tab">Config</button>
@@ -31,57 +46,81 @@
   </nav>
 
   <main class="content">
-    <section data-view="slots" class="view active">
-      <h2>Slots <small id="slots-active-ace">(ACE 0)</small></h2>
-      <div id="slots-grid" class="grid grid-4"></div>
-    </section>
-
-    <section data-view="toolheads" class="view">
-      <h2>Toolheads</h2>
+    <section data-view="toolheads" class="view active">
+      <div class="view-head">
+        <h2>Toolheads</h2>
+        <p class="muted small">Live state of each U1 toolhead. Tap a card to act on it.</p>
+      </div>
       <div id="toolheads-grid" class="grid grid-2x2"></div>
     </section>
 
+    <section data-view="slots" class="view">
+      <div class="view-head">
+        <h2>Slots <span class="chip" id="slots-active-ace">ACE 0</span></h2>
+        <p class="muted small">Filament gates inside the active ACE Pro.</p>
+      </div>
+      <div id="slots-grid" class="grid grid-4"></div>
+    </section>
+
     <section data-view="activity" class="view">
-      <h2>Activity</h2>
+      <div class="view-head">
+        <h2>Activity</h2>
+        <p class="muted small">Most recent multiACE state events. Newest first.</p>
+      </div>
       <ul id="activity-list" class="activity"></ul>
     </section>
 
     <section data-view="dryer" class="view">
-      <h2>Dryer</h2>
-      <div id="dryer-panel" class="dryer"></div>
+      <div class="view-head">
+        <h2>Dryer</h2>
+        <p class="muted small">Per-ACE drying. Custom temperature and duration come from the Config tab.</p>
+      </div>
+      <div id="dryer-panel" class="grid grid-2x2"></div>
     </section>
 
     <section data-view="config" class="view">
-      <h2>Config</h2>
-      <form id="config-form" class="config">
-        <p class="muted">Values from <code>ace.cfg</code>. Saving triggers <code>RESTART</code>.</p>
-        <div id="config-fields"></div>
-        <button type="submit">Save &amp; Restart</button>
+      <div class="view-head">
+        <h2>Config</h2>
+        <p class="muted small">Live values from <code>ace.cfg</code>. Saving triggers a Klipper <code>RESTART</code>.</p>
+      </div>
+      <form id="config-form" class="config-form">
+        <div id="config-fields" class="config-fields"></div>
+        <div class="form-actions">
+          <button type="submit" class="primary">Save &amp; Restart</button>
+        </div>
       </form>
     </section>
 
     <section data-view="diag" class="view">
-      <h2>Diagnostics</h2>
-      <div class="diag-actions">
-        <button data-cmd="ACE_HEAD_STATUS">Run ACE_HEAD_STATUS</button>
-        <button data-cmd="ACE_LIST">Run ACE_LIST</button>
-        <button data-cmd="ACE_CLEAR_HEADS" data-confirm="Reset all head sources?">ACE_CLEAR_HEADS</button>
+      <div class="view-head">
+        <h2>Diagnostics</h2>
+        <p class="muted small">For troubleshooting. Read-only diagnostic G-code and log slices.</p>
       </div>
-      <h3>State JSON</h3>
-      <pre id="diag-state"></pre>
-      <h3>klippy.log tail</h3>
-      <pre id="diag-klippy">Loading…</pre>
+      <div class="diag-actions">
+        <button data-cmd="ACE_HEAD_STATUS" class="primary">Run ACE_HEAD_STATUS</button>
+        <button data-cmd="ACE_LIST">Run ACE_LIST</button>
+        <button data-cmd="ACE_CLEAR_HEADS" data-confirm="Reset all head sources?" class="danger">ACE_CLEAR_HEADS</button>
+      </div>
+      <details class="diag-block" open>
+        <summary>Current state JSON</summary>
+        <pre id="diag-state"></pre>
+      </details>
+      <details class="diag-block">
+        <summary>klippy.log tail (last 200 lines)</summary>
+        <pre id="diag-klippy">Open this section to load.</pre>
+      </details>
     </section>
   </main>
 
   <footer class="actionbar">
-    <button data-cmd="ACEC__Unload_All" data-confirm="Unload all toolheads?">Unload All</button>
-    <button id="autofeed-toggle">Auto-feed: …</button>
-    <button id="mode-toggle">Mode: …</button>
+    <button data-cmd="ACEC__Unload_All" data-confirm="Unload all toolheads?" class="danger">
+      <span aria-hidden="true">⏏</span> Unload All
+    </button>
   </footer>
 
-  <div id="toast-container" class="toast-container"></div>
-  <div id="confirm-modal" class="modal hidden">
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <div id="confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-text">
     <div class="modal-card">
       <p id="confirm-text"></p>
       <div class="modal-actions">
