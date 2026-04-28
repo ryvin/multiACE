@@ -60,6 +60,7 @@ async function fetchEvents() {
     events.length = 0;
     events.push(...body.events);
     renderActivity();
+    renderActivityPreview();
   } catch (e) {
     console.error("fetchEvents", e);
   }
@@ -95,6 +96,7 @@ function connectWS() {
       events.unshift({ id: msg.id, ts: msg.ts, ...msg.payload });
       if (events.length > 200) events.length = 200;
       renderActivity();
+      renderActivityPreview();
     }
   };
 
@@ -149,16 +151,239 @@ function confirmDialog(text) {
   });
 }
 
+// ---- Print state (separate from multiACE state; pulled from Moonraker via /api/print) ----
+const printState = {
+  state: "standby",
+  filename: null,
+  progress: 0,
+  print_duration: 0,
+  total_duration: 0,
+  eta_sec: null,
+  layer: null,
+  total_layer: null,
+  current_extruder: null,
+  exception: null,
+  message: null,
+  _last_fetch_ok: false,
+};
+
+async function fetchPrint() {
+  try {
+    const resp = await fetch(api("api/print"), { headers: authHeader() });
+    if (!resp.ok) throw new Error(`status ${resp.status}`);
+    const body = await resp.json();
+    Object.assign(printState, body);
+    printState._last_fetch_ok = true;
+  } catch (e) {
+    printState._last_fetch_ok = false;
+  }
+  renderPrintPanel();
+  // Toolhead "Extruding" emphasis depends on printState.current_extruder
+  // and printState.state, so refresh those cards too.
+  renderToolheads();
+  renderStatusBanner();
+}
+
+let _printPollTimer = null;
+function startPrintPolling() {
+  if (_printPollTimer) return;
+  fetchPrint();
+  _printPollTimer = setInterval(fetchPrint, 4000);
+}
+
+// Pause/Resume/Cancel hit Moonraker directly (same origin via fluidd nginx).
+async function moonrakerPrintAction(verb) {
+  // verb in {"pause","resume","cancel"}
+  try {
+    const resp = await fetch(`/printer/print/${verb}`, { method: "POST" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    toast(`Print ${verb}d`, "success");
+    fetchPrint();
+  } catch (e) {
+    toast(`Print ${verb} failed: ${e.message}`, "error");
+  }
+}
+
+function fmtDuration(sec) {
+  if (sec == null || !Number.isFinite(sec)) return "—";
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function fmtETA(eta_sec) {
+  if (eta_sec == null) return "—";
+  const date = new Date(Date.now() + eta_sec * 1000);
+  const hh = date.getHours().toString().padStart(2, "0");
+  const mm = date.getMinutes().toString().padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function basenameWithoutHash(filename) {
+  if (!filename) return "";
+  const last = filename.split("/").pop();
+  // Slicer-uploaded files often have a hash prefix like "1774430959773-af7b68e2_plate_1.gcode"
+  const m = last.match(/^\d{8,}-[a-f0-9]+[_-](.+)$/);
+  return m ? m[1] : last;
+}
+
+const PRINT_STATE_KIND = {
+  printing: "ok",
+  paused:   "warn",
+  complete: "ok",
+  cancelled:"",
+  standby:  "",
+  error:    "bad",
+};
+
+function renderPrintPanel() {
+  const panel = document.getElementById("print-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  panel.classList.add("card");
+  panel.classList.add("no-color");
+  panel.style.removeProperty("--card-color");
+  // Top color band: tinted by current extruder filament if printing
+  const head = printState.current_extruder;
+  let band;
+  if (head != null) {
+    const cfg = (state.print_task_config && state.print_task_config[head]) || {};
+    const color = rgbFromUint(cfg.color);
+    if (color) {
+      band = setEl(panel, "div", { className: "color-band" });
+      panel.style.setProperty("--card-color", color);
+      panel.classList.remove("no-color");
+    }
+  }
+  if (!band) setEl(panel, "div", { className: "color-band" });
+
+  const headRow = setEl(panel, "div"); headRow.className = "card-head";
+  setEl(headRow, "span", { className: "card-id", textContent: "Print" });
+  const stateName = printState.state || "standby";
+  pill(headRow, stateName.toUpperCase(), PRINT_STATE_KIND[stateName] || "");
+  if (head != null) {
+    const tagP = pill(headRow, `Extruding T${head}`, "ok");
+    tagP.classList.add("now-extruding");
+  }
+
+  const isActive = stateName === "printing" || stateName === "paused";
+
+  // Main content
+  const main = setEl(panel, "div"); main.className = "print-main";
+  const filename = setEl(main, "div"); filename.className = "print-filename";
+  filename.textContent = isActive
+    ? basenameWithoutHash(printState.filename) || "(unnamed)"
+    : (stateName === "complete" ? "Print complete"
+       : stateName === "cancelled" ? "Print cancelled"
+       : stateName === "error" ? "Print errored"
+       : "No active print");
+
+  if (isActive) {
+    // Progress bar
+    const pwrap = setEl(main, "div"); pwrap.className = "progress";
+    const pfill = setEl(pwrap, "div"); pfill.className = "progress-fill";
+    const pct = Math.max(0, Math.min(100, (printState.progress || 0) * 100));
+    pfill.style.width = pct.toFixed(1) + "%";
+    setEl(pwrap, "span", { className: "progress-label", textContent: pct.toFixed(1) + "%" });
+
+    // Stat row
+    const stats = setEl(main, "div"); stats.className = "print-stats";
+    const layerStat = setEl(stats, "div"); layerStat.className = "stat";
+    setEl(layerStat, "span", { className: "stat-label", textContent: "Layer" });
+    setEl(layerStat, "span", { className: "stat-val",
+      textContent: printState.layer != null && printState.total_layer != null
+        ? `${printState.layer} / ${printState.total_layer}`
+        : "—" });
+
+    const elapStat = setEl(stats, "div"); elapStat.className = "stat";
+    setEl(elapStat, "span", { className: "stat-label", textContent: "Elapsed" });
+    setEl(elapStat, "span", { className: "stat-val", textContent: fmtDuration(printState.print_duration) });
+
+    const remStat = setEl(stats, "div"); remStat.className = "stat";
+    setEl(remStat, "span", { className: "stat-label", textContent: "Remaining" });
+    setEl(remStat, "span", { className: "stat-val", textContent: fmtDuration(printState.eta_sec) });
+
+    const etaStat = setEl(stats, "div"); etaStat.className = "stat";
+    setEl(etaStat, "span", { className: "stat-label", textContent: "ETA" });
+    setEl(etaStat, "span", { className: "stat-val", textContent: fmtETA(printState.eta_sec) });
+  }
+
+  // Actions
+  const actions = setEl(panel, "div"); actions.className = "actions";
+  if (stateName === "printing") {
+    const pauseBtn = setEl(actions, "button", { textContent: "Pause" });
+    pauseBtn.classList.add("primary");
+    pauseBtn.addEventListener("click", () => moonrakerPrintAction("pause"));
+  }
+  if (stateName === "paused") {
+    const resumeBtn = setEl(actions, "button", { textContent: "Resume" });
+    resumeBtn.classList.add("primary");
+    resumeBtn.addEventListener("click", async () => {
+      if (await confirmDialog("Resume print?")) moonrakerPrintAction("resume");
+    });
+  }
+  if (isActive) {
+    const cancelBtn = setEl(actions, "button", { textContent: "Cancel" });
+    cancelBtn.classList.add("danger");
+    cancelBtn.addEventListener("click", async () => {
+      if (await confirmDialog("Cancel print? Progress will be lost.")) {
+        moonrakerPrintAction("cancel");
+      }
+    });
+  }
+  if (!printState._last_fetch_ok) {
+    const note = setEl(panel, "div", { className: "muted small" });
+    note.textContent = "(print state unavailable)";
+  }
+}
+
+function renderStatusBanner() {
+  const banner = document.getElementById("status-banner");
+  if (!banner) return;
+  banner.innerHTML = "";
+  banner.classList.add("hidden");
+  banner.classList.remove("bad", "warn");
+
+  // Priority order: Klipper exception > swap_in_progress > last_error
+  const exc = printState.exception;
+  if (exc && (exc.message || exc.code)) {
+    banner.classList.remove("hidden"); banner.classList.add("bad");
+    setEl(banner, "strong", { textContent: "Print paused" });
+    const msg = setEl(banner, "span");
+    msg.textContent = " " + (exc.message || `code ${exc.code}`);
+    return;
+  }
+  if (state.swap_in_progress) {
+    banner.classList.remove("hidden"); banner.classList.add("warn");
+    setEl(banner, "strong", { textContent: "Tool change in progress…" });
+    setEl(banner, "span", { textContent: " Hold actions until this completes." });
+    return;
+  }
+  if (state.last_error) {
+    const err = state.last_error;
+    banner.classList.remove("hidden"); banner.classList.add("bad");
+    setEl(banner, "strong", { textContent: `T${err.head} ${err.action}` });
+    const msg = setEl(banner, "span");
+    msg.textContent = " " + (err.error || err.reason || "see Activity for details");
+  }
+}
+
 // Render functions are declared in subsequent tasks; placeholder for now
 function renderAll() {
   renderTopbar();
   renderSlots();
   renderToolheads();
   renderActivity();
+  renderActivityPreview();
   renderActionBar();
   renderDryer();
   renderConfig();
   renderDiag();
+  renderStatusBanner();
 }
 function renderTopbar() {
   const label = document.getElementById("active-ace-label");
@@ -258,6 +483,7 @@ function renderSlots() {
 function renderToolheads() {
   const grid = document.getElementById("toolheads-grid");
   grid.innerHTML = "";
+  const activeHead = (printState.state === "printing") ? printState.current_extruder : null;
   for (let i = 0; i < 4; i++) {
     const src = state.head_source[i];
     const sensor = state.sensors[i];
@@ -266,7 +492,8 @@ function renderToolheads() {
     const color = rgbFromUint(cfg.color);
 
     const card = setEl(grid, "div");
-    card.className = "card" + (color ? "" : " no-color") + (err ? " error" : "");
+    card.className = "card" + (color ? "" : " no-color") + (err ? " error" : "")
+      + (activeHead === i ? " extruding" : "");
     if (color) card.style.setProperty("--card-color", color);
     setEl(card, "div", { className: "color-band" });
 
@@ -274,7 +501,8 @@ function renderToolheads() {
     const head = setEl(card, "div"); head.className = "card-head";
     setEl(head, "span", { className: "card-id", textContent: `T${i}` });
     setEl(head, "span", { className: "card-swatch" });
-    if (err) pill(head, "Error", "bad");
+    if (activeHead === i) pill(head, "Extruding", "ok");
+    else if (err) pill(head, "Error", "bad");
     else if (src && sensor) pill(head, "Loaded", "ok");
     else if (src && !sensor) pill(head, "No Filament", "warn");
     else pill(head, "Idle");
@@ -305,17 +533,20 @@ function renderToolheads() {
     unloadBtn.disabled = !src || state.swap_in_progress;
   }
 }
-function renderActivity() {
-  const list = document.getElementById("activity-list");
+function renderActivityPreview() {
+  const list = document.getElementById("activity-preview");
+  if (!list) return;
+  fillActivityList(list, events.slice(0, 5),
+    "No multiACE events yet — load or unload a toolhead to see activity here.");
+}
+
+function fillActivityList(list, items, emptyText) {
   list.innerHTML = "";
-  const recent = events.slice(0, 50);
-  if (recent.length === 0) {
-    const empty = setEl(list, "li");
-    empty.className = "activity-empty";
-    empty.textContent = "No activity yet. Trigger a Load/Unload to see events.";
+  if (items.length === 0) {
+    setEl(list, "li", { className: "activity-empty", textContent: emptyText });
     return;
   }
-  for (const ev of recent) {
+  for (const ev of items) {
     const li = setEl(list, "li");
     const action = ev.action || "?";
     const isFail = action.endsWith("_FAILED");
@@ -330,6 +561,13 @@ function renderActivity() {
       setEl(right, "span", { className: "params", textContent: JSON.stringify(ev.params) });
     }
   }
+}
+
+function renderActivity() {
+  const list = document.getElementById("activity-list");
+  if (!list) return;
+  fillActivityList(list, events.slice(0, 50),
+    "No activity yet. Trigger a Load/Unload to see events.");
 }
 function renderActionBar() {
   // Topbar toggles (always visible)
@@ -644,5 +882,11 @@ document.addEventListener("DOMContentLoaded", () => {
     await sendCommand(macro);
     btn.disabled = false;
   });
+  // "View all →" link inside the dashboard's activity preview switches to the Activity tab.
+  const viewAll = document.getElementById("activity-more");
+  if (viewAll) {
+    viewAll.addEventListener("click", (ev) => { ev.preventDefault(); setView("activity"); });
+  }
   connectWS();
+  startPrintPolling();
 });

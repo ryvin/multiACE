@@ -185,6 +185,59 @@ def create_app(
             raise HTTPException(502, str(e))
         return {"ok": True, "result": result}
 
+    @app.get("/api/print")
+    async def get_print(request: Request) -> dict:
+        """Summarized print state from Moonraker for the Dashboard."""
+        try:
+            result = await request.app.state.moonraker.query_objects(
+                ["print_stats", "virtual_sdcard", "toolhead"]
+            )
+        except MoonrakerError as e:
+            raise HTTPException(502, str(e))
+
+        ps = result.get("print_stats") or {}
+        sd = result.get("virtual_sdcard") or {}
+        th = result.get("toolhead") or {}
+
+        progress = float(sd.get("progress") or 0.0)
+        print_duration = float(ps.get("print_duration") or 0.0)
+        total_duration = float(ps.get("total_duration") or 0.0)
+        # ETA: simple linear extrapolation from print_duration only (excludes pauses).
+        eta_sec: float | None = None
+        if progress > 0.001:
+            eta_sec = max(0.0, (print_duration / progress) - print_duration)
+
+        # Map Klipper extruder name to a head index (extruder=0, extruderN=N).
+        ext = th.get("extruder")
+        head_idx: int | None = None
+        if isinstance(ext, str):
+            if ext == "extruder":
+                head_idx = 0
+            elif ext.startswith("extruder"):
+                tail = ext[len("extruder"):]
+                if tail.isdigit():
+                    head_idx = int(tail)
+
+        info = ps.get("info") or {}
+        exc = ps.get("exception") or None
+        # Klipper's exception is sometimes {} (empty); treat as None.
+        if isinstance(exc, dict) and not exc:
+            exc = None
+
+        return {
+            "state": ps.get("state") or "standby",
+            "filename": ps.get("filename") or None,
+            "progress": progress,
+            "print_duration": print_duration,
+            "total_duration": total_duration,
+            "eta_sec": eta_sec,
+            "layer": info.get("current_layer"),
+            "total_layer": info.get("total_layer"),
+            "current_extruder": head_idx,
+            "exception": exc,
+            "message": ps.get("message") or None,
+        }
+
     @app.post("/api/dry")
     async def post_dry(request: Request, body: DryRequest) -> dict:
         # ACE_DRY accepts ACE=N [TEMP=T] [DURATION=D]; multiACE enforces its own

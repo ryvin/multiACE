@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
   <title>multiACE</title>
-  <link rel="stylesheet" href="static/style.css?v=0.3.0" />
-  <script defer src="static/app.js?v=0.3.0"></script>
+  <link rel="stylesheet" href="static/style.css?v=0.4.0" />
+  <script defer src="static/app.js?v=0.4.0"></script>
 </head>
 <body>
   <header class="topbar">
@@ -37,8 +37,7 @@
   </header>
 
   <nav class="tabs" role="tablist" aria-label="Sections">
-    <button data-view="toolheads" class="tab active">Toolheads</button>
-    <button data-view="slots" class="tab">Slots</button>
+    <button data-view="dashboard" class="tab active">Dashboard</button>
     <button data-view="activity" class="tab">Activity</button>
     <button data-view="dryer" class="tab">Dryer</button>
     <button data-view="config" class="tab">Config</button>
@@ -46,20 +45,40 @@
   </nav>
 
   <main class="content">
-    <section data-view="toolheads" class="view active">
-      <div class="view-head">
-        <h2>Toolheads</h2>
-        <p class="muted small">Live state of each U1 toolhead. Tap a card to act on it.</p>
-      </div>
-      <div id="toolheads-grid" class="grid grid-2x2"></div>
-    </section>
+    <section data-view="dashboard" class="view active">
+      <div id="status-banner" class="status-banner hidden"></div>
 
-    <section data-view="slots" class="view">
-      <div class="view-head">
-        <h2>Slots <span class="chip" id="slots-active-ace">ACE 0</span></h2>
-        <p class="muted small">Filament gates inside the active ACE Pro.</p>
+      <div class="dash-wrap">
+        <section class="dash-print" id="print-panel" aria-label="Print status">
+          <div class="dash-print-loading muted">Loading print state…</div>
+        </section>
+
+        <section class="dash-toolheads">
+          <div class="view-head dash-section-head">
+            <h3>Toolheads <span class="chip" id="slots-active-ace">ACE 0</span></h3>
+            <p class="muted small">Live state of each U1 toolhead.</p>
+          </div>
+          <div id="toolheads-grid" class="grid grid-2x2"></div>
+        </section>
+
+        <section class="dash-slots">
+          <div class="view-head dash-section-head">
+            <h3>ACE slots</h3>
+            <p class="muted small">Filament gates inside the active ACE Pro.</p>
+          </div>
+          <div id="slots-grid" class="slots-strip"></div>
+        </section>
+
+        <section class="dash-activity">
+          <div class="view-head dash-section-head">
+            <h3>Recent activity</h3>
+            <p class="muted small">
+              Last 5 events. <a href="#activity" id="activity-more">View all →</a>
+            </p>
+          </div>
+          <ul id="activity-preview" class="activity"></ul>
+        </section>
       </div>
-      <div id="slots-grid" class="grid grid-4"></div>
     </section>
 
     <section data-view="activity" class="view">

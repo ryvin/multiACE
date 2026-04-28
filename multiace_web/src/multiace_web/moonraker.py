@@ -52,6 +52,24 @@ class MoonrakerClient:
             raise MoonrakerError(f"run_gcode {script!r} failed: {err}")
         return resp.json().get("result", "ok")
 
+    async def query_objects(self, objects: list[str]) -> dict[str, Any]:
+        """GET /printer/objects/query?o1&o2&… → returns the status dict.
+
+        The status dict maps object name → its current values. Used by the
+        Dashboard to surface print state alongside ACE state.
+        """
+        if not objects:
+            return {}
+        # Each object is encoded as a key with no value
+        query = "&".join(quote(obj, safe="") for obj in objects)
+        url = f"/printer/objects/query?{query}"
+        try:
+            resp = await self._client.get(url)
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            raise MoonrakerError(f"query_objects {objects!r} failed: {e}") from e
+        return resp.json().get("result", {}).get("status", {})
+
     async def get_logs(self, kind: str = "klippy", lines: int = 200) -> list[str]:
         """Fetch a slice of klippy.log via Moonraker's file API."""
         if not _KIND_RE.match(kind):

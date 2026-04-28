@@ -500,6 +500,130 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 .config-fields input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 .form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 
+/* ---- Dashboard layout ---- */
+.dash-wrap {
+  display: flex; flex-direction: column;
+  gap: var(--gap-lg);
+}
+.dash-section-head { margin-bottom: 0.4rem; }
+.dash-section-head h3 {
+  font-size: 1rem; font-weight: 600;
+  letter-spacing: -0.005em; color: var(--fg-strong);
+  display: inline-flex; align-items: center; gap: 0.5rem;
+}
+.dash-section-head .small { margin-top: 0.15rem; }
+
+/* Status banner: appears above the Print panel when something needs attention */
+.status-banner {
+  border-radius: var(--radius);
+  padding: 0.75rem 0.95rem;
+  font-size: 0.95rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  display: flex; align-items: baseline; gap: 0.5rem;
+  margin-bottom: var(--gap-lg);
+}
+.status-banner.warn {
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--border));
+  color: var(--fg-strong);
+}
+.status-banner.bad {
+  background: var(--bad-soft);
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--border));
+  color: var(--fg-strong);
+}
+.status-banner.bad strong { color: var(--bad); }
+.status-banner.warn strong { color: var(--warn); }
+
+/* ---- Print panel ---- */
+#print-panel { padding: var(--pad); }
+.dash-print-loading { padding: 0.4rem 0; }
+.print-filename {
+  font-size: 1.05rem; font-weight: 600;
+  color: var(--fg-strong);
+  word-break: break-word;
+  margin: 0.15rem 0 0.6rem;
+}
+.print-main { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.progress {
+  position: relative;
+  height: 12px;
+  background: var(--surface-sunk);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.progress-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg,
+    var(--accent), color-mix(in srgb, var(--accent) 60%, var(--good)));
+  transition: width 0.6s var(--ease);
+}
+.progress-label {
+  position: absolute; right: 0.55rem; top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.72rem; font-weight: 600;
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  padding: 0.05em 0.45em;
+  border-radius: 6px;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.print-stats {
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem 1rem;
+  margin-top: 0.25rem;
+}
+.print-stats .stat {
+  display: flex; flex-direction: column;
+  gap: 0.1rem;
+}
+.print-stats .stat-label {
+  font-size: 0.72rem; color: var(--fg-muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.print-stats .stat-val {
+  font-size: 0.98rem; font-weight: 600; color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.pill.now-extruding {
+  background: var(--good-soft); color: var(--good);
+  animation: pulse-soft 2.5s infinite var(--ease);
+}
+@keyframes pulse-soft {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 35%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--good) 0%, transparent); }
+}
+
+/* Toolhead card highlighted as currently extruding */
+.card.extruding {
+  border-color: color-mix(in srgb, var(--good) 65%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--good) 50%, transparent),
+              var(--shadow);
+}
+
+/* ---- Slots strip (compact horizontal row beneath toolheads) ---- */
+.slots-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--gap);
+}
+.slots-strip .card {
+  padding: 0.7rem 0.85rem;
+}
+.slots-strip .card .card-id { font-size: 1.05rem; }
+.slots-strip .card .actions { padding-top: 0.55rem; }
+.slots-strip .card .actions button {
+  min-height: 36px; font-size: 0.82rem; padding: 0.3rem 0.55rem;
+}
+.slots-strip .card .meta-row { font-size: 0.85rem; }
+.slots-strip .card .card-meta { gap: 0.25rem; }
+
 /* ---- Dryer profile UI ---- */
 .dryer-profile { margin-top: 0.4rem; margin-bottom: 0.5rem; }
 .dryer-label { display: flex; flex-direction: column; gap: 0.3rem; }
