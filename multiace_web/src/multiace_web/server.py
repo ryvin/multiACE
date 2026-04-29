@@ -218,6 +218,12 @@ async def lifespan(app: FastAPI):
     state_log = log_dir / "multiace_state.log"
     # usb_log = log_dir / "multiace_usb.log"  # reserved for v1.x diagnostics endpoint
 
+    # Bootstrap state from the most recent STATE entry in the existing log.
+    # multiACE only writes on actual events (load/unload/swap/error), so after a
+    # service restart we'd otherwise show device_count=0 / empty head_source until
+    # the next event lands — which can be hours away if the printer is idle.
+    _bootstrap_state_from_log(state, state_log)
+
     state_tailer = LogTailer(state_log, on_line=on_state_line)
     poller = StatusPoller(moonraker, interval=5.0)
 
@@ -242,6 +248,37 @@ async def lifespan(app: FastAPI):
                 await asyncio.gather(*pending, return_exceptions=True)
         if _lifespan_owns_moonraker:
             await moonraker.close()
+
+
+def _bootstrap_state_from_log(state: "CurrentState", log_path: Path) -> None:
+    """Apply the most recent STATE entry from the log so /api/state isn't blank
+    after a service restart while multiACE is idle.
+
+    Reads from the END of the file backward, capping at ~64 KB scanned (large
+    enough to cover thousands of recent events on a busy printer, small enough
+    to avoid loading hours-old logs into memory). If no STATE entry is found,
+    state stays at its default (caller is on their own).
+    """
+    try:
+        if not log_path.exists():
+            return
+        size = log_path.stat().st_size
+        if size == 0:
+            return
+        offset = max(0, size - 65536)
+        with log_path.open("rb") as f:
+            f.seek(offset)
+            tail = f.read().decode("utf-8", errors="replace")
+        # Walk lines from the end looking for a parseable STATE entry
+        for line in reversed(tail.splitlines()):
+            parsed = parse_state_log_line(line + "\n")
+            if parsed:
+                ts, data = parsed
+                state.apply_event(data, ts=ts)
+                log.info("bootstrapped state from log entry at %s", ts)
+                return
+    except OSError as e:
+        log.warning("could not bootstrap state from %s: %s", log_path, e)
 
 
 async def _broadcast(clients: set, message: str) -> None:

@@ -536,6 +536,134 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 .status-banner.bad strong { color: var(--bad); }
 .status-banner.warn strong { color: var(--warn); }
 
+/* ---- Workflow panel ----
+   Appears above the print panel during multi-step ACE operations
+   (Unload All, single Load/Unload). Each step shows ✓/⟳/○/✗ + filament
+   identity + per-step status text. Auto-dismisses ~5s after all steps end.
+*/
+.workflow-panel {
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  margin-bottom: var(--gap-lg);
+  box-shadow: var(--shadow);
+}
+
+.workflow-header {
+  display: flex; align-items: baseline; gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.workflow-title {
+  font-size: 1rem; font-weight: 700; color: var(--fg-strong);
+  letter-spacing: -0.005em;
+}
+.workflow-counter {
+  font-size: 0.85rem; font-weight: 600;
+  color: var(--accent);
+  padding: 0.1rem 0.5rem;
+  background: var(--accent-soft);
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+.workflow-elapsed { font-size: 0.78rem; margin-left: auto; }
+
+.workflow-progress { height: 8px; margin-bottom: 0.7rem; }
+.progress-fill.progress-good {
+  background: linear-gradient(90deg, var(--good),
+              color-mix(in srgb, var(--good) 60%, var(--accent)));
+}
+.progress-fill.progress-bad {
+  background: linear-gradient(90deg, var(--bad),
+              color-mix(in srgb, var(--bad) 60%, var(--warn)));
+}
+
+.workflow-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.workflow-step {
+  display: grid;
+  grid-template-columns: 14px 18px 32px 1fr;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--surface-sunk);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  border-left: 3px solid transparent;
+}
+.workflow-running {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface-sunk));
+}
+.workflow-ok    { border-left-color: var(--good); }
+.workflow-bad   { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad-soft) 35%, var(--surface-sunk)); }
+.workflow-queued { color: var(--fg-muted); }
+
+.workflow-swatch {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  background: var(--surface);
+}
+.workflow-swatch.no-color {
+  background-image: linear-gradient(45deg, var(--border) 25%, transparent 25%),
+                    linear-gradient(-45deg, var(--border) 25%, transparent 25%),
+                    linear-gradient(45deg, transparent 75%, var(--border) 75%),
+                    linear-gradient(-45deg, transparent 75%, var(--border) 75%);
+  background-size: 6px 6px;
+  background-position: 0 0, 0 3px, 3px -3px, -3px 0px;
+}
+
+.workflow-glyph {
+  font-size: 0.95rem;
+  text-align: center;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.workflow-running .workflow-glyph {
+  color: var(--accent);
+  display: inline-block;
+  animation: workflow-spin 1.4s linear infinite;
+}
+.workflow-ok  .workflow-glyph { color: var(--good); }
+.workflow-bad .workflow-glyph { color: var(--bad); }
+.workflow-queued .workflow-glyph { color: var(--fg-faint); }
+
+@keyframes workflow-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.workflow-head-id { font-weight: 700; color: var(--fg-strong); font-size: 0.95rem; }
+
+.workflow-step-meta { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+.workflow-step-mat  { color: var(--fg-muted); font-size: 0.82rem; }
+.workflow-step-status { color: var(--fg); font-size: 0.85rem; }
+.workflow-running .workflow-step-status { color: var(--accent); font-weight: 600; }
+.workflow-bad     .workflow-step-status { color: var(--bad); font-weight: 600; }
+.workflow-ok      .workflow-step-status { color: var(--fg-muted); }
+
+/* Toolhead card: subtle glow + indeterminate progress strip when this card
+   is the currently-running step in a workflow. */
+.card.in-workflow {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+              var(--shadow);
+}
+.card.in-workflow::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: linear-gradient(90deg, transparent,
+              var(--accent),
+              color-mix(in srgb, var(--accent) 50%, var(--good)),
+              var(--accent), transparent);
+  background-size: 200% 100%;
+  animation: workflow-strip 1.6s linear infinite;
+}
+@keyframes workflow-strip {
+  from { background-position: 200% 0; }
+  to   { background-position: 0 0; }
+}
+
 /* ---- Environment strip (cavity temp + humidity tiles) ---- */
 .env-strip {
   display: grid;

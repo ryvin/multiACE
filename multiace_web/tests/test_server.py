@@ -35,6 +35,75 @@ def app(tmp_path, monkeypatch):
     return create_app(static_dir=static_dir, start_background_tasks=False)
 
 
+def test_bootstrap_state_from_log_when_log_has_recent_entry(tmp_path, monkeypatch):
+    """After a service restart, the LogTailer starts at EOF — but the multiACE
+    state should pre-populate from the most recent STATE entry in the existing
+    log. Otherwise /api/state stays blank until the next real event.
+    """
+    log_dir = tmp_path / "logs"; log_dir.mkdir()
+    state_log = log_dir / "multiace_state.log"
+    cfg_path = tmp_path / "ace.cfg"
+    cfg_path.write_text("[ace]\nfeed_speed: 80\n")
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+
+    # Seed the log with a realistic recent STATE entry showing 4 toolheads loaded.
+    state_log.write_text(
+        '2026-04-29 13:30:22 STATE {"action": "SWITCH_AUTO_PASSIVE", "params": {"head": 1, "target_ace": 0, "target_slot": 1, "action": "same_ace_noop"}, '
+        '"active_device": 0, "device_count": 1, "connected": true, '
+        '"serial": "/dev/serial/by-path/test", "mode": "multi", '
+        '"swap_in_progress": false, "auto_feed": false, "feed_assist": 1, '
+        '"gate_status": [1, 1, 1, 1], '
+        '"head_source": {"0": {"ace": 0, "slot": 0, "type": "PLA", "color": "FF0000"}, '
+        '"1": {"ace": 0, "slot": 1, "type": "PLA", "color": "00FF00"}, '
+        '"2": null, "3": null}, '
+        '"sensors": {"0": true, "1": true, "2": false, "3": false}, '
+        '"print_task_config": {"0": {"type": "PLA", "color": 4294506524, "vendor": "Snapmaker"}, '
+        '"1": {"type": "PLA", "color": 4293340957, "vendor": "Generic"}, '
+        '"2": {"type": "NONE", "color": 4294967295, "vendor": "NONE"}, '
+        '"3": {"type": "NONE", "color": 4294967295, "vendor": "NONE"}}}\n'
+    )
+
+    monkeypatch.setenv("MULTIACE_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
+
+    mock_class = MagicMock()
+    mock_instance = MagicMock()
+    mock_instance.close = AsyncMock()
+    mock_class.return_value = mock_instance
+    monkeypatch.setattr("multiace_web.server.MoonrakerClient", mock_class)
+
+    fresh_app = create_app(static_dir=static_dir, start_background_tasks=False)
+    with TestClient(fresh_app) as client:
+        resp = client.get("/api/state")
+    body = resp.json()
+    assert body["device_count"] == 1
+    assert body["gate_status"] == [1, 1, 1, 1]
+    assert body["head_source"]["0"]["slot"] == 0
+    assert body["last_action_at"] == "2026-04-29 13:30:22"
+
+
+def test_bootstrap_state_handles_missing_log(tmp_path, monkeypatch):
+    """If the log file doesn't exist yet (fresh install), don't crash."""
+    log_dir = tmp_path / "logs"; log_dir.mkdir()
+    cfg_path = tmp_path / "ace.cfg"
+    cfg_path.write_text("[ace]\nfeed_speed: 80\n")
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    monkeypatch.setenv("MULTIACE_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
+    mock_class = MagicMock()
+    mock_instance = MagicMock(); mock_instance.close = AsyncMock()
+    mock_class.return_value = mock_instance
+    monkeypatch.setattr("multiace_web.server.MoonrakerClient", mock_class)
+
+    fresh_app = create_app(static_dir=static_dir, start_background_tasks=False)
+    with TestClient(fresh_app) as client:
+        resp = client.get("/api/state")
+    assert resp.status_code == 200
+    assert resp.json()["device_count"] == 0  # default
+
+
 def test_health_endpoint(app):
     with TestClient(app) as client:
         resp = client.get("/health")

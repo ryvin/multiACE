@@ -93,10 +93,12 @@ function connectWS() {
       Object.assign(state, msg.payload);
       renderAll();
     } else if (msg.type === "event") {
-      events.unshift({ id: msg.id, ts: msg.ts, ...msg.payload });
+      const ev = { id: msg.id, ts: msg.ts, ...msg.payload };
+      events.unshift(ev);
       if (events.length > 200) events.length = 200;
       renderActivity();
       renderActivityPreview();
+      applyEventToWorkflow(ev);
     }
   };
 
@@ -187,6 +189,269 @@ async function fetchPrint() {
   renderStatusBanner();
   renderDryerStatus();
   renderEnvStrip();
+}
+
+// =====================================================================
+// Workflow visual feedback (Unload All, single Load/Unload, Mode switch).
+//
+// Multi-step ACE operations are otherwise silent — the user clicks Unload All
+// and waits 2-6 minutes with no status. We pre-seed a workflow model on the
+// click, then update it as state events flow in over the WebSocket.
+//
+// "Steps" track per-toolhead phases: queued → running → done (or failed).
+// The renderer shows a compact panel above the print panel with one row per
+// step plus an overall progress bar. The status banner and individual
+// toolhead cards mirror the same status so the operator gets layered feedback.
+// =====================================================================
+const workflow = {
+  active: false,
+  kind: null,            // "unload_all" | "unload_single" | "load_single" | "mode_switch"
+  label: null,           // "Unload All", "Load → T2", etc.
+  steps: [],             // [{head, status, started_at, ended_at, error}]
+  current_idx: null,
+  started_at: null,
+  ended_at: null,
+};
+
+const _WORKFLOW_AUTODISMISS_MS = 5000;
+let _workflowAutoDismissTimer = null;
+
+function _now() { return Date.now(); }
+
+function _loadedHeads() {
+  const heads = [];
+  for (let h = 0; h < 4; h++) {
+    if (state.head_source && state.head_source[h]) heads.push(h);
+  }
+  return heads;
+}
+
+function seedUnloadAllWorkflow() {
+  const loaded = _loadedHeads();
+  if (loaded.length === 0) return false;
+  if (_workflowAutoDismissTimer) clearTimeout(_workflowAutoDismissTimer);
+  workflow.active = true;
+  workflow.kind = "unload_all";
+  workflow.label = "Unload All";
+  workflow.steps = loaded.map((h, i) => ({
+    head: h,
+    status: i === 0 ? "running" : "queued",
+    started_at: i === 0 ? _now() : null,
+    ended_at: null,
+    error: null,
+  }));
+  workflow.current_idx = 0;
+  workflow.started_at = _now();
+  workflow.ended_at = null;
+  renderWorkflow();
+  renderToolheads();
+  renderStatusBanner();
+  return true;
+}
+
+function seedSingleHeadWorkflow(kind, head, label) {
+  if (_workflowAutoDismissTimer) clearTimeout(_workflowAutoDismissTimer);
+  workflow.active = true;
+  workflow.kind = kind;
+  workflow.label = label;
+  workflow.steps = [{
+    head, status: "running", started_at: _now(), ended_at: null, error: null,
+  }];
+  workflow.current_idx = 0;
+  workflow.started_at = _now();
+  workflow.ended_at = null;
+  renderWorkflow();
+  renderToolheads();
+  renderStatusBanner();
+}
+
+function _findStep(head) {
+  return workflow.steps.find(s => s.head === head);
+}
+
+function _advanceCurrentIdx() {
+  // Move current_idx to the next non-terminal step (queued/running).
+  for (let i = 0; i < workflow.steps.length; i++) {
+    const s = workflow.steps[i];
+    if (s.status === "queued" || s.status === "running") {
+      workflow.current_idx = i;
+      if (s.status === "queued") {
+        s.status = "running";
+        s.started_at = _now();
+      }
+      return;
+    }
+  }
+  workflow.current_idx = null;
+}
+
+function _allStepsTerminal() {
+  return workflow.steps.every(s => s.status === "done" || s.status === "failed");
+}
+
+function _finishWorkflow() {
+  workflow.ended_at = _now();
+  workflow.current_idx = null;
+  renderWorkflow();
+  renderToolheads();
+  renderStatusBanner();
+  // Keep the panel up briefly so completion registers, then hide.
+  if (_workflowAutoDismissTimer) clearTimeout(_workflowAutoDismissTimer);
+  _workflowAutoDismissTimer = setTimeout(() => {
+    workflow.active = false;
+    workflow.steps = [];
+    renderWorkflow();
+    renderToolheads();
+    renderStatusBanner();
+  }, _WORKFLOW_AUTODISMISS_MS);
+}
+
+function applyEventToWorkflow(event) {
+  if (!workflow.active) return;
+  const action = event.action || "";
+  const params = event.params || {};
+  const head = params.head;
+
+  if (action === "UNLOAD_HEAD" && head != null) {
+    const step = _findStep(head);
+    if (step && step.status !== "done" && step.status !== "failed") {
+      step.status = "done";
+      step.ended_at = _now();
+      _advanceCurrentIdx();
+    }
+  } else if (action === "UNLOAD_HEAD_FAILED" && head != null) {
+    const step = _findStep(head);
+    if (step) {
+      step.status = "failed";
+      step.ended_at = _now();
+      step.error = params.error || params.reason || "unknown error";
+      _advanceCurrentIdx();
+    }
+  } else if (action === "LOAD_HEAD" && head != null) {
+    const step = _findStep(head);
+    if (step && step.status !== "done" && step.status !== "failed") {
+      step.status = "done";
+      step.ended_at = _now();
+      _advanceCurrentIdx();
+    }
+  } else if (action === "LOAD_HEAD_FAILED" && head != null) {
+    const step = _findStep(head);
+    if (step) {
+      step.status = "failed";
+      step.ended_at = _now();
+      step.error = params.error || params.reason || "unknown error";
+      _advanceCurrentIdx();
+    }
+  } else if (action === "UNLOAD_ALL") {
+    // Mark any not-yet-seen steps as done if their head_source is now null.
+    for (const s of workflow.steps) {
+      if (s.status === "queued" || s.status === "running") {
+        if (!state.head_source[s.head]) {
+          s.status = "done";
+          s.ended_at = _now();
+        }
+      }
+    }
+    _advanceCurrentIdx();
+  }
+
+  if (_allStepsTerminal()) {
+    _finishWorkflow();
+  } else {
+    renderWorkflow();
+    renderToolheads();
+    renderStatusBanner();
+  }
+}
+
+function _stepStatusGlyph(status) {
+  if (status === "done") return "✓";
+  if (status === "failed") return "✗";
+  if (status === "running") return "⟳";
+  return "○";
+}
+
+function _stepStatusKind(status) {
+  if (status === "done") return "ok";
+  if (status === "failed") return "bad";
+  if (status === "running") return "running";
+  return "queued";
+}
+
+function _stepDescription(s) {
+  if (s.status === "done") {
+    const dur = (s.ended_at - s.started_at) / 1000;
+    return `Unloaded · ${dur.toFixed(0)}s`;
+  }
+  if (s.status === "failed") return `Failed: ${s.error || "see Activity"}`;
+  if (s.status === "running") {
+    return workflow.kind && workflow.kind.startsWith("load")
+      ? "Loading filament…"
+      : "Retracting filament…";
+  }
+  return "Queued";
+}
+
+function _formatElapsed(ms) {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s}s`;
+}
+
+function renderWorkflow() {
+  const panel = document.getElementById("workflow-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  if (!workflow.active) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+
+  const completed = workflow.steps.filter(s => s.status === "done" || s.status === "failed").length;
+  const failed = workflow.steps.filter(s => s.status === "failed").length;
+  const total = workflow.steps.length;
+  const pct = total === 0 ? 0 : (completed / total) * 100;
+  const elapsed = (workflow.ended_at || _now()) - workflow.started_at;
+  const finished = _allStepsTerminal();
+
+  // Header row
+  const header = setEl(panel, "div"); header.className = "workflow-header";
+  setEl(header, "span", { className: "workflow-title", textContent: workflow.label });
+  const counterText = finished
+    ? (failed > 0 ? `${completed - failed} done · ${failed} failed`
+                  : `${completed} done`)
+    : `${completed} of ${total}`;
+  setEl(header, "span", { className: "workflow-counter", textContent: counterText });
+  setEl(header, "span", { className: "workflow-elapsed muted",
+                          textContent: _formatElapsed(elapsed) + " elapsed" });
+
+  // Progress bar
+  const pwrap = setEl(panel, "div"); pwrap.className = "progress workflow-progress";
+  const pfill = setEl(pwrap, "div");
+  pfill.className = "progress-fill" + (failed > 0 ? " progress-bad" : finished ? " progress-good" : "");
+  pfill.style.width = pct.toFixed(1) + "%";
+
+  // Step list
+  const list = setEl(panel, "ul"); list.className = "workflow-steps";
+  for (const s of workflow.steps) {
+    const li = setEl(list, "li"); li.className = "workflow-step workflow-" + _stepStatusKind(s.status);
+    const cfg = (state.print_task_config && state.print_task_config[s.head]) || {};
+    const color = rgbFromUint(cfg.color);
+    const swatch = setEl(li, "span", { className: "workflow-swatch" });
+    if (color) swatch.style.background = color;
+    else swatch.classList.add("no-color");
+    setEl(li, "span", { className: "workflow-glyph", textContent: _stepStatusGlyph(s.status) });
+    setEl(li, "span", { className: "workflow-head-id", textContent: `T${s.head}` });
+    const meta = setEl(li, "span"); meta.className = "workflow-step-meta";
+    const matLine = cfg.vendor || cfg.type
+      ? `${cfg.vendor || ""}${cfg.vendor && cfg.type ? " " : ""}${cfg.type || ""}`.trim()
+      : "";
+    if (matLine) setEl(meta, "span", { className: "workflow-step-mat", textContent: matLine });
+    setEl(meta, "span", { className: "workflow-step-status", textContent: _stepDescription(s) });
+  }
 }
 
 function renderEnvStrip() {
@@ -375,7 +640,9 @@ function renderPrintPanel() {
   setEl(headRow, "span", { className: "card-id", textContent: "Print" });
   const stateName = printState.state || "standby";
   pill(headRow, stateName.toUpperCase(), PRINT_STATE_KIND[stateName] || "");
-  if (head != null) {
+  // Klipper keeps toolhead.extruder set after a print ends, so only show the
+  // "Extruding T<n>" pill while a print is actively running.
+  if (head != null && stateName === "printing") {
     const tagP = pill(headRow, `Extruding T${head}`, "ok");
     tagP.classList.add("now-extruding");
   }
@@ -467,10 +734,24 @@ function renderStatusBanner() {
     msg.textContent = " " + (exc.message || `code ${exc.code}`);
     return;
   }
-  if (state.swap_in_progress) {
+  if (state.swap_in_progress || (workflow.active && !workflow.ended_at)) {
     banner.classList.remove("hidden"); banner.classList.add("warn");
-    setEl(banner, "strong", { textContent: "Tool change in progress…" });
-    setEl(banner, "span", { textContent: " Hold actions until this completes." });
+    if (workflow.active) {
+      const cur = workflow.current_idx != null ? workflow.steps[workflow.current_idx] : null;
+      const total = workflow.steps.length;
+      const done = workflow.steps.filter(s => s.status === "done").length;
+      const remaining = total - done - workflow.steps.filter(s => s.status === "failed").length;
+      const headLabel = cur ? `T${cur.head}` : "";
+      setEl(banner, "strong", { textContent: `${workflow.label} in progress` });
+      setEl(banner, "span", {
+        textContent: cur
+          ? ` — working on ${headLabel}, ${remaining} remaining`
+          : " — finishing up"
+      });
+    } else {
+      setEl(banner, "strong", { textContent: "Tool change in progress…" });
+      setEl(banner, "span", { textContent: " Hold actions until this completes." });
+    }
     return;
   }
   if (state.last_error) {
@@ -494,6 +775,7 @@ function renderAll() {
   renderConfig();
   renderDiag();
   renderStatusBanner();
+  renderWorkflow();
 }
 function renderTopbar() {
   const label = document.getElementById("active-ace-label");
@@ -601,9 +883,16 @@ function renderToolheads() {
     const cfg = state.print_task_config[i] || {};
     const color = rgbFromUint(cfg.color);
 
+    // Workflow step (if any) for this toolhead — drives card emphasis + bottom strip.
+    const wfStep = workflow.active ? _findStep(i) : null;
+    const wfRunning = wfStep && wfStep.status === "running";
+    const wfFailed = wfStep && wfStep.status === "failed";
+
     const card = setEl(grid, "div");
-    card.className = "card" + (color ? "" : " no-color") + (err ? " error" : "")
-      + (activeHead === i ? " extruding" : "");
+    card.className = "card" + (color ? "" : " no-color")
+      + (err || wfFailed ? " error" : "")
+      + (activeHead === i ? " extruding" : "")
+      + (wfRunning ? " in-workflow" : "");
     if (color) card.style.setProperty("--card-color", color);
     setEl(card, "div", { className: "color-band" });
 
@@ -611,7 +900,9 @@ function renderToolheads() {
     const head = setEl(card, "div"); head.className = "card-head";
     setEl(head, "span", { className: "card-id", textContent: `T${i}` });
     setEl(head, "span", { className: "card-swatch" });
-    if (activeHead === i) pill(head, "Extruding", "ok");
+    if (wfRunning) pill(head, _stepDescription(wfStep).replace("…",""), "warn");
+    else if (wfFailed) pill(head, "Failed", "bad");
+    else if (activeHead === i) pill(head, "Extruding", "ok");
     else if (err) pill(head, "Error", "bad");
     else if (src && sensor) pill(head, "Loaded", "ok");
     else if (src && !sensor) pill(head, "No Filament", "warn");
@@ -989,7 +1280,26 @@ document.addEventListener("DOMContentLoaded", () => {
     const confirm = btn.dataset.confirm;
     if (confirm && !(await confirmDialog(confirm))) return;
     btn.disabled = true;
-    await sendCommand(macro);
+    // Pre-seed the workflow panel before the POST so the user gets instant
+    // feedback. The actual state events that arrive over WS will then update
+    // the seeded steps in place.
+    let seeded = false;
+    if (macro === "ACEC__Unload_All") {
+      seeded = seedUnloadAllWorkflow();
+    } else {
+      const m = macro.match(/^ACEC__Unload_T(\d+)$/);
+      const ml = macro.match(/^ACEC__Load_T(\d+)$/);
+      if (m) seedSingleHeadWorkflow("unload_single", parseInt(m[1], 10), `Unload T${m[1]}`);
+      else if (ml) seedSingleHeadWorkflow("load_single", parseInt(ml[1], 10), `Load → T${ml[1]}`);
+    }
+    const ok = await sendCommand(macro);
+    if (!ok && seeded) {
+      // Seeded panel for a command that bounced; fail the workflow visibly.
+      for (const s of workflow.steps) {
+        if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+      }
+      renderWorkflow();
+    }
     btn.disabled = false;
   });
   // "View all →" link inside the dashboard's activity preview switches to the Activity tab.
