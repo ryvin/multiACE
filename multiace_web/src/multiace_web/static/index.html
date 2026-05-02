@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
   <title>multiACE</title>
-  <link rel="stylesheet" href="static/style.css?v=0.5.3" />
-  <script defer src="static/app.js?v=0.5.3"></script>
+  <link rel="stylesheet" href="static/style.css?v=0.6.0" />
+  <script defer src="static/app.js?v=0.6.0"></script>
+  <script defer src="static/hardware-twin.js?v=0.6.0"></script>
 </head>
 <body>
   <header class="topbar">
@@ -42,6 +43,7 @@
     <button data-view="dryer" class="tab">Dryer</button>
     <button data-view="config" class="tab">Config</button>
     <button data-view="diag" class="tab">Diag</button>
+    <button data-view="hardware" class="tab">Hardware</button>
     <button id="help-btn" class="tab help-btn" type="button" aria-label="Help" title="What does each control do?">?</button>
   </nav>
 
@@ -133,6 +135,11 @@
         <summary>klippy.log tail (last 200 lines)</summary>
         <pre id="diag-klippy">Open this section to load.</pre>
       </details>
+    </section>
+
+    <section data-view="hardware" class="view">
+      <div id="htw-banner" class="htw-banner hidden"></div>
+      <div id="htw-root" class="htw-root"></div>
     </section>
   </main>
 
