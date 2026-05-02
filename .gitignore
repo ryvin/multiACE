@@ -2,6 +2,9 @@
 # transcript artifacts). Not part of the repo.
 .claude/
 
+# Superpowers brainstorming session artifacts (browser-served mockups).
+.superpowers/
+
 # Python
 __pycache__/
 *.pyc
