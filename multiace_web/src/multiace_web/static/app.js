@@ -153,6 +153,102 @@ function confirmDialog(text) {
   });
 }
 
+// ---- Help content & modal ----
+const HELP_SECTIONS = [
+  {
+    title: "Top bar",
+    items: [
+      ["Connection dot", "Green = web console is talking to the multiACE service. Gray/red = disconnected — refresh the page or check the service."],
+      ["Active ACE", "Which ACE Pro device commands are routed to right now. Shown only when more than one ACE is connected."],
+      ["Auto-feed", "When ON, multiACE automatically pre-loads spools when you insert them and auto-swaps to a matching spool if one runs out mid-print. Auto-toggles ON when a print starts and OFF when it ends — manual override is fine but the next print cycle will reset it."],
+      ["Mode", "Multi (multiACE active, multiple toolheads) vs Normal (stock single-spool firmware). A printer reboot is required for the change to take effect."],
+    ],
+  },
+  {
+    title: "Dashboard",
+    items: [
+      ["Status banner", "Top of the page when something needs attention: a Klipper exception, an in-progress workflow (e.g. Unload All), or the most recent failure."],
+      ["Environment strip", "Cavity temperature and humidity (only if a humidity sensor is configured via MULTIACE_HUMIDITY_URL)."],
+      ["Workflow panel", "Live progress through multi-step actions. Glyphs: ✓ done, ⟳ running, ○ queued, ✗ failed."],
+      ["Print panel", "Current print state, filename, progress, layer, ETA. The 'Extruding T<n>' pill only shows during an active print."],
+      ["Dryer status card", "Visible only while drying is active — target temp and remaining time."],
+      ["Toolheads", "Four cards (T1..T4), one per U1 toolhead. Laid out 2x2 to match the printer: T1+T2 on the left, T3+T4 on the right. Shows material, vendor, source slot, and per-head Load/Unload buttons. (Internally Klipper still calls them T0..T3 — the GUI just shifts the display.)"],
+      ["ACE slots", "Slots inside the active ACE Pro. Same 1,2-left / 3,4-right layout as the toolheads, mirroring the physical ACE. Each card shows material/color and a 'Load → T<n>' button when filament is at the gate."],
+      ["Recent activity", "Last 5 events. Click 'View all →' to jump to the Activity tab."],
+    ],
+  },
+  {
+    title: "Activity",
+    items: [
+      ["Event feed", "Last 200 multiACE state events, newest first. Includes LOAD_HEAD, UNLOAD_HEAD, SWITCH_*, SERIAL_WRITE_FAILED, etc."],
+      ["Color cues", "Green row = success (LOAD_HEAD, UNLOAD_HEAD, UNLOAD_ALL, ACE_SWITCH). Red row = a *_FAILED event."],
+      ["When to use", "Debugging — if a load or unload didn't behave as expected, scroll here and look for the FAILED line and its surrounding context."],
+    ],
+  },
+  {
+    title: "Dryer",
+    items: [
+      ["Profiles", "Pre-set temperature + duration for common materials. Stored in this browser (localStorage), not on the server — different browsers can have different profiles."],
+      ["Override", "Pick a profile then edit temp/duration before starting if you want a one-off run."],
+      ["Per-ACE", "Each ACE Pro has its own dryer; on a multi-ACE setup pick the right one in the panel."],
+      ["Limits", "ACE Pro hardware caps temp at ~70°C. Materials needing 80°C+ (ABS, Nylon, PC) get longer time at 70°C as a workaround."],
+    ],
+  },
+  {
+    title: "Config",
+    items: [
+      ["What's editable", "Live values from ace.cfg — speeds, lengths, temps, etc. The form mirrors the file."],
+      ["Save & Restart", "Saving writes ace.cfg and triggers a Klipper RESTART. The printer must be in standby — RESTART aborts any active print."],
+      ["Validation", "Keys and values are checked server-side; bad input is rejected before the file is written."],
+    ],
+  },
+  {
+    title: "Diagnostics",
+    items: [
+      ["ACE_HEAD_STATUS", "Re-queries the ACE for current head/slot state without changing anything. Use after a manual filament change or if the dashboard looks stale."],
+      ["ACE_LIST", "Lists all detected ACE Pro devices with their USB paths and firmware versions."],
+      ["ACE_CLEAR_HEADS", "Wipes multiACE's head_source mapping. Useful when you've manually pulled filament and the dashboard still thinks heads are loaded. Confirms first."],
+      ["State JSON", "Raw current dashboard state — handy for filing bug reports."],
+      ["klippy.log tail", "Last 200 lines of klippy.log — first place to look when something is wrong at the Klipper level."],
+    ],
+  },
+  {
+    title: "Action bar",
+    items: [
+      ["Unload All", "Unloads filament from every loaded toolhead back to its ACE slot, one at a time. Disabled during an active swap. Asks to confirm because it's a multi-minute operation."],
+    ],
+  },
+  {
+    title: "Tips",
+    items: [
+      ["Stuck in 'busy'", "If the ACE shows busy with gates [-1,-1,-1,-1] for more than a minute, the USB serial probably hung. Power-cycle the ACE Pro, then restart Klipper (Diag → look for guidance, or use the printer's recovery flow)."],
+      ["Filament left in the bowden after Unload All", "Means retract_length is too short for your bowden run. Edit ace.cfg → retract_length and Save & Restart."],
+      ["Load fails with 'move_extrude logic error'", "Usually a malformed filament tip. Unload that head and reload — the unload retract reshapes the tip on the way back."],
+    ],
+  },
+];
+
+function openHelp() {
+  const body = document.getElementById("help-body");
+  if (!body) return;
+  body.innerHTML = "";
+  HELP_SECTIONS.forEach((sec, i) => {
+    const det = setEl(body, "details", { className: "help-section" });
+    if (i === 0) det.open = true;
+    setEl(det, "summary", { textContent: sec.title });
+    const ul = setEl(det, "ul", { className: "help-list" });
+    for (const [name, desc] of sec.items) {
+      const li = setEl(ul, "li");
+      setEl(li, "b", { textContent: name + " " });
+      li.appendChild(document.createTextNode(desc));
+    }
+  });
+  document.getElementById("help-modal").classList.remove("hidden");
+}
+function closeHelp() {
+  document.getElementById("help-modal").classList.add("hidden");
+}
+
 // ---- Print state (separate from multiACE state; pulled from Moonraker via /api/print) ----
 const printState = {
   state: "standby",
@@ -444,7 +540,7 @@ function renderWorkflow() {
     if (color) swatch.style.background = color;
     else swatch.classList.add("no-color");
     setEl(li, "span", { className: "workflow-glyph", textContent: _stepStatusGlyph(s.status) });
-    setEl(li, "span", { className: "workflow-head-id", textContent: `T${s.head}` });
+    setEl(li, "span", { className: "workflow-head-id", textContent: tName(s.head) });
     const meta = setEl(li, "span"); meta.className = "workflow-step-meta";
     const matLine = cfg.vendor || cfg.type
       ? `${cfg.vendor || ""}${cfg.vendor && cfg.type ? " " : ""}${cfg.type || ""}`.trim()
@@ -643,7 +739,7 @@ function renderPrintPanel() {
   // Klipper keeps toolhead.extruder set after a print ends, so only show the
   // "Extruding T<n>" pill while a print is actively running.
   if (head != null && stateName === "printing") {
-    const tagP = pill(headRow, `Extruding T${head}`, "ok");
+    const tagP = pill(headRow, `Extruding ${tName(head)}`, "ok");
     tagP.classList.add("now-extruding");
   }
 
@@ -741,7 +837,7 @@ function renderStatusBanner() {
       const total = workflow.steps.length;
       const done = workflow.steps.filter(s => s.status === "done").length;
       const remaining = total - done - workflow.steps.filter(s => s.status === "failed").length;
-      const headLabel = cur ? `T${cur.head}` : "";
+      const headLabel = cur ? tName(cur.head) : "";
       setEl(banner, "strong", { textContent: `${workflow.label} in progress` });
       setEl(banner, "span", {
         textContent: cur
@@ -757,7 +853,8 @@ function renderStatusBanner() {
   if (state.last_error) {
     const err = state.last_error;
     banner.classList.remove("hidden"); banner.classList.add("bad");
-    setEl(banner, "strong", { textContent: `T${err.head} ${err.action}` });
+    const headTag = Number.isInteger(err.head) ? `${tName(err.head)} ` : "";
+    setEl(banner, "strong", { textContent: `${headTag}${err.action}` });
     const msg = setEl(banner, "span");
     msg.textContent = " " + (err.error || err.reason || "see Activity for details");
   }
@@ -802,14 +899,22 @@ function renderTopbar() {
 }
 
 // ACE color is 0xAARRGGBB (or 0xFFRRGGBB on real data); low 24 bits = RGB.
-// 4294967295 (0xFFFFFFFF) is multiACE's "no color" sentinel.
+// Treat null/undefined/0 as "no color set". Don't special-case 0xFFFFFFFF —
+// that's the value real white-filament spools report, and treating it as a
+// sentinel hides the swatch (makes T2 look blank when loaded with white PLA).
 function rgbFromUint(packed) {
-  if (packed == null || packed === 4294967295) return null;
+  if (packed == null || packed === 0) return null;
   const r = (packed >>> 16) & 0xff;
   const g = (packed >>> 8) & 0xff;
   const b = packed & 0xff;
   return `rgb(${r},${g},${b})`;
 }
+
+// UI labels are 1-based even though internal indices stay 0-based. Macros,
+// audit events, and Klipper g-code (T0..T3) keep using the raw index — only
+// human-visible text gets shifted.
+function tName(i)    { return `T${(+i) + 1}`; }
+function slotName(i) { return `Slot ${(+i) + 1}`; }
 
 function setEl(parent, tag, props) {
   const el = document.createElement(tag);
@@ -850,23 +955,23 @@ function renderSlots() {
     setEl(card, "div", { className: "color-band" });
 
     const head = setEl(card, "div"); head.className = "card-head";
-    setEl(head, "span", { className: "card-id", textContent: `Slot ${i}` });
+    setEl(head, "span", { className: "card-id", textContent: slotName(i) });
     setEl(head, "span", { className: "card-swatch" });
     if (filled) pill(head, "Filled", "ok"); else pill(head, "Empty");
 
     const meta = setEl(card, "div"); meta.className = "card-meta";
-    metaRow(meta, "Feeding", loadedToHead != null ? `T${loadedToHead}` : "—");
+    metaRow(meta, "Feeding", loadedToHead != null ? tName(loadedToHead) : "—");
     metaRow(meta, "Material", hcfg.type || (loadedToHead != null ? "—" : "—"));
     metaRow(meta, "Vendor", hcfg.vendor || "—");
 
     const actions = setEl(card, "div"); actions.className = "actions";
-    const loadBtn = setEl(actions, "button", { textContent: `Load → T${i}` });
+    const loadBtn = setEl(actions, "button", { textContent: `Load → ${tName(i)}` });
     loadBtn.dataset.cmd = `ACEC__Load_T${i}`;
     loadBtn.classList.add("primary");
     loadBtn.disabled = !filled || state.swap_in_progress;
-    const unloadBtn = setEl(actions, "button", { textContent: `Unload T${i}` });
+    const unloadBtn = setEl(actions, "button", { textContent: `Unload ${tName(i)}` });
     unloadBtn.dataset.cmd = `ACEC__Unload_T${i}`;
-    unloadBtn.dataset.confirm = `Unload T${i}?`;
+    unloadBtn.dataset.confirm = `Unload ${tName(i)}?`;
     unloadBtn.classList.add("danger");
     unloadBtn.disabled = !loadedToEntry || state.swap_in_progress;
   }
@@ -898,7 +1003,7 @@ function renderToolheads() {
 
     // Head: id + swatch + status pill
     const head = setEl(card, "div"); head.className = "card-head";
-    setEl(head, "span", { className: "card-id", textContent: `T${i}` });
+    setEl(head, "span", { className: "card-id", textContent: tName(i) });
     setEl(head, "span", { className: "card-swatch" });
     if (wfRunning) pill(head, _stepDescription(wfStep).replace("…",""), "warn");
     else if (wfFailed) pill(head, "Failed", "bad");
@@ -912,7 +1017,7 @@ function renderToolheads() {
     const meta = setEl(card, "div"); meta.className = "card-meta";
     metaRow(meta, "Material", cfg.type || "—");
     metaRow(meta, "Vendor", cfg.vendor || "—");
-    metaRow(meta, "Source", src ? `ACE ${src.ace} · Slot ${src.slot}` : "—");
+    metaRow(meta, "Source", src ? `ACE ${src.ace} · ${slotName(src.slot)}` : "—");
     metaRow(meta, "Sensor", sensor ? "Filament present" : "Empty",
             sensor ? "" : "muted");
 
@@ -1270,8 +1375,20 @@ function setView(name) {
 
 document.addEventListener("DOMContentLoaded", () => {
   for (const tab of document.querySelectorAll(".tab")) {
+    if (!tab.dataset.view) continue;  // skip help button and other non-view tabs
     tab.addEventListener("click", () => setView(tab.dataset.view));
   }
+  const helpBtn = document.getElementById("help-btn");
+  if (helpBtn) helpBtn.addEventListener("click", openHelp);
+  const helpClose = document.getElementById("help-close");
+  if (helpClose) helpClose.addEventListener("click", closeHelp);
+  const helpModal = document.getElementById("help-modal");
+  if (helpModal) helpModal.addEventListener("click", (ev) => {
+    if (ev.target === helpModal) closeHelp();  // click outside the card closes
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !helpModal.classList.contains("hidden")) closeHelp();
+  });
   // Bind any data-cmd buttons (action bar, diag panel)
   document.body.addEventListener("click", async (ev) => {
     const btn = ev.target.closest("[data-cmd]");

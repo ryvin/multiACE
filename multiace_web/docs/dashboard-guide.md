@@ -24,6 +24,15 @@ it's still single-column but wider tiles.
 - Active ACE: a pill when there's one device, a button cluster for multi-ACE switching.
 - Auto-feed and Mode toggle pills: `aria-pressed` reflects state. Tap toggles via the standard `data-cmd` flow with confirm dialogs where appropriate.
 
+### Tabs row & help
+
+Below the topbar: `Dashboard / Activity / Dryer / Config / Diag` and a `?`
+button at the right edge. Clicking `?` opens a modal that explains every
+control on every tab — keyed by section, collapsible, no network round-trip.
+Content lives in `HELP_SECTIONS` in `app.js`. Update it there when you add a
+new control or change behavior; it's the single source of truth users see.
+`Esc` or click-outside dismisses.
+
 ### Status banner
 
 Hidden when state is healthy. Auto-shows in priority order:
