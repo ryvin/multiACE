@@ -916,6 +916,9 @@ function rgbFromUint(packed) {
 function tName(i)    { return `T${(+i) + 1}`; }
 function slotName(i) { return `Slot ${(+i) + 1}`; }
 
+// Expose helpers to hardware-twin.js (vanilla project, no module system).
+window.MultiACEUtil = { rgbFromUint, tName, slotName };
+
 function setEl(parent, tag, props) {
   const el = document.createElement(tag);
   if (props) Object.assign(el, props);
