@@ -1,0 +1,20 @@
+# Local Claude Code session state (scheduled task locks, UI screenshots,
+# transcript artifacts). Not part of the repo.
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# venv
+.venv/
+venv/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
