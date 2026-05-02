@@ -83,20 +83,33 @@ class CurrentState:
             }
 
         action = event.get("action", "")
+
+        # SWITCH_NOOP fires inside cmd_ACE_SWITCH after _swap_in_progress was
+        # set True but before the finally that resets it. The audit captures
+        # swap=True even though no swap actually happened — leaving the
+        # dashboard banner stuck on "Tool change in progress" forever. A noop
+        # by definition isn't a swap; force the flag false.
+        if action == "SWITCH_NOOP":
+            self.swap_in_progress = False
+
         # TODO(v1.x): When the frontend grows per-toolhead error display, switch to
         # self.last_errors: dict[int, dict] keyed by head so per-toolhead errors
         # don't overwrite each other. For v1, last_error tracks the most recent failure.
-        if action.endswith("_FAILED"):
+        # SERIAL_WRITE_FAILED is a transport-level event, not a per-head failure —
+        # it has no head and never gets cleared by LOAD_HEAD/UNLOAD_HEAD, so the
+        # banner would stick forever. It still shows up in the activity feed.
+        params = event.get("params", {}) or {}
+        head = params.get("head")
+        if action.endswith("_FAILED") and isinstance(head, int):
             self.last_error = {
                 "action": action,
-                "head": event.get("params", {}).get("head"),
-                "slot": event.get("params", {}).get("slot"),
-                "ace": event.get("params", {}).get("ace"),
-                "reason": event.get("params", {}).get("reason"),
-                "error": event.get("params", {}).get("error", ""),
+                "head": head,
+                "slot": params.get("slot"),
+                "ace": params.get("ace"),
+                "reason": params.get("reason"),
+                "error": params.get("error", ""),
             }
-        elif action == "LOAD_HEAD":
-            head = event.get("params", {}).get("head")
+        elif action in ("LOAD_HEAD", "UNLOAD_HEAD") and isinstance(head, int):
             if self.last_error and self.last_error.get("head") == head:
                 self.last_error = None  # cleared by successful retry
 
