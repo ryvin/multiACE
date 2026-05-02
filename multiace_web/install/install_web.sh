@@ -9,6 +9,7 @@ INSTALL_BASE="/userdata/multiace-web"
 APP_DIR="$INSTALL_BASE/app"
 VENV_DIR="$INSTALL_BASE/venv"
 INIT_SCRIPT="/etc/init.d/S62multiace-web"
+WATCHDOG_SCRIPT="/etc/init.d/S63multiace-web-watchdog"
 NGINX_SNIPPET="/etc/nginx/fluidd.d/multiace.conf"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE-web] $1"; }
@@ -25,7 +26,9 @@ fi
 log "Source: $SOURCE_DIR"
 log "Target: $INSTALL_BASE"
 
-# Stop existing service if running
+# Stop existing service + watchdog if running (watchdog first so it can't
+# resurrect the daemon mid-install).
+[ -x "$WATCHDOG_SCRIPT" ] && "$WATCHDOG_SCRIPT" stop || true
 [ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" stop || true
 
 # Copy app to persistent partition
@@ -48,10 +51,13 @@ fi
 chown -R lava:lava "$VENV_DIR"
 log "Python dependencies installed"
 
-# Install init.d script (overlay; persisted via /oem/.debug)
+# Install init.d scripts (overlay; persisted via /oem/.debug)
 cp "$SCRIPT_DIR/S62multiace-web" "$INIT_SCRIPT"
 chmod +x "$INIT_SCRIPT"
 log "Init script installed at $INIT_SCRIPT"
+cp "$SCRIPT_DIR/S63multiace-web-watchdog" "$WATCHDOG_SCRIPT"
+chmod +x "$WATCHDOG_SCRIPT"
+log "Watchdog installed at $WATCHDOG_SCRIPT"
 
 # Install nginx snippet into the fluidd include dir (loaded inside fluidd's server{})
 mkdir -p /etc/nginx/fluidd.d
@@ -60,10 +66,13 @@ nginx -t
 /etc/init.d/S50nginx reload 2>/dev/null || nginx -s reload
 log "nginx snippet installed at $NGINX_SNIPPET; reloaded"
 
-# Start the service
+# Start the service, then the watchdog.
 "$INIT_SCRIPT" start
 sleep 1
 log "Service status: $("$INIT_SCRIPT" status)"
+"$WATCHDOG_SCRIPT" start
+sleep 1
+log "Watchdog status: $("$WATCHDOG_SCRIPT" status)"
 
 log ""
 log "=== Install complete ==="

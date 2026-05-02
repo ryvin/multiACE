@@ -4,11 +4,17 @@ set -e
 
 INSTALL_BASE="/userdata/multiace-web"
 INIT_SCRIPT="/etc/init.d/S62multiace-web"
+WATCHDOG_SCRIPT="/etc/init.d/S63multiace-web-watchdog"
 NGINX_SNIPPET="/etc/nginx/fluidd.d/multiace.conf"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE-web] $1"; }
 
 log "=== multiACE Web Console uninstall ==="
+
+# Stop watchdog before daemon so it can't resurrect it.
+[ -x "$WATCHDOG_SCRIPT" ] && "$WATCHDOG_SCRIPT" stop || true
+rm -f "$WATCHDOG_SCRIPT"
+log "Watchdog removed"
 
 [ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" stop || true
 rm -f "$INIT_SCRIPT"

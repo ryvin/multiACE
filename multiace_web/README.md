@@ -21,7 +21,22 @@ The dashboard is the home view and answers the five things you open the app to a
 Cancel only during a print, Stop drying only when a dry is running.
 
 See [`docs/dashboard-guide.md`](docs/dashboard-guide.md) for screenshots and a
-walkthrough.
+walkthrough. In-app, the `?` button next to the tabs opens a context-keyed
+help modal with a one-liner for every control on every tab.
+
+Other docs:
+
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — field-tested
+  recipes for the failure modes we've actually hit (load `move_extrude logic
+  error`, stranded filament, ACE USB hang, Klipper soft-restart not picking
+  up new `ace.py` options, etc.).
+- [`docs/tip-refresh.md`](docs/tip-refresh.md) — the pre-load tip refresh
+  feature: what it does, when it fires, config knobs.
+- [`docs/api-reference.md`](docs/api-reference.md) — REST + WS surface.
+- [`docs/auto-dry-design.md`](docs/auto-dry-design.md) — drying profiles
+  and the per-ACE workflow.
+- [`docs/hardware-bluetooth.md`](docs/hardware-bluetooth.md) — humidity
+  sensor adapter integrations (Govee BLE, Home Assistant, SwitchBot).
 
 ## Architecture
 
@@ -145,6 +160,20 @@ Manage the running service:
 
 Logs go to `/var/log/multiace-web.log` (uvicorn output is captured there by the
 init script).
+
+### Watchdog (auto-restart on crash)
+
+A sister init script `S63multiace-web-watchdog` polls `S62multiace-web status`
+every 60 s and restarts the daemon if it has stopped. Installed and started
+automatically by `install_web.sh`. The PAXX firmware has no `crond` and no
+service supervisor, so without this the daemon stays stopped until the next
+reboot if it ever exits unexpectedly.
+
+```bash
+/etc/init.d/S63multiace-web-watchdog {start|stop|restart|status}
+```
+
+Watchdog activity is logged to `/var/log/multiace-web-watchdog.log`.
 
 ### Multi-host deploys
 
