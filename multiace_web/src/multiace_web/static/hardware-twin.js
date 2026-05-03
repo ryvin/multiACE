@@ -6,6 +6,9 @@
 //   render(state, printState, workflow)    — every state push; mutates only
 
 window.HardwareTwin = (function () {
+  // ---- Shared helpers ----
+  const _tName = (i) => window.MultiACEUtil.tName(i);
+
   // ---- DOM helpers ----
   const SVG_NS = "http://www.w3.org/2000/svg";
   function svgEl(tag, attrs) {
@@ -43,6 +46,15 @@ window.HardwareTwin = (function () {
     const aceStack = htmlEl("div", { className: "htw-ace-stack", id: "htw-ace-stack" });
     rootEl.appendChild(aceStack);
 
+    // Coordinate system used by all SVGs:
+    //   U1 SVG: viewBox 360×240. Toolhead positions: T1(28,38), T2(186,38),
+    //   T3(28,124), T4(186,124). Input strip at y=14 width=240.
+    //   Coupler SVG (this row): viewBox 360×80. 4 couplers at x=110+i*60
+    //   (i.e. 110, 170, 230, 290). Coupler bars y=12 height=16; post-coupler
+    //   tubes from y=28 to y=80 (where they meet the U1 input strip).
+    //   ACE SVG (per device): viewBox 280×160. Slots at x=12+i*66 width=58
+    //   height=120 (y=22..142). ACE rendered at 70% width centered, so its
+    //   slot centers visually align with the coupler x positions above.
     // Coupler row + post-coupler tubes (a single SVG, full-width, between ACE stack and U1).
     const couplerSvg = svgEl("svg", {
       viewBox: "0 0 360 80",
@@ -109,7 +121,7 @@ window.HardwareTwin = (function () {
         "text-anchor": "middle", "font-size": 18, "font-weight": 700,
         fill: "var(--htw-stroke-empty)", class: "htw-tool-label",
       });
-      label.textContent = `T${i + 1}`;
+      label.textContent = _tName(i);
       g.appendChild(label);
       const sublabel = svgEl("text", {
         x: p.x + 73, y: p.y + 57,
@@ -131,15 +143,15 @@ window.HardwareTwin = (function () {
     for (let i = 0; i < 4; i++) {
       const cell = htmlEl("div", { className: "htw-cell" });
       const loadBtn = htmlEl("button", {
-        className: "primary", textContent: `Load T${i + 1}`,
-        "aria-label": `Load toolhead T${i + 1}`,
+        className: "primary", textContent: `Load ${_tName(i)}`,
+        "aria-label": `Load toolhead ${_tName(i)}`,
         dataset: { cmd: `ACEC__Load_T${i}`, htw: "tool-load", tool: String(i) },
       });
       const unloadBtn = htmlEl("button", {
-        className: "danger htw-hidden", textContent: `Unload T${i + 1}`,
-        "aria-label": `Unload toolhead T${i + 1}`,
+        className: "danger htw-hidden", textContent: `Unload ${_tName(i)}`,
+        "aria-label": `Unload toolhead ${_tName(i)}`,
         dataset: {
-          cmd: `ACEC__Unload_T${i}`, confirm: `Unload T${i + 1}?`,
+          cmd: `ACEC__Unload_T${i}`, confirm: `Unload ${_tName(i)}?`,
           htw: "tool-unload", tool: String(i),
         },
       });
@@ -371,7 +383,7 @@ window.HardwareTwin = (function () {
     if (!state.head_source) return null;
     for (const [headStr, src] of Object.entries(state.head_source)) {
       if (!src) continue;
-      const aceI = src.ace != null ? src.ace : src.ace_index;
+      const aceI = src.ace ?? 0;
       if (aceI === deviceIdx && src.slot === slotIdx) return Number(headStr);
     }
     return null;
@@ -410,9 +422,6 @@ window.HardwareTwin = (function () {
         const sourcedHead = _slotIsActiveSource(state, d, i);
         const parked = _slotIsParked(state, d, i);
         const active = sourcedHead != null;
-        const filledOnActiveAce =
-          d === state.active_device &&
-          state.gate_status && state.gate_status[i] === 1;
 
         // Color comes from the toolhead this slot feeds (active),
         // or — if parked on the active ACE — from the slot's gate_status
@@ -428,7 +437,7 @@ window.HardwareTwin = (function () {
         }
 
         // Slot rectangle
-        if (active || parked || filledOnActiveAce) {
+        if (active || parked) {
           slotBody.setAttribute("fill", color || "#cbd5e1");
           slotBody.setAttribute("stroke", "#1f2937");
           slotBody.removeAttribute("stroke-dasharray");
@@ -480,15 +489,15 @@ window.HardwareTwin = (function () {
           loadBtn.classList.add("htw-hidden");
           unloadBtn.classList.remove("htw-hidden");
           unloadBtn.dataset.cmd = `ACEC__Unload_T${sourcedHead}`;
-          unloadBtn.dataset.confirm = `Unload T${sourcedHead + 1}?`;
-          unloadBtn.textContent = `Unload T${sourcedHead + 1}`;
+          unloadBtn.dataset.confirm = `Unload ${_tName(sourcedHead)}?`;
+          unloadBtn.textContent = `Unload ${_tName(sourcedHead)}`;
           unloadBtn.disabled = swap;
           loadBtn.disabled = true;
         } else if (filled) {
           // Filled but not currently sourcing — offer Load → T(slot index)
           loadBtn.classList.remove("htw-hidden");
           unloadBtn.classList.add("htw-hidden");
-          loadBtn.textContent = `Load → T${i + 1}`;
+          loadBtn.textContent = `Load → ${_tName(i)}`;
           loadBtn.dataset.cmd = `ACEC__Load_T${i}`;
           loadBtn.disabled = swap;
         } else {
@@ -506,8 +515,8 @@ window.HardwareTwin = (function () {
     let text = null;
     let kind = "info";
     if (workflow && workflow.active && workflow.label) {
-      const running = workflow.steps.find(s => s.status === "running");
-      const detail = running ? ` — T${running.head + 1}` : "";
+      const running = (workflow.steps || []).find(s => s.status === "running");
+      const detail = running ? ` — ${_tName(running.head)}` : "";
       text = `▸ ${workflow.label}${detail}`;
       kind = "info";
     } else if (state.last_error && state.last_error.error) {
@@ -540,7 +549,7 @@ window.HardwareTwin = (function () {
   function _resolveSourceForHead(state, head) {
     const src = state.head_source && state.head_source[head];
     if (src) {
-      const aceI = src.ace != null ? src.ace : src.ace_index;
+      const aceI = src.ace ?? 0;
       return { device: aceI, slot: src.slot };
     }
     // Pre-load: default mapping is slot N of active ACE → head N
