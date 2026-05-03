@@ -25,32 +25,54 @@ _state: dict[str, Any] = {
 
 
 def decode_govee_h5x(data: bytes) -> tuple[float, float, int] | None:
-    """Decode a Govee H5074/H5075/H5104/H5105 manufacturer-data payload.
+    """Decode a Govee H5074/H5075/H5101/H5102/H5104/H5105 manufacturer-data
+    payload (under mfg id 0xEC88 *or* 0x0001).
 
-    Layout (after the 0xEC88 LE manufacturer-id prefix is stripped by bleak):
+    The family ships with two slightly different layouts depending on the
+    chip + firmware revision. Both are 6 bytes; we tell them apart by the
+    leading "framing" byte(s):
 
-        byte 0      reserved / status flags
-        bytes 1-3   packed (signed int24, big-endian) encoding both
-                    temperature and humidity:
-                      combined = (b1<<16) | (b2<<8) | b3
-                      sign     = -1 if MSB set, else +1
-                      magnitude = combined & 0x7fffff
-                      temp_C   = sign * (magnitude // 1000) / 10.0
-                      humidity = (magnitude % 1000) / 10.0
-        byte 4      battery percent
+    **H5075 layout** (starts with 0x00):
+        byte 0      0x00 (status)
+        bytes 1-3   24-bit BE packed magnitude
+        byte 4      battery %
         byte 5      reserved
 
+    **H5104 layout** (starts with 0x01 0x01):
+        bytes 0-1   0x01 0x01 (frame header)
+        bytes 2-4   24-bit BE packed magnitude
+        byte 5      battery %
+
+    Both pack ``magnitude`` as::
+
+        combined = (b<<16) | (b<<8) | b      # offset depends on layout
+        sign     = -1 if combined & 0x800000 else +1
+        magnitude_abs = combined & 0x7fffff
+        temp_C   = sign * magnitude_abs / 10000.0
+        humidity = (magnitude_abs % 1000) / 10.0
+
+    (Note: temp uses ``/10000.0`` for full precision; older revisions of
+    this decoder used integer ``// 1000 / 10`` which lost the sub-decimal
+    digit but rounded to the same display value.)
+
     Returns ``(temperature_c, humidity_pct, battery_pct)`` or ``None`` if
-    the payload is too short or values are out of plausible range.
+    the payload is too short or the decoded values are out of plausible
+    range (sensor offline, garbled advert).
     """
-    if len(data) < 5:
+    if len(data) < 6:
         return None
-    combined = (data[1] << 16) | (data[2] << 8) | data[3]
+    if data[0] == 0x01 and data[1] == 0x01:
+        # H5104 / newer firmware: two header bytes, magnitude at 2-4, battery at 5.
+        combined = (data[2] << 16) | (data[3] << 8) | data[4]
+        battery = data[5]
+    else:
+        # H5075 / H5074: one header byte, magnitude at 1-3, battery at 4.
+        combined = (data[1] << 16) | (data[2] << 8) | data[3]
+        battery = data[4]
     sign = -1 if combined & 0x800000 else 1
-    magnitude = combined & 0x7FFFFF
-    temp_c = sign * (magnitude // 1000) / 10.0
-    humidity = (magnitude % 1000) / 10.0
-    battery = data[4] if len(data) > 4 else 0
+    magnitude_abs = combined & 0x7FFFFF
+    temp_c = sign * magnitude_abs / 10000.0
+    humidity = (magnitude_abs % 1000) / 10.0
     if not (-20.0 <= temp_c <= 80.0):
         return None
     if not (0.0 <= humidity <= 100.0):

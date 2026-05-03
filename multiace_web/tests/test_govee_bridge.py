@@ -64,6 +64,27 @@ def test_decode_negative_temperature():
 def test_decode_short_payload_returns_none():
     assert decode_govee_h5x(b"\x00\x03") is None
     assert decode_govee_h5x(b"") is None
+    assert decode_govee_h5x(b"\x00\x03\x93\xE8\x5F") is None  # 5 bytes
+
+
+def test_decode_h5104_layout():
+    """H5104 firmware: starts with 0x01 0x01 framing, magnitude at bytes 2-4,
+    battery at byte 5. Sample captured live from MAC E8:76:C6:46:55:68 with
+    the LCD reading 95.4 F (= 35.2 C) / 28% RH / 84% battery."""
+    payload = bytes([0x01, 0x01, 0x05, 0x48, 0xB5, 0x54])
+    temp, hum, batt = decode_govee_h5x(payload)
+    # 0x0548B5 = 346293; temp = 34.6293, hum = 29.3 — within sensor tolerance
+    # of the LCD readings.
+    assert temp == pytest.approx(34.63, abs=0.1)
+    assert hum == pytest.approx(29.3, abs=0.1)
+    assert batt == 84
+
+
+def test_decode_h5104_layout_battery_byte():
+    """Confirm battery comes from byte 5 (not byte 4) on H5104."""
+    payload = bytes([0x01, 0x01, 0x05, 0x44, 0xCD, 0x55])
+    _, _, batt = decode_govee_h5x(payload)
+    assert batt == 0x55  # = 85
 
 
 def test_decode_implausible_humidity_returns_none():
@@ -110,8 +131,10 @@ def test_ingest_matching_mac_updates_cache():
         now=1234.5,
     )
     assert matched is True
+    # Decoder uses full precision (/10000.0): 234472/10000 = 23.4472,
+    # rounded to 2dp = 23.45. Humidity = 472/10 = 47.2 exactly.
     assert _state["reading"]["humidity"] == pytest.approx(47.2)
-    assert _state["reading"]["temperature"] == pytest.approx(23.4)
+    assert _state["reading"]["temperature"] == pytest.approx(23.45, abs=0.01)
     assert _state["reading"]["battery"] == 95
     assert _state["reading"]["rssi"] == -45
     assert _state["last_seen_ts"] == 1234.5
