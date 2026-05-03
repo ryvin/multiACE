@@ -345,6 +345,21 @@ window.HardwareTwin = (function () {
         post.setAttribute("stroke",
           (sensor && c) ? c : "var(--htw-tube-grey)");
       }
+
+      // Toolhead button row
+      const cell = document.getElementById("htw-tool-actions").children[i];
+      const loadBtn = cell.querySelector('button[data-htw="tool-load"]');
+      const unloadBtn = cell.querySelector('button[data-htw="tool-unload"]');
+      const swap = !!state.swap_in_progress;
+      if (src) {
+        loadBtn.classList.add("htw-hidden");
+        unloadBtn.classList.remove("htw-hidden");
+        unloadBtn.disabled = swap;
+      } else {
+        loadBtn.classList.remove("htw-hidden");
+        unloadBtn.classList.add("htw-hidden");
+        loadBtn.disabled = swap;
+      }
     }
   }
 
@@ -439,6 +454,48 @@ window.HardwareTwin = (function () {
     });
   }
 
+  function _renderSlotButtons(state) {
+    const swap = !!state.swap_in_progress;
+    const blocks = document.querySelectorAll(".htw-ace-block");
+    blocks.forEach(block => {
+      const d = Number(block.dataset.device);
+      const row = document.getElementById(`htw-ace-${d}-actions`);
+      if (!row) return;
+      for (let i = 0; i < 4; i++) {
+        const cell = row.children[i];
+        const loadBtn = cell.querySelector('button[data-htw="slot-load"]');
+        const unloadBtn = cell.querySelector('button[data-htw="slot-unload"]');
+
+        const sourcedHead = _slotIsActiveSource(state, d, i);
+        const filled =
+          d === state.active_device &&
+          state.gate_status && state.gate_status[i] === 1;
+
+        if (sourcedHead != null) {
+          // Slot is active source for sourcedHead — show Unload of that head
+          loadBtn.classList.add("htw-hidden");
+          unloadBtn.classList.remove("htw-hidden");
+          unloadBtn.dataset.cmd = `ACEC__Unload_T${sourcedHead}`;
+          unloadBtn.dataset.confirm = `Unload T${sourcedHead + 1}?`;
+          unloadBtn.textContent = `Unload T${sourcedHead + 1}`;
+          unloadBtn.disabled = swap;
+          loadBtn.disabled = true;
+        } else if (filled) {
+          // Filled but not currently sourcing — offer Load → T(slot index)
+          loadBtn.classList.remove("htw-hidden");
+          unloadBtn.classList.add("htw-hidden");
+          loadBtn.textContent = `Load → T${i + 1}`;
+          loadBtn.dataset.cmd = `ACEC__Load_T${i}`;
+          loadBtn.disabled = swap;
+        } else {
+          // Empty / non-active ACE / unknown
+          loadBtn.classList.add("htw-hidden");
+          unloadBtn.classList.add("htw-hidden");
+        }
+      }
+    });
+  }
+
   function render(state, printState, workflow) {
     if (!document.getElementById("htw-root")) return;
     const empty = document.getElementById("htw-empty");
@@ -447,7 +504,8 @@ window.HardwareTwin = (function () {
     _resizeAceStack(dc);
     _renderToolheads(state, printState);
     _renderSlotsAndTubes(state);
-    // Buttons, banner, animations in Tasks 7-9.
+    _renderSlotButtons(state);
+    // Banner + animations in Tasks 8-9.
   }
 
   return { mount, render };
