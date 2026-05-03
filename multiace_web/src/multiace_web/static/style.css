@@ -1043,3 +1043,5 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
     outline: 2px solid var(--htw-extrude-glow);
   }
 }
+.htw-ace-active .htw-ace-chassis { stroke: #0ea5e9 !important; stroke-width: 2.5 !important; }
+.htw-tubes-svg { width: 70%; height: 80px; display: block; margin: -8px auto 0; }

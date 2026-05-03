@@ -198,6 +198,44 @@ window.HardwareTwin = (function () {
     }
     wrap.appendChild(svg);
 
+    // Per-slot tubes (one SVG per ACE block; viewBox 360×TBD).
+    // Tube length depends on how far this ACE sits from the U1's coupler row.
+    // For the visual we use a fixed per-block tube SVG that runs from the
+    // bottom of this ACE (y=0) to a virtual coupler row at the SVG's bottom.
+    // The actual coupler→U1 stroke lives in the global #htw-coupler-svg.
+    const tubeSvg = svgEl("svg", {
+      viewBox: "0 0 360 80",
+      preserveAspectRatio: "none",
+      class: "htw-tubes-svg",
+      "data-device": String(deviceIdx),
+    });
+    const tubeGroup = svgEl("g", { fill: "none", "stroke-linecap": "round" });
+    tubeSvg.appendChild(tubeGroup);
+    for (let i = 0; i < 4; i++) {
+      const x = 110 + i * 60;
+      // Backing rail (dashed grey, always visible)
+      tubeGroup.appendChild(svgEl("line", {
+        x1: x, y1: 0, x2: x, y2: 80,
+        stroke: "var(--htw-tube-grey)",
+        "stroke-width": 3,
+        "stroke-dasharray": "2 3",
+        class: "htw-tube-rail",
+      }));
+      // Colored fill on top (shown only when slot has filament)
+      tubeGroup.appendChild(svgEl("line", {
+        x1: x, y1: 0, x2: x, y2: 80,
+        stroke: "transparent",
+        "stroke-width": 6,
+        id: `htw-tube-${deviceIdx}-${i}`,
+        class: "htw-tube-fill",
+        pathLength: "100",
+        "stroke-dasharray": "100",
+        "stroke-dashoffset": "100",
+        "data-state": "empty",
+      }));
+    }
+    wrap.appendChild(tubeSvg);
+
     // Slot button row
     const slotBtns = htmlEl("div", {
       className: "htw-actions htw-slot-actions",
@@ -310,6 +348,97 @@ window.HardwareTwin = (function () {
     }
   }
 
+  function _slotIsActiveSource(state, deviceIdx, slotIdx) {
+    if (!state.head_source) return null;
+    for (const [headStr, src] of Object.entries(state.head_source)) {
+      if (!src) continue;
+      const aceI = src.ace != null ? src.ace : src.ace_index;
+      if (aceI === deviceIdx && src.slot === slotIdx) return Number(headStr);
+    }
+    return null;
+  }
+
+  function _slotIsParked(state, deviceIdx, slotIdx) {
+    // "Parked" = filament is in the slot but the slot is NOT the active
+    // source for its mapped toolhead. Default mapping: slot N → toolhead N.
+    if (deviceIdx === state.active_device && state.gate_status &&
+        state.gate_status[slotIdx] === 1) {
+      // Active ACE: slot is filled per gate_status. Parked iff this slot
+      // is not the source of head_source[slotIdx].
+      return _slotIsActiveSource(state, deviceIdx, slotIdx) === null;
+    }
+    // Non-active ACE: only known-filled if some head_source references it.
+    return false;  // unknown → leave as empty visually
+  }
+
+  function _renderSlotsAndTubes(state) {
+    const cfg = state.print_task_config || {};
+    const blocks = document.querySelectorAll(".htw-ace-block");
+    blocks.forEach(block => {
+      const d = Number(block.dataset.device);
+      block.classList.toggle("htw-ace-active", d === state.active_device);
+      const hdr = document.getElementById(`htw-ace-${d}-header`);
+      if (hdr) {
+        hdr.textContent = `ACE ${String.fromCharCode(65 + d)} · ${
+          d === state.active_device ? "active" : "idle"}`;
+      }
+      for (let i = 0; i < 4; i++) {
+        const slot = document.getElementById(`htw-ace-${d}-slot-${i}`);
+        const slotBody = slot.querySelector(".htw-slot-body");
+        const slotLabel = slot.querySelector(".htw-slot-label");
+        const tube = document.getElementById(`htw-tube-${d}-${i}`);
+
+        const sourcedHead = _slotIsActiveSource(state, d, i);
+        const parked = _slotIsParked(state, d, i);
+        const active = sourcedHead != null;
+        const filledOnActiveAce =
+          d === state.active_device &&
+          state.gate_status && state.gate_status[i] === 1;
+
+        // Color comes from the toolhead this slot feeds (active),
+        // or — if parked on the active ACE — from the slot's gate_status
+        // alone we have no color (gate_status is 0/1). For parked on
+        // non-active ACE we'd need head_source, which doesn't apply here.
+        let color = null;
+        if (active) {
+          color = window.MultiACEUtil.rgbFromUint(
+            cfg[sourcedHead] && cfg[sourcedHead].color);
+        } else if (parked) {
+          // Parked on active ACE: color is unknown without RFID; show neutral.
+          color = "#cbd5e1";
+        }
+
+        // Slot rectangle
+        if (active || parked || filledOnActiveAce) {
+          slotBody.setAttribute("fill", color || "#cbd5e1");
+          slotBody.setAttribute("stroke", "#1f2937");
+          slotBody.removeAttribute("stroke-dasharray");
+          slotLabel.setAttribute("fill", "#fff");
+        } else {
+          slotBody.setAttribute("fill", "transparent");
+          slotBody.setAttribute("stroke", "var(--htw-stroke-empty)");
+          slotBody.setAttribute("stroke-dasharray", "4 3");
+          slotLabel.setAttribute("fill", "var(--htw-stroke-empty)");
+        }
+
+        // Tube fill: active = full, parked = stops 15% short, empty = 0
+        if (active) {
+          tube.setAttribute("stroke", color || "#cbd5e1");
+          tube.setAttribute("stroke-dashoffset", "0");
+          tube.dataset.state = "active";
+        } else if (parked) {
+          tube.setAttribute("stroke", color || "#cbd5e1");
+          tube.setAttribute("stroke-dashoffset", "15");
+          tube.dataset.state = "parked";
+        } else {
+          tube.setAttribute("stroke", "transparent");
+          tube.setAttribute("stroke-dashoffset", "100");
+          tube.dataset.state = "empty";
+        }
+      }
+    });
+  }
+
   function render(state, printState, workflow) {
     if (!document.getElementById("htw-root")) return;
     const empty = document.getElementById("htw-empty");
@@ -317,7 +446,8 @@ window.HardwareTwin = (function () {
     if (empty) empty.classList.toggle("hidden", dc > 0);
     _resizeAceStack(dc);
     _renderToolheads(state, printState);
-    // Slots, tubes, buttons, banner, animations come in Tasks 6-9.
+    _renderSlotsAndTubes(state);
+    // Buttons, banner, animations in Tasks 7-9.
   }
 
   return { mount, render };
