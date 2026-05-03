@@ -275,11 +275,16 @@ window.HardwareTwin = (function () {
 
       // Error tint
       g.classList.toggle("htw-error", !!err);
+      // SVG tooltips require a <title> CHILD element, not a `title` attribute.
+      let titleEl = g.querySelector(":scope > title");
       if (err) {
-        g.setAttribute("title",
-          state.last_error.error || state.last_error.reason || "error");
-      } else {
-        g.removeAttribute("title");
+        if (!titleEl) {
+          titleEl = document.createElementNS(SVG_NS, "title");
+          g.appendChild(titleEl);
+        }
+        titleEl.textContent = state.last_error.error || "error";
+      } else if (titleEl) {
+        titleEl.remove();
       }
 
       // Extruding emphasis (mild glow, not flash)
@@ -287,7 +292,7 @@ window.HardwareTwin = (function () {
 
       // Source sublabel
       if (src) {
-        const aceLetter = String.fromCharCode(65 + (src.ace || src.ace_index || 0));
+        const aceLetter = String.fromCharCode(65 + (src.ace ?? 0));
         const slotN = (src.slot != null ? src.slot : 0) + 1;
         source.textContent = `ACE ${aceLetter} · Slot ${slotN}`;
         source.setAttribute("fill-opacity", "1");
