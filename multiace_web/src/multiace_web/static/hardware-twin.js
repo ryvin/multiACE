@@ -132,10 +132,12 @@ window.HardwareTwin = (function () {
       const cell = htmlEl("div", { className: "htw-cell" });
       const loadBtn = htmlEl("button", {
         className: "primary", textContent: `Load T${i + 1}`,
+        "aria-label": `Load toolhead T${i + 1}`,
         dataset: { cmd: `ACEC__Load_T${i}`, htw: "tool-load", tool: String(i) },
       });
       const unloadBtn = htmlEl("button", {
         className: "danger htw-hidden", textContent: `Unload T${i + 1}`,
+        "aria-label": `Unload toolhead T${i + 1}`,
         dataset: {
           cmd: `ACEC__Unload_T${i}`, confirm: `Unload T${i + 1}?`,
           htw: "tool-unload", tool: String(i),
@@ -245,11 +247,13 @@ window.HardwareTwin = (function () {
       const cell = htmlEl("div", { className: "htw-cell" });
       const loadBtn = htmlEl("button", {
         className: "primary htw-hidden", textContent: "Load",
+        "aria-label": `Load slot ${i + 1}`,
         dataset: { cmd: `ACEC__Load_T${i}`, htw: "slot-load",
                    device: String(deviceIdx), slot: String(i) },
       });
       const unloadBtn = htmlEl("button", {
         className: "danger htw-hidden", textContent: "Unload",
+        "aria-label": `Unload slot ${i + 1}`,
         dataset: { htw: "slot-unload", device: String(deviceIdx), slot: String(i) },
       });
       cell.appendChild(loadBtn);
@@ -621,6 +625,16 @@ window.HardwareTwin = (function () {
     } : { active: false, steps: [], kind: null };
   }
 
+  function _renderRoot(state) {
+    const root = document.getElementById("htw-root");
+    if (!root) return;
+    const disconnected = state.connected === false;
+    root.classList.toggle("htw-disconnected", disconnected);
+    if (disconnected) {
+      root.querySelectorAll("button").forEach(b => { b.disabled = true; });
+    }
+  }
+
   function render(state, printState, workflow) {
     if (!document.getElementById("htw-root")) return;
     const empty = document.getElementById("htw-empty");
@@ -630,6 +644,7 @@ window.HardwareTwin = (function () {
     _renderToolheads(state, printState);
     _renderSlotsAndTubes(state);
     _renderSlotButtons(state);
+    _renderRoot(state);
     _renderBanner(state, workflow);
     _processWorkflowDiff(state, workflow);
   }
