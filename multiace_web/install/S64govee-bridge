@@ -11,6 +11,7 @@
 
 VENV=/userdata/multiace-web/venv
 APP_DIR=/userdata/multiace-web/app
+TOOLS_DIR="$APP_DIR/tools"
 PYTHON="$VENV/bin/python3"
 PIDFILE=/var/run/govee-bridge.pid
 
@@ -22,7 +23,10 @@ if [ -f "$ENV_FILE" ]; then
 fi
 export GOVEE_BRIDGE_MAC GOVEE_BRIDGE_PORT
 
-UVICORN_ARGS="multiace_web.tools.govee_bridge:app --host 127.0.0.1 --port $GOVEE_BRIDGE_PORT"
+# tools/ is a flat directory of standalone scripts (not a Python package),
+# so we cd into it and refer to the module by its bare name. govee_bridge.py
+# imports govee_decode from the same dir.
+UVICORN_ARGS="govee_bridge:app --host 127.0.0.1 --port $GOVEE_BRIDGE_PORT"
 
 log()
 {
@@ -61,9 +65,7 @@ case "$1" in
 		exit 0
 	fi
 	log "Starting govee-bridge on port $GOVEE_BRIDGE_PORT (mac=${GOVEE_BRIDGE_MAC:-unset})..."
-	cd "$APP_DIR" || exit 1
-	# Note: the bridge module lives under multiace_web.tools, NOT a top-level
-	# tools/ package — install_web.sh symlinks ./tools into the venv site path.
+	cd "$TOOLS_DIR" || { log "ERROR: $TOOLS_DIR missing"; exit 1; }
 	setsid start-stop-daemon -S -c lava -b -x "$PYTHON" -m -p "$PIDFILE" \
 		-- -m uvicorn $UVICORN_ARGS >>/var/log/govee-bridge.log 2>&1 </dev/null
 	;;
