@@ -496,6 +496,40 @@ window.HardwareTwin = (function () {
     });
   }
 
+  function _renderBanner(state, workflow) {
+    const banner = document.getElementById("htw-banner");
+    if (!banner) return;
+    let text = null;
+    let kind = "info";
+    if (workflow && workflow.active && workflow.label) {
+      const running = workflow.steps.find(s => s.status === "running");
+      const detail = running ? ` — T${running.head + 1}` : "";
+      text = `▸ ${workflow.label}${detail}`;
+      kind = "info";
+    } else if (state.last_error && state.last_error.error) {
+      text = `⚠ ${state.last_error.action || "error"}: ${state.last_error.error}`;
+      kind = "error";
+    } else if (state.connected === false) {
+      text = "ACE disconnected";
+      kind = "error";
+    }
+    if (text) {
+      banner.textContent = "";
+      const span = document.createElement("span");
+      span.textContent = text;
+      banner.appendChild(span);
+      const x = document.createElement("button");
+      x.className = "htw-banner-dismiss";
+      x.textContent = "×";
+      x.onclick = () => banner.classList.add("hidden");
+      banner.appendChild(x);
+      banner.dataset.kind = kind;
+      banner.classList.remove("hidden");
+    } else {
+      banner.classList.add("hidden");
+    }
+  }
+
   function render(state, printState, workflow) {
     if (!document.getElementById("htw-root")) return;
     const empty = document.getElementById("htw-empty");
@@ -505,7 +539,8 @@ window.HardwareTwin = (function () {
     _renderToolheads(state, printState);
     _renderSlotsAndTubes(state);
     _renderSlotButtons(state);
-    // Banner + animations in Tasks 8-9.
+    _renderBanner(state, workflow);
+    // Animations in Task 9.
   }
 
   return { mount, render };

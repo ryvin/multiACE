@@ -1045,3 +1045,5 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 }
 .htw-ace-active .htw-ace-chassis { stroke: #0ea5e9 !important; stroke-width: 2.5 !important; }
 .htw-tubes-svg { width: 70%; height: 80px; display: block; margin: -8px auto 0; }
+.htw-banner[data-kind="error"] { background: #fecaca; color: #7f1d1d; }
+.htw-banner[data-kind="info"]  { background: var(--htw-banner-bg); color: var(--htw-banner-fg); }
