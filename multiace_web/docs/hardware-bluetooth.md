@@ -65,10 +65,34 @@ ls /sys/class/bluetooth/
 # Expected: hci0
 ```
 
-If `hci0` doesn't appear, check `dmesg` for firmware-load errors. The RTL8761B
-needs `rtl8761bu_fw.bin` and `rtl8761bu_config.bin` in `/lib/firmware/rtlbt/`.
-PAXX has the `rtlbt` directory at `/lib/firmware/rtlbt` already (verified) so
-this should just work.
+If `hci0` shows up under `/sys/class/bluetooth/` but `/dev/hci0` is missing,
+the kernel detected the dongle but couldn't load firmware. Check `dmesg` for
+errors like `Direct firmware load for rtl_bt/rtl8761bu_fw.bin failed`.
+
+PAXX firmware ships **without** the RTL Bluetooth blobs as of 2026-04, so on
+a fresh dongle plug-in you'll likely need to install them yourself. The
+files come from the upstream
+[linux-firmware](https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/rtl_bt)
+project (BSD-style redistributable license). On the printer:
+
+```sh
+# As root (the rootfs is squashfs/RO; we write to the overlay's upperdir).
+mkdir -p /oem/overlay/upper/lib/firmware/rtl_bt
+cd /oem/overlay/upper/lib/firmware/rtl_bt
+wget https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt/rtl8761bu_fw.bin
+wget https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt/rtl8761bu_config.bin
+
+# Trigger firmware reload by rebinding the dongle (replace 4-1.3.4.4 with
+# the path from `dmesg | grep "TP-Link Bluetooth"`):
+echo -n "4-1.3.4.4" > /sys/bus/usb/drivers/usb/unbind
+echo -n "4-1.3.4.4" > /sys/bus/usb/drivers/usb/bind
+ls /dev/hci0   # should now exist
+```
+
+This is safe to run during a print: the BT dongle sits on a different USB
+sub-bus from the ACE serial connections (Bus 4 vs Bus 1), so rebinding it
+won't disturb the printer or ACE Pro communication. Cameras live on a
+different sub-port of the same hub and are unaffected.
 
 ### 2. Pair / unpause the Govee
 
@@ -104,24 +128,28 @@ The bridge is a tiny Python service that scans Govee BLE advertisements and
 exposes the readings as a JSON HTTP endpoint that the multiace-web backend
 already knows how to read.
 
-> **Forward-looking:** this script is committed in the repo at
-> `multiace_web/tools/govee_bridge.py` (added separately when the hardware is
-> in your hands). The flow:
+The bridge ships in this repo:
+- `multiace_web/tools/govee_bridge.py` — FastAPI app + bleak scan loop
+- `multiace_web/tools/govee_decode.py` — pure decoder (unit-tested)
+- `multiace_web/install/S64govee-bridge` — sysvinit script
+
+`install_web.sh` already copies `tools/` into the printer's app dir and
+installs the init script. After running the installer, just add `bleak`
+to the venv and configure the MAC:
 
 ```bash
-# add bleak to the venv (one-time)
+# add bleak to the venv (one-time, on the printer)
 /userdata/multiace-web/venv/bin/pip install bleak
-
-# install + enable the bridge as its own init script
-cp /tmp/multiace_web/tools/S63govee-bridge /etc/init.d/
-chmod +x /etc/init.d/S63govee-bridge
 
 # configure (one-time): edit /userdata/multiace-web/app/.env and add:
 #   GOVEE_BRIDGE_MAC=A4:C1:38:XX:XX:XX     # your H5104's MAC
 #   GOVEE_BRIDGE_PORT=7127
 
-/etc/init.d/S63govee-bridge start
+/etc/init.d/S64govee-bridge restart
 ```
+
+If `GOVEE_BRIDGE_MAC` is not set, the bridge starts but never produces
+readings (no scan task launched). The dashboard tile stays offline.
 
 Verify it works:
 

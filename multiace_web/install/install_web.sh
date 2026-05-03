@@ -10,6 +10,7 @@ APP_DIR="$INSTALL_BASE/app"
 VENV_DIR="$INSTALL_BASE/venv"
 INIT_SCRIPT="/etc/init.d/S62multiace-web"
 WATCHDOG_SCRIPT="/etc/init.d/S63multiace-web-watchdog"
+GOVEE_SCRIPT="/etc/init.d/S64govee-bridge"
 NGINX_SNIPPET="/etc/nginx/fluidd.d/multiace.conf"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE-web] $1"; }
@@ -38,6 +39,11 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -r "$SOURCE_DIR/src" "$APP_DIR/"
 cp "$SOURCE_DIR/pyproject.toml" "$APP_DIR/"
+# tools/ holds out-of-package entrypoints (Govee bridge etc.) that the init
+# scripts run via `uvicorn govee_bridge:app` from $APP_DIR.
+if [ -d "$SOURCE_DIR/tools" ]; then
+  cp -r "$SOURCE_DIR/tools" "$APP_DIR/"
+fi
 chown -R lava:lava "$APP_DIR"
 log "App files copied to $APP_DIR"
 
@@ -58,6 +64,10 @@ log "Init script installed at $INIT_SCRIPT"
 cp "$SCRIPT_DIR/S63multiace-web-watchdog" "$WATCHDOG_SCRIPT"
 chmod +x "$WATCHDOG_SCRIPT"
 log "Watchdog installed at $WATCHDOG_SCRIPT"
+# Govee BLE bridge — optional, no-ops without GOVEE_BRIDGE_MAC in .env.
+cp "$SCRIPT_DIR/S64govee-bridge" "$GOVEE_SCRIPT"
+chmod +x "$GOVEE_SCRIPT"
+log "Govee bridge installed at $GOVEE_SCRIPT (no-op until GOVEE_BRIDGE_MAC is set in .env)"
 
 # Install nginx snippet into the fluidd include dir (loaded inside fluidd's server{})
 mkdir -p /etc/nginx/fluidd.d
