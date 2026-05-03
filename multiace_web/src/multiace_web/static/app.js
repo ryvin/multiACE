@@ -922,8 +922,21 @@ function rgbFromUint(packed) {
 function tName(i)    { return `T${(+i) + 1}`; }
 function slotName(i) { return `Slot ${(+i) + 1}`; }
 
+// Pick contrasting text color for a swatch background. Uses ITU-R BT.601
+// perceived brightness so white/light filament gets dark text and dark
+// filament gets white text. Returns null if input is unparseable so callers
+// can fall back to their own default.
+function textOnColor(rgb) {
+  if (!rgb) return null;
+  const m = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/i.exec(rgb);
+  if (!m) return null;
+  const r = +m[1], g = +m[2], b = +m[3];
+  const y = (r * 299 + g * 587 + b * 114) / 1000;
+  return y > 150 ? "#0f172a" : "#fff";
+}
+
 // Expose helpers to hardware-twin.js (vanilla project, no module system).
-window.MultiACEUtil = { rgbFromUint, tName, slotName };
+window.MultiACEUtil = { rgbFromUint, tName, slotName, textOnColor };
 
 function setEl(parent, tag, props) {
   const el = document.createElement(tag);
@@ -1386,11 +1399,25 @@ function setView(name) {
   }
 }
 
+// Embed mode: when loaded inside Mainsail/Fluidd's iframe webcam panel, hide
+// the global chrome (topbar + tab nav) and jump straight to the tab named in
+// `?tab=`. Default embed tab is "hardware" since that's what fits best in the
+// compact panel slot.
+function applyEmbedMode() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("embed") !== "1") return null;
+  document.body.classList.add("multiace-embed");
+  const tab = params.get("tab") || "hardware";
+  return tab;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   for (const tab of document.querySelectorAll(".tab")) {
     if (!tab.dataset.view) continue;  // skip help button and other non-view tabs
     tab.addEventListener("click", () => setView(tab.dataset.view));
   }
+  const embedTab = applyEmbedMode();
+  if (embedTab) setView(embedTab);
   const helpBtn = document.getElementById("help-btn");
   if (helpBtn) helpBtn.addEventListener("click", openHelp);
   const helpClose = document.getElementById("help-close");

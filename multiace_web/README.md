@@ -189,6 +189,33 @@ The console is single-tenant — one console per Snapmaker U1. To run the same
 codebase against multiple printers, deploy independently to each. There's no
 cross-printer view today.
 
+### Embed in Mainsail / Fluidd
+
+Both UIs read Moonraker's `[webcam]` blocks and render any with
+`service: iframe` as a dashboard panel, so a single config entry surfaces the
+console in **both** at once. Append `?embed=1` to strip multiACE's own
+top bar + tab nav so it fits the panel slot; `?tab=hardware` (default)
+picks which tab renders.
+
+Add to `/home/lava/printer_data/config/moonraker.conf`:
+
+```ini
+[webcam multiACE]
+service: iframe
+stream_url: /multiace/?embed=1&tab=hardware
+```
+
+Reload Moonraker (`SAVE_CONFIG` is not needed — `[webcam]` is dynamic):
+
+```bash
+curl -X POST http://<printer-ip>:7125/server/restart
+```
+
+The "multiACE" panel then appears in both Fluidd's and Mainsail's
+*Webcam* layout. Drag it where you want; each UI tracks panel layout
+independently. Other valid `?tab=` values: `dashboard`, `activity`,
+`dryer`, `config`, `diag`.
+
 ## Configuration
 
 Edit `/userdata/multiace-web/app/.env` (sourced via `set -a; . .env; set +a`
@@ -307,6 +334,15 @@ detection. They run on Linux.
 GPL-3.0 — same as the parent multiACE project.
 
 ## Changelog
+
+## 0.6.1 — 2026-05-03
+
+- Hardware tab: text contrast fix — labels on top of filament colors
+  (white/yellow/light) now switch to dark text via luminance threshold.
+- Hardware tab: dual drop-shadow halo on tubes so white/dark filaments
+  remain visible on either light or dark page backgrounds.
+- Embed mode (`?embed=1&tab=<view>`) — strips top bar + tab nav so the
+  console can be iframed inside Mainsail/Fluidd as a webcam panel.
 
 ## 0.6.0 — 2026-05-02
 

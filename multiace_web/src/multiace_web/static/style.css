@@ -1041,8 +1041,27 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
     outline: 2px solid var(--htw-extrude-glow);
   }
 }
+/* Embed mode — used when the page is loaded inside an iframe webcam panel
+ * in Mainsail/Fluidd. Strips global chrome so only the chosen tab content
+ * renders, and tightens padding so it fits the small panel slot. */
+body.multiace-embed > .topbar,
+body.multiace-embed > .tabs { display: none; }
+body.multiace-embed > .content { padding: 0.5rem; padding-bottom: 0.5rem; max-width: none; }
+body.multiace-embed { background: transparent; }
+
 .htw-ace-active .htw-ace-chassis { stroke: #0ea5e9 !important; stroke-width: 2.5 !important; }
 .htw-tubes-svg { width: 70%; height: 80px; display: block; margin: -8px auto 0; }
+
+/* Dual drop-shadow halo — keeps tubes visible regardless of page background.
+ * Dark inner ring contrasts white/light filament against light backgrounds;
+ * light outer ring contrasts black/dark filament against dark backgrounds.
+ * Applied to both ACE→coupler tubes and coupler→U1 tubes. */
+.htw-tube-fill,
+.htw-postcoupler {
+  filter:
+    drop-shadow(0 0 0.6px rgba(15, 23, 42, 0.95))
+    drop-shadow(0 0 0.6px rgba(255, 255, 255, 0.85));
+}
 .htw-banner[data-kind="error"] { background: #fecaca; color: #7f1d1d; }
 .htw-banner[data-kind="info"]  { background: var(--htw-banner-bg); color: var(--htw-banner-fg); }
 

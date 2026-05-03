@@ -76,6 +76,7 @@ window.HardwareTwin = (function () {
         x1: x, y1: 28, x2: x, y2: 80,
         stroke: "var(--htw-tube-grey)", "stroke-width": 6,
         id: `htw-postcoupler-${i}`,
+        class: "htw-postcoupler",
       });
       couplerGroup.appendChild(post);
     }
@@ -310,22 +311,31 @@ window.HardwareTwin = (function () {
         printState && printState.state === "printing" &&
         printState.current_extruder === i;
 
-      // Body fill / stroke
+      // Body fill / stroke. Track effective body color so labels can pick a
+      // contrasting fill (handles white/light filament where #fff is unreadable).
+      let bodyBg = null;
       if (sensor && c) {
         body.setAttribute("fill", c);
         body.setAttribute("stroke", "#1f2937");
         body.removeAttribute("stroke-dasharray");
+        bodyBg = c;
       } else if (sensor) {
         // Loaded but no color (RFID didn't read) — neutral grey
         body.setAttribute("fill", "#cbd5e1");
         body.setAttribute("stroke", "#1f2937");
         body.removeAttribute("stroke-dasharray");
+        bodyBg = "rgb(203,213,225)";
       } else {
         body.setAttribute("fill", "transparent");
         body.setAttribute("stroke", "var(--htw-stroke-empty)");
         body.setAttribute("stroke-dasharray", "4 3");
+        // Empty body is transparent — chassis #fff shows through.
+        bodyBg = "rgb(255,255,255)";
       }
-      label.setAttribute("fill", sensor ? "#fff" : "var(--htw-stroke-empty)");
+      label.setAttribute("fill",
+        sensor
+          ? (window.MultiACEUtil.textOnColor(bodyBg) || "#fff")
+          : "var(--htw-stroke-empty)");
 
       // Error tint
       g.classList.toggle("htw-error", !!err);
@@ -344,12 +354,15 @@ window.HardwareTwin = (function () {
       // Extruding emphasis (mild glow, not flash)
       g.classList.toggle("htw-extruding", !!extruding);
 
-      // Source sublabel
+      // Source sublabel — sits inside the toolhead body, so contrast it
+      // against whatever bodyBg ended up being (white chassis or filament color).
       if (src) {
         const aceLetter = String.fromCharCode(65 + (src.ace ?? 0));
         const slotN = (src.slot != null ? src.slot : 0) + 1;
         source.textContent = `ACE ${aceLetter} · Slot ${slotN}`;
         source.setAttribute("fill-opacity", "1");
+        source.setAttribute("fill",
+          window.MultiACEUtil.textOnColor(bodyBg) || "#0f172a");
       } else {
         source.textContent = "";
         source.setAttribute("fill-opacity", "0");
@@ -438,10 +451,12 @@ window.HardwareTwin = (function () {
 
         // Slot rectangle
         if (active || parked) {
-          slotBody.setAttribute("fill", color || "#cbd5e1");
+          const slotBg = color || "rgb(203,213,225)";
+          slotBody.setAttribute("fill", slotBg);
           slotBody.setAttribute("stroke", "#1f2937");
           slotBody.removeAttribute("stroke-dasharray");
-          slotLabel.setAttribute("fill", "#fff");
+          slotLabel.setAttribute("fill",
+            window.MultiACEUtil.textOnColor(slotBg) || "#fff");
         } else {
           slotBody.setAttribute("fill", "transparent");
           slotBody.setAttribute("stroke", "var(--htw-stroke-empty)");
