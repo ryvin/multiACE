@@ -530,6 +530,97 @@ window.HardwareTwin = (function () {
     }
   }
 
+  // ---- Animation lifecycle ----
+  let _lastWorkflow = { active: false, steps: [], kind: null };
+
+  function _resolveSourceForHead(state, head) {
+    const src = state.head_source && state.head_source[head];
+    if (src) {
+      const aceI = src.ace != null ? src.ace : src.ace_index;
+      return { device: aceI, slot: src.slot };
+    }
+    // Pre-load: default mapping is slot N of active ACE → head N
+    if (state.active_device != null) {
+      return { device: state.active_device, slot: head };
+    }
+    return null;
+  }
+
+  function _startTubeAnim(deviceIdx, slotIdx, kind) {
+    const tube = document.getElementById(`htw-tube-${deviceIdx}-${slotIdx}`);
+    if (!tube) return;
+    tube.classList.remove("htw-tube-loading", "htw-tube-unloading");
+    // Trigger reflow so the animation restarts even if class was just removed
+    void tube.offsetWidth;
+    tube.classList.add(kind === "load" ? "htw-tube-loading" : "htw-tube-unloading");
+  }
+
+  function _stopTubeAnim(deviceIdx, slotIdx) {
+    const tube = document.getElementById(`htw-tube-${deviceIdx}-${slotIdx}`);
+    if (!tube) return;
+    tube.classList.remove("htw-tube-loading", "htw-tube-unloading");
+  }
+
+  function _setFlash(deviceIdx, slotIdx, head, on) {
+    if (deviceIdx != null && slotIdx != null) {
+      const slot = document.getElementById(`htw-ace-${deviceIdx}-slot-${slotIdx}`);
+      if (slot) slot.classList.toggle("htw-flashing", on);
+    }
+    if (head != null) {
+      const tool = document.getElementById(`htw-tool-${head}`);
+      if (tool) tool.classList.toggle("htw-flashing", on);
+    }
+  }
+
+  function _processWorkflowDiff(state, workflow) {
+    const prevSteps = (_lastWorkflow.steps || []);
+    const prevByHead = Object.fromEntries(prevSteps.map(s => [s.head, s.status]));
+    const cur = workflow && workflow.active ? workflow.steps : [];
+    const direction = workflow && workflow.kind && workflow.kind.startsWith("unload")
+      ? "unload" : "load";
+
+    cur.forEach(step => {
+      const wasRunning = prevByHead[step.head] === "running";
+      const isRunning = step.status === "running";
+      const src = _resolveSourceForHead(state, step.head);
+
+      if (!wasRunning && isRunning) {
+        // Step just started
+        if (src) {
+          _setFlash(src.device, src.slot, step.head, true);
+          _startTubeAnim(src.device, src.slot, direction);
+        } else {
+          _setFlash(null, null, step.head, true);
+        }
+      } else if (wasRunning && (step.status === "done" || step.status === "failed")) {
+        // Step just finished — drop flash; tube state will be set by
+        // _renderSlotsAndTubes in the next render anyway, so just stop the
+        // animation class.
+        if (src) {
+          _setFlash(src.device, src.slot, step.head, false);
+          _stopTubeAnim(src.device, src.slot);
+        } else {
+          _setFlash(null, null, step.head, false);
+        }
+      }
+    });
+
+    // If workflow just dropped active=false, clear all flashes/anims
+    if (_lastWorkflow.active && (!workflow || !workflow.active)) {
+      document.querySelectorAll(".htw-flashing").forEach(el =>
+        el.classList.remove("htw-flashing"));
+      document.querySelectorAll(".htw-tube-loading, .htw-tube-unloading").forEach(el =>
+        el.classList.remove("htw-tube-loading", "htw-tube-unloading"));
+    }
+
+    // Snapshot for next diff
+    _lastWorkflow = workflow ? {
+      active: workflow.active,
+      kind: workflow.kind,
+      steps: workflow.steps.map(s => ({ head: s.head, status: s.status })),
+    } : { active: false, steps: [], kind: null };
+  }
+
   function render(state, printState, workflow) {
     if (!document.getElementById("htw-root")) return;
     const empty = document.getElementById("htw-empty");
@@ -540,7 +631,7 @@ window.HardwareTwin = (function () {
     _renderSlotsAndTubes(state);
     _renderSlotButtons(state);
     _renderBanner(state, workflow);
-    // Animations in Task 9.
+    _processWorkflowDiff(state, workflow);
   }
 
   return { mount, render };

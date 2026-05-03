@@ -1047,3 +1047,29 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 .htw-tubes-svg { width: 70%; height: 80px; display: block; margin: -8px auto 0; }
 .htw-banner[data-kind="error"] { background: #fecaca; color: #7f1d1d; }
 .htw-banner[data-kind="info"]  { background: var(--htw-banner-bg); color: var(--htw-banner-fg); }
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes htwFlashGlow {
+    0%, 100% { filter: brightness(1) drop-shadow(0 0 0 rgba(245,158,11,0)); }
+    50%      { filter: brightness(1.25) drop-shadow(0 0 6px var(--htw-flash-glow)); }
+  }
+  @keyframes htwTubeLoad   { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+  @keyframes htwTubeUnload { from { stroke-dashoffset: 0; }   to { stroke-dashoffset: 100; } }
+
+  .htw-slot.htw-flashing .htw-slot-body,
+  .htw-tool.htw-flashing .htw-tool-body {
+    animation: htwFlashGlow 1.1s ease-in-out infinite;
+  }
+  .htw-tube-fill.htw-tube-loading   { animation: htwTubeLoad   2.2s linear forwards; }
+  .htw-tube-fill.htw-tube-unloading { animation: htwTubeUnload 2.2s linear forwards; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .htw-slot.htw-flashing .htw-slot-body,
+  .htw-tool.htw-flashing .htw-tool-body {
+    outline: 3px solid var(--htw-flash-glow);
+  }
+  .htw-tube-fill.htw-tube-loading,
+  .htw-tube-fill.htw-tube-unloading {
+    transition: stroke-dashoffset 0.4s linear;
+  }
+}
