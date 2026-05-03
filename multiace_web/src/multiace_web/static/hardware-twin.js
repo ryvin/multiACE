@@ -148,8 +148,105 @@ window.HardwareTwin = (function () {
     rootEl.appendChild(toolBtns);
   }
 
+  // ---- ACE block factory ----
+  function _buildAceBlock(deviceIdx) {
+    const wrap = htmlEl("div", {
+      className: "htw-ace-block",
+      id: `htw-ace-${deviceIdx}`,
+      dataset: { device: String(deviceIdx) },
+    });
+    // ACE SVG (viewBox 280×160; ACE is 70% width via CSS class)
+    const svg = svgEl("svg", { viewBox: "0 0 280 160", class: "htw-ace-svg" });
+    // Header band
+    svg.appendChild(svgEl("rect", { x: 4, y: 0, width: 272, height: 14, rx: 6, fill: "#1e293b" }));
+    const hdrText = svgEl("text", {
+      x: 12, y: 11, "font-size": 9, fill: "#cbd5e1",
+      class: "htw-ace-header-text", id: `htw-ace-${deviceIdx}-header`,
+    });
+    hdrText.textContent = `ACE ${String.fromCharCode(65 + deviceIdx)}`;
+    svg.appendChild(hdrText);
+    // Chassis
+    svg.appendChild(svgEl("rect", {
+      x: 4, y: 14, width: 272, height: 138, rx: 10,
+      fill: "#fff", stroke: "var(--htw-stroke)", "stroke-width": 2,
+      class: "htw-ace-chassis", id: `htw-ace-${deviceIdx}-chassis`,
+    }));
+    // 4 slot rectangles
+    for (let i = 0; i < 4; i++) {
+      const x = 12 + i * 66;
+      const g = svgEl("g", {
+        id: `htw-ace-${deviceIdx}-slot-${i}`,
+        class: "htw-slot",
+        "data-device": String(deviceIdx),
+        "data-slot": String(i),
+      });
+      g.appendChild(svgEl("rect", {
+        x: x, y: 22, width: 58, height: 120, rx: 6,
+        fill: "transparent",
+        stroke: "var(--htw-stroke-empty)",
+        "stroke-dasharray": "4 3",
+        class: "htw-slot-body",
+      }));
+      const label = svgEl("text", {
+        x: x + 29, y: 87,
+        "text-anchor": "middle", "font-size": 14, "font-weight": 700,
+        fill: "var(--htw-stroke-empty)", class: "htw-slot-label",
+      });
+      label.textContent = String(i + 1);
+      g.appendChild(label);
+      svg.appendChild(g);
+    }
+    wrap.appendChild(svg);
+
+    // Slot button row
+    const slotBtns = htmlEl("div", {
+      className: "htw-actions htw-slot-actions",
+      id: `htw-ace-${deviceIdx}-actions`,
+    });
+    for (let i = 0; i < 4; i++) {
+      const cell = htmlEl("div", { className: "htw-cell" });
+      const loadBtn = htmlEl("button", {
+        className: "primary htw-hidden", textContent: "Load",
+        dataset: { cmd: `ACEC__Load_T${i}`, htw: "slot-load",
+                   device: String(deviceIdx), slot: String(i) },
+      });
+      const unloadBtn = htmlEl("button", {
+        className: "danger htw-hidden", textContent: "Unload",
+        dataset: { htw: "slot-unload", device: String(deviceIdx), slot: String(i) },
+      });
+      cell.appendChild(loadBtn);
+      cell.appendChild(unloadBtn);
+      slotBtns.appendChild(cell);
+    }
+    wrap.appendChild(slotBtns);
+    return wrap;
+  }
+
+  function _resizeAceStack(deviceCount) {
+    const stack = document.getElementById("htw-ace-stack");
+    if (!stack) return;
+    const existing = stack.querySelectorAll(".htw-ace-block");
+    if (existing.length === deviceCount) return;
+    if (existing.length < deviceCount) {
+      for (let d = existing.length; d < deviceCount; d++) {
+        // Newest ACE on top → CSS `flex-direction: column-reverse` on the
+        // stack means appending here visually places the newest at the top.
+        stack.appendChild(_buildAceBlock(d));
+      }
+    } else {
+      for (let d = existing.length - 1; d >= deviceCount; d--) {
+        stack.removeChild(existing[d]);
+      }
+    }
+  }
+
   function render(state, printState, workflow) {
-    // Implemented incrementally across Tasks 4-9.
+    if (!document.getElementById("htw-root")) return;
+    const empty = document.getElementById("htw-empty");
+    const dc = state.device_count || 0;
+    if (empty) empty.classList.toggle("hidden", dc > 0);
+    _resizeAceStack(dc);
+    // Per-element state mutations follow in Tasks 5-9.
   }
 
   return { mount, render };

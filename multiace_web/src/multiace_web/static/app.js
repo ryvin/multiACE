@@ -285,6 +285,9 @@ async function fetchPrint() {
   renderStatusBanner();
   renderDryerStatus();
   renderEnvStrip();
+  if (window.HardwareTwin) {
+    window.HardwareTwin.render(state, printState, workflow);
+  }
 }
 
 // =====================================================================
@@ -873,6 +876,9 @@ function renderAll() {
   renderDiag();
   renderStatusBanner();
   renderWorkflow();
+  if (window.HardwareTwin) {
+    window.HardwareTwin.render(state, printState, workflow);
+  }
 }
 function renderTopbar() {
   const label = document.getElementById("active-ace-label");
