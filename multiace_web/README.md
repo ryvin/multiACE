@@ -14,6 +14,14 @@ Reach it at `http://<printer-ip>/multiace/` from any browser on your LAN.
 | **Dryer** | Per-ACE dryer profile picker (PLA / PETG / TPU / ABS / Nylon / PC / PVA / Quick / Custom), temp + duration overrides, Start / Stop. Profiles persist in browser localStorage |
 | **Config** | Live `ace.cfg` editor — saving triggers a Klipper `RESTART` |
 | **Diag** | Current state JSON, klippy.log tail, raw `ACE_HEAD_STATUS` / `ACE_LIST` / `ACE_CLEAR_HEADS` buttons |
+| **Hardware** | Schematic SVG twin of the ACE Pro stack and the Snapmaker U1 — bowden tubes, couplers, slots, toolheads — with live state, animation during loads/unloads, and per-block Load/Unload buttons |
+
+- **Hardware tab.** A schematic SVG twin of the ACE Pro stack and the Snapmaker U1.
+  Each ACE slot has a bowden tube; tubes meet at per-toolhead couplers; one tube
+  continues from each coupler to the U1. Source slots and destination toolheads
+  pulse during load/unload, and the source tube animates as filament moves.
+  Per-block Load/Unload buttons mirror the existing Dashboard buttons. The
+  existing Dashboard tab is unchanged.
 
 The dashboard is the home view and answers the five things you open the app to ask:
 *is everything OK*, *what's printing*, *what's loaded where*, *what just happened*,
@@ -297,3 +305,9 @@ detection. They run on Linux.
 ## License
 
 GPL-3.0 — same as the parent multiACE project.
+
+## Changelog
+
+## 0.6.0 — 2026-05-02
+
+- New Hardware tab with animated SVG twin of the ACE-U1 system.

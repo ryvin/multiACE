@@ -1,6 +1,6 @@
 """Headless Playwright visual regression for the multiACE Web Console.
 
-Captures Dashboard / Activity / Dryer / Config / Diag at desktop (1280x900)
+Captures Dashboard / Activity / Dryer / Config / Diag / Hardware at desktop (1280x900)
 and mobile (390x844, iPhone 12 Pro), reports console errors, and exits
 non-zero if any page has a JS pageerror. Read-only — never clicks an action
 button, never submits the Config form.
@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-READ_ONLY_TABS = ["dashboard", "activity", "dryer", "config", "diag"]
+READ_ONLY_TABS = ["dashboard", "activity", "dryer", "config", "diag", "hardware"]
 
 
 def main(url: str, out_dir: Path) -> int:
