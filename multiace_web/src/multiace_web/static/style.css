@@ -1024,3 +1024,22 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 @media (max-width: 480px) {
   .htw-tool-source { display: none; }
 }
+
+.htw-tool.htw-error .htw-tool-body {
+  stroke: #ef4444 !important;
+  stroke-width: 3 !important;
+}
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes htwExtrudeGlow {
+    0%, 100% { filter: none; }
+    50%      { filter: drop-shadow(0 0 4px var(--htw-extrude-glow)); }
+  }
+  .htw-tool.htw-extruding .htw-tool-body {
+    animation: htwExtrudeGlow 2.5s ease-in-out infinite;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .htw-tool.htw-extruding .htw-tool-body {
+    outline: 2px solid var(--htw-extrude-glow);
+  }
+}

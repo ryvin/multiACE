@@ -240,13 +240,79 @@ window.HardwareTwin = (function () {
     }
   }
 
+  function _renderToolheads(state, printState) {
+    const cfg = state.print_task_config || {};
+    for (let i = 0; i < 4; i++) {
+      const g = document.getElementById(`htw-tool-${i}`);
+      if (!g) continue;
+      const body = g.querySelector(".htw-tool-body");
+      const label = g.querySelector(".htw-tool-label");
+      const source = document.getElementById(`htw-tool-source-${i}`);
+      const src = state.head_source ? state.head_source[i] : null;
+      const sensor = state.sensors ? !!state.sensors[i] : false;
+      const c = (cfg[i] && window.MultiACEUtil.rgbFromUint(cfg[i].color)) || null;
+      const err = state.last_error && state.last_error.head === i;
+      const extruding =
+        printState && printState.state === "printing" &&
+        printState.current_extruder === i;
+
+      // Body fill / stroke
+      if (sensor && c) {
+        body.setAttribute("fill", c);
+        body.setAttribute("stroke", "#1f2937");
+        body.removeAttribute("stroke-dasharray");
+      } else if (sensor) {
+        // Loaded but no color (RFID didn't read) — neutral grey
+        body.setAttribute("fill", "#cbd5e1");
+        body.setAttribute("stroke", "#1f2937");
+        body.removeAttribute("stroke-dasharray");
+      } else {
+        body.setAttribute("fill", "transparent");
+        body.setAttribute("stroke", "var(--htw-stroke-empty)");
+        body.setAttribute("stroke-dasharray", "4 3");
+      }
+      label.setAttribute("fill", sensor ? "#fff" : "var(--htw-stroke-empty)");
+
+      // Error tint
+      g.classList.toggle("htw-error", !!err);
+      if (err) {
+        g.setAttribute("title",
+          state.last_error.error || state.last_error.reason || "error");
+      } else {
+        g.removeAttribute("title");
+      }
+
+      // Extruding emphasis (mild glow, not flash)
+      g.classList.toggle("htw-extruding", !!extruding);
+
+      // Source sublabel
+      if (src) {
+        const aceLetter = String.fromCharCode(65 + (src.ace || src.ace_index || 0));
+        const slotN = (src.slot != null ? src.slot : 0) + 1;
+        source.textContent = `ACE ${aceLetter} · Slot ${slotN}`;
+        source.setAttribute("fill-opacity", "1");
+      } else {
+        source.textContent = "";
+        source.setAttribute("fill-opacity", "0");
+      }
+
+      // Post-coupler tube color mirrors loaded source
+      const post = document.getElementById(`htw-postcoupler-${i}`);
+      if (post) {
+        post.setAttribute("stroke",
+          (sensor && c) ? c : "var(--htw-tube-grey)");
+      }
+    }
+  }
+
   function render(state, printState, workflow) {
     if (!document.getElementById("htw-root")) return;
     const empty = document.getElementById("htw-empty");
     const dc = state.device_count || 0;
     if (empty) empty.classList.toggle("hidden", dc > 0);
     _resizeAceStack(dc);
-    // Per-element state mutations follow in Tasks 5-9.
+    _renderToolheads(state, printState);
+    // Slots, tubes, buttons, banner, animations come in Tasks 6-9.
   }
 
   return { mount, render };
