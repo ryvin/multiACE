@@ -1374,6 +1374,10 @@ function setView(name) {
   for (const view of document.querySelectorAll(".view")) {
     view.classList.toggle("active", view.dataset.view === name);
   }
+  if (name === "hardware" && window.HardwareTwin) {
+    window.HardwareTwin.mount(document.getElementById("htw-root"));
+    window.HardwareTwin.render(state, printState, workflow);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
