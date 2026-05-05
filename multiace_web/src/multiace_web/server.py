@@ -203,6 +203,10 @@ async def lifespan(app: FastAPI):
     app.state.events = events
     app.state.ws_clients = ws_clients
     app.state.last_print = {}
+    # Tracks the wall-clock time of the last successful print payload write
+    # (by either the PrintStatePoller or GET /api/print). The autodry FSM
+    # uses this to detect Moonraker outages — see autodry_inputs_fetcher.
+    app.state.last_print_at = 0.0
 
     # Allow tests to inject a mock before lifespan runs.
     _lifespan_owns_moonraker = not hasattr(app.state, "moonraker")
@@ -278,22 +282,47 @@ async def lifespan(app: FastAPI):
 
         Humidity comes from the cached _read_humidity output (the same the
         dashboard uses); klipper_print_state and dryer_status come from the
-        most recent /api/print fetch (cached on app.state)."""
+        most recent /api/print fetch (cached on app.state).
+
+        Staleness guard: if the cached print payload is older than 3× the
+        configured poll interval, treat it as stale and feed the FSM a
+        neutral "standby + humidity-unknown" snapshot. Without this the FSM
+        could keep evaluating against a payload from many minutes ago — for
+        example, deciding to start drying because the cached state still
+        says ``standby`` while Klipper has actually been printing for an
+        hour but Moonraker is unreachable so PrintStatePoller has been
+        silently swallowing errors. The FSM's transitions already handle
+        missing humidity / standby state safely (they keep it in
+        IDLE/WATCHING) so this is a safe degradation.
+        """
         st = state.to_dict()
         last_print: dict = getattr(app.state, "last_print", {}) or {}
+        last_print_at: float = getattr(app.state, "last_print_at", 0.0)
+
+        poll_interval = float(os.environ.get("MULTIACE_PRINT_POLL_SEC", "4"))
+        is_stale = (
+            (time.time() - last_print_at) > (3 * poll_interval)
+            if last_print_at > 0
+            else True
+        )
+
         humidity = last_print.get("humidity") or {}
         dryer = last_print.get("dryer") or {}
         return Inputs(
             active_device=st.get("active_device"),
             head_source=st.get("head_source") or {},
             swap_in_progress=bool(st.get("swap_in_progress")),
-            humidity_ok=bool(humidity.get("ok")),
-            humidity_pct=float(humidity.get("humidity_pct") or 0.0),
-            cavity_temp_c=last_print.get("cavity_temp_c"),
-            klipper_print_state=str(last_print.get("state") or "standby"),
-            dryer_status=str(dryer.get("status") or "stop"),
+            humidity_ok=False if is_stale else bool(humidity.get("ok")),
+            humidity_pct=0.0 if is_stale else float(humidity.get("humidity_pct") or 0.0),
+            cavity_temp_c=None if is_stale else last_print.get("cavity_temp_c"),
+            klipper_print_state="standby" if is_stale else str(last_print.get("state") or "standby"),
+            dryer_status="stop" if is_stale else str(dryer.get("status") or "stop"),
             user_profiles=None,
         )
+
+    # Expose on app.state so tests can call it directly without scraping
+    # the AutoDryer's private attributes.
+    app.state.autodry_inputs_fetcher = autodry_inputs_fetcher
 
     async def autodry_emit_event(payload: dict) -> None:
         """Emit an AUTODRY_* event into the existing event broadcaster."""
@@ -520,7 +549,11 @@ def create_app(
             payload = await _compute_print_payload(request.app.state.moonraker)
         except MoonrakerError as e:
             raise HTTPException(502, str(e))
+        # Dual writer with PrintStatePoller — see comment in poller.py.
+        # We also bump last_print_at so the autodry staleness guard treats
+        # a UI-driven fetch as a fresh tick.
         request.app.state.last_print = payload
+        request.app.state.last_print_at = time.time()
         return payload
 
     @app.post("/api/dry")

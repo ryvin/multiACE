@@ -672,26 +672,78 @@ def test_print_poller_populates_last_print_without_ui(app_with_bg):
 
 
 def test_print_poller_swallows_moonraker_errors(app_with_bg):
-    """Moonraker hiccups must not stop the poller — the previous payload should
-    remain in last_print and the loop should keep ticking."""
+    """Moonraker hiccups must not stop the poller.
+
+    Drives the loop through three phases to actually prove survival:
+      1. Successful first tick — last_print populated.
+      2. Mock flips to MoonrakerError — cached payload preserved (we capture
+         a *copy* via dict(), not a same-object reference, so equality
+         compares values, not identity).
+      3. Mock flips to a NEW different payload — loop is still alive and
+         picks up the fresh value, proving the loop wasn't killed by the
+         transient error.
+    """
     from multiace_web.moonraker import MoonrakerError
     import time as _time
-    mr = app_with_bg.state if False else None  # silence linters
     with TestClient(app_with_bg):
-        # First, let the poller seed last_print successfully.
+        # Phase 1: let the poller seed last_print successfully.
         deadline = _time.time() + 5.0
         while _time.time() < deadline:
             if app_with_bg.state.last_print:
                 break
             _time.sleep(0.05)
         assert app_with_bg.state.last_print, "initial poll never populated last_print"
-        seeded = app_with_bg.state.last_print
+        assert app_with_bg.state.last_print["state"] == "printing"
+        seeded = dict(app_with_bg.state.last_print)  # proper copy, NOT a reference
 
-        # Now make Moonraker fail. The poller should swallow the error; the
-        # cached payload should remain in place.
+        # Phase 2: flip Moonraker to fail. Cached payload should remain.
         app_with_bg.state.moonraker.query_objects = AsyncMock(
             side_effect=MoonrakerError("transient")
         )
-        # Give a few tick cycles for any failure to surface.
-        _time.sleep(0.3)
-        assert app_with_bg.state.last_print is seeded or app_with_bg.state.last_print == seeded
+        # Wait several poll intervals (poll_interval=0.05s in this fixture).
+        _time.sleep(0.5)
+        assert app_with_bg.state.last_print == seeded, (
+            "transient Moonraker error overwrote or cleared cached payload"
+        )
+
+        # Phase 3: flip Moonraker back to a NEW different payload. If the
+        # loop survived the error, it will pick this up on the next tick.
+        new_payload = _print_query_payload()
+        new_payload["print_stats"]["state"] = "paused"
+        app_with_bg.state.moonraker.query_objects = AsyncMock(return_value=new_payload)
+        deadline = _time.time() + 5.0
+        while _time.time() < deadline:
+            if app_with_bg.state.last_print.get("state") == "paused":
+                break
+            _time.sleep(0.05)
+        assert app_with_bg.state.last_print["state"] == "paused", (
+            "PrintStatePoller did not recover after a transient MoonrakerError"
+        )
+
+
+def test_autodry_inputs_fetcher_treats_stale_print_as_standby(app_with_bg):
+    """If last_print_at is too old, the inputs fetcher must NOT pass through
+    the cached print state — autodry should see klipper_print_state='standby'
+    and humidity_ok=False so it doesn't trip on stale data while Moonraker
+    has been unreachable."""
+    import time as _time
+    with TestClient(app_with_bg):
+        # Wait for the first poller tick to populate last_print.
+        deadline = _time.time() + 5.0
+        while _time.time() < deadline:
+            if app_with_bg.state.last_print:
+                break
+            _time.sleep(0.05)
+        assert app_with_bg.state.last_print["state"] == "printing"
+
+        # Backdate the timestamp to simulate Moonraker having been
+        # unreachable for 10 minutes — much older than 3× poll_interval.
+        app_with_bg.state.last_print_at = _time.time() - 600.0
+
+        fetcher = app_with_bg.state.autodry_inputs_fetcher
+        inputs = fetcher()
+        assert inputs.klipper_print_state == "standby"
+        assert inputs.humidity_ok is False
+        assert inputs.humidity_pct == 0.0
+        assert inputs.cavity_temp_c is None
+        assert inputs.dryer_status == "stop"

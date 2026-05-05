@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from .moonraker import MoonrakerClient, MoonrakerError
 
@@ -74,7 +75,14 @@ class PrintStatePoller:
         while not self._stop.is_set():
             try:
                 payload = await self._fetcher()
+                # Dual writer: GET /api/print also writes here. Python attr
+                # assignment is atomic so no torn reads; tick-vs-request
+                # interleaving may produce a slightly older payload "winning"
+                # by ms but is harmless for the FSM. The companion timestamp
+                # below is consumed by autodry_inputs_fetcher to detect
+                # staleness when Moonraker is unreachable.
                 self._app_state.last_print = payload
+                self._app_state.last_print_at = time.time()
             except MoonrakerError as e:
                 log.debug("PrintStatePoller: %s", e)
             except Exception:
