@@ -672,3 +672,199 @@ def tick_fsm(
         return p, transitions
 
     return p, transitions
+
+
+# ---- AutoDryer runtime task wrapper ----
+
+import asyncio
+from typing import Awaitable, Callable
+
+# Type aliases for the injected callables.
+InputsFetcher = Callable[[], Inputs]
+EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+class AutoDryer:
+    """Runtime task that drives the FSM.
+
+    Runs as an asyncio task started by server.py's lifespan. Each tick:
+    1. Calls inputs_fetcher() to get a snapshot Inputs
+    2. Runs tick_fsm() to compute the new persisted state + transitions
+    3. Persists the state (immediate writes for transitions, debounced
+       otherwise — currently we save on every transition since transitions
+       are infrequent)
+    4. Emits each transition as a state-log Activity event via emit_event()
+    5. For user-relevant transitions, posts toasts via the announcements client
+
+    All side-effects are dependency-injected so the runtime is testable
+    without Moonraker or the live state model.
+    """
+
+    def __init__(
+        self,
+        *,
+        state_path: Path,
+        inputs_fetcher: InputsFetcher,
+        emit_event: EventEmitter,
+        announcements: Any,                     # AnnouncementsClient or mock
+        tick_sec: float = 60.0,
+        debounce_required: int = DEFAULT_DEBOUNCE_REQUIRED,
+        cooldown_min: int = DEFAULT_COOLDOWN_MIN,
+        max_run_min: int = DEFAULT_MAX_RUN_MIN,
+        daily_duty_max_min: int = DEFAULT_DAILY_DUTY_MAX_MIN,
+        min_delta_pct: float = DEFAULT_MIN_DELTA_PCT,
+    ) -> None:
+        self._state_path = state_path
+        self._fetch_inputs = inputs_fetcher
+        self._emit_event = emit_event
+        self._announcements = announcements
+        self._tick_sec = tick_sec
+        self._cfg = {
+            "debounce_required": debounce_required,
+            "cooldown_min": cooldown_min,
+            "max_run_min": max_run_min,
+            "daily_duty_max_min": daily_duty_max_min,
+            "min_delta_pct": min_delta_pct,
+        }
+        self._stop = asyncio.Event()
+        # Ephemeral state — debounce buffer + drying-cycle bookkeeping.
+        self._eph = Ephemeral(debounce=DebounceBuffer(required=debounce_required))
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    @property
+    def persisted(self) -> PersistedState:
+        """Most recent persisted state (re-read each call so tests can verify)."""
+        return load_persisted_state(self._state_path)
+
+    def update_config(self, **kw: Any) -> PersistedState:
+        """Mutate persisted config (mode/target_pct/hysteresis_pp/target_ace) and
+        write through. Used by the /api/autodry POST handler."""
+        p = load_persisted_state(self._state_path)
+        for k, v in kw.items():
+            if hasattr(p, k):
+                setattr(p, k, v)
+        save_persisted_state(self._state_path, p)
+        return p
+
+    def reset_fault(self) -> PersistedState:
+        p = load_persisted_state(self._state_path)
+        p.fsm.fault = None
+        # Move FAULTED → IDLE so guards re-evaluate on next tick.
+        if p.fsm.state == FSMState.FAULTED:
+            p.fsm.state = FSMState.IDLE
+        save_persisted_state(self._state_path, p)
+        return p
+
+    def force_evaluate(self) -> None:
+        """Pretend the debounce buffer is full + cooldown elapsed for the next tick."""
+        p = load_persisted_state(self._state_path)
+        p.fsm.cooldown_until_ts = 0.0
+        save_persisted_state(self._state_path, p)
+        # Pre-fill the debounce buffer to its threshold.
+        for _ in range(self._cfg["debounce_required"]):
+            self._eph.debounce.observe_above()
+
+    async def run(self) -> None:
+        """Tick loop. Runs until stop() is called."""
+        log.info("AutoDryer starting tick loop (tick_sec=%s)", self._tick_sec)
+        while not self._stop.is_set():
+            try:
+                await self._tick_once(now_ts=_now())
+            except Exception:
+                log.exception("AutoDryer tick failed; continuing")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._tick_sec)
+                return
+            except asyncio.TimeoutError:
+                pass
+
+    async def _tick_once(self, *, now_ts: float) -> None:
+        persisted = load_persisted_state(self._state_path)
+        if persisted.mode == "off":
+            return  # opt-out; FSM doesn't run
+        try:
+            inputs = self._fetch_inputs()
+        except Exception:
+            log.exception("AutoDryer inputs_fetcher raised; skipping tick")
+            return
+
+        new_persisted, transitions = tick_fsm(
+            persisted, self._eph, inputs, now_ts,
+            **self._cfg,
+        )
+
+        if new_persisted != persisted:
+            save_persisted_state(self._state_path, new_persisted)
+
+        # Process transitions: Activity event + (optionally) toast.
+        for t in transitions:
+            await self._emit_event({"action": t.event, "params": t.payload})
+            await self._maybe_announce(t, new_persisted)
+
+    async def _maybe_announce(self, t: Transition, p: PersistedState) -> None:
+        """Convert a Transition into a Mainsail/Fluidd toast.
+
+        Posted on TRIGGERED, FINISHED, FAILED_*, FAULT_CLEARED. NOT posted
+        on per-tick transitions (debounce, COOLDOWN end, IDLE↔WATCHING) or
+        OBSERVED_DRYING (the user already knows they started a manual dry).
+        """
+        prefix = "[DRY-RUN] " if p.mode == "log" else ""
+        ace = t.payload.get("ace", p.target_ace)
+        if t.event == "AUTODRY_TRIGGERED" or t.event == "AUTODRY_DRY_RUN":
+            verb = "would trigger" if p.mode == "log" else "triggered"
+            entry_id = await self._announcements.post(
+                title=f"{prefix}Auto-dry {verb}: ACE {ace}",
+                description=(
+                    f"{prefix}Humidity {t.payload.get('trigger_rh'):.1f}%, "
+                    f"{'would dry' if p.mode == 'log' else 'drying'} to "
+                    f"{p.target_pct}% at {t.payload.get('target_temp')}°C"
+                ),
+                entry_type="info",
+            )
+            if entry_id:
+                # Persist for later auto-dismiss
+                cur = load_persisted_state(self._state_path)
+                cur.fsm.trigger_announcement_id = entry_id
+                save_persisted_state(self._state_path, cur)
+        elif t.event == "AUTODRY_FINISHED":
+            prev_id = p.fsm.trigger_announcement_id
+            if prev_id:
+                await self._announcements.dismiss(prev_id)
+                cur = load_persisted_state(self._state_path)
+                cur.fsm.trigger_announcement_id = None
+                save_persisted_state(self._state_path, cur)
+            await self._announcements.post(
+                title=f"{prefix}Auto-dry finished: ACE {ace}",
+                description=f"{prefix}RH {t.payload.get('start_rh'):.1f} → "
+                            f"{t.payload.get('end_rh'):.1f}%, ran "
+                            f"{t.payload.get('ran_min')}m",
+                entry_type="info",
+            )
+        elif t.event.startswith("AUTODRY_FAILED_"):
+            prev_id = p.fsm.trigger_announcement_id
+            if prev_id:
+                await self._announcements.dismiss(prev_id)
+                cur = load_persisted_state(self._state_path)
+                cur.fsm.trigger_announcement_id = None
+                save_persisted_state(self._state_path, cur)
+            await self._announcements.post(
+                title=f"{prefix}Auto-dry FAULT: ACE {ace}",
+                description=f"{prefix}{t.event}: "
+                            f"{p.fsm.fault.msg if p.fsm.fault else ''}",
+                entry_type="warning",
+                priority="high",
+            )
+        elif t.event == "AUTODRY_FAULT_CLEARED":
+            await self._announcements.post(
+                title=f"Auto-dry fault cleared: ACE {ace}",
+                description="User cleared FAULTED state; FSM re-armed",
+                entry_type="info",
+            )
+
+
+def _now() -> float:
+    """Wall-clock seconds; injectable by patching for tests."""
+    import time
+    return time.time()

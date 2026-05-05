@@ -548,3 +548,94 @@ def test_watching_demotes_to_idle_when_mode_set_off():
     eph = Ephemeral()
     new, _ = tick_fsm(p, eph, _base_inputs(), now_ts=1000.0)
     assert new.fsm.state == FSMState.IDLE
+
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
+from multiace_web.autodryer import AutoDryer
+
+
+@pytest.mark.asyncio
+async def test_autodryer_one_tick_log_mode_dry_run(tmp_path):
+    """End-to-end (within autodryer.py): mode=log, RH well above wake →
+    after enough ticks, emit one AUTODRY_DRY_RUN event broadcast +
+    one [DRY-RUN] toast."""
+    state_path = tmp_path / "autodry.json"
+
+    # Mock the inputs-fetcher: returns a constant Inputs.
+    def fetcher() -> Inputs:
+        return Inputs(
+            active_device=0,
+            head_source={"0": {"ace": 0, "slot": 0, "type": "PLA"}},
+            swap_in_progress=False,
+            humidity_ok=True,
+            humidity_pct=22.0,                     # above wake (15+5)
+            cavity_temp_c=22.0,
+            klipper_print_state="standby",
+            dryer_status="stop",
+            user_profiles=None,
+        )
+
+    events_emitted: list[dict] = []
+    async def event_cb(payload: dict) -> None:
+        events_emitted.append(payload)
+
+    announcements = MagicMock()
+    announcements.post = AsyncMock(return_value="entry-1")
+    announcements.dismiss = AsyncMock(return_value=True)
+
+    initial = PersistedState(mode="log", target_ace=0, target_pct=15, hysteresis_pp=5)
+    save_persisted_state(state_path, initial)
+
+    dryer = AutoDryer(
+        state_path=state_path,
+        inputs_fetcher=fetcher,
+        emit_event=event_cb,
+        announcements=announcements,
+        tick_sec=0.0,                # don't actually sleep
+        debounce_required=2,         # 2 ticks for fast test
+    )
+
+    # Drive 3 ticks manually instead of calling .run() (which loops forever).
+    await dryer._tick_once(now_ts=1000.0)
+    await dryer._tick_once(now_ts=1060.0)
+    await dryer._tick_once(now_ts=1120.0)
+
+    actions = [e["action"] for e in events_emitted]
+    assert "AUTODRY_DRY_RUN" in actions
+    # mode=log → goes straight to COOLDOWN
+    persisted = load_persisted_state(state_path)
+    assert persisted.fsm.state == FSMState.COOLDOWN
+    # Toast was posted with [DRY-RUN] prefix
+    announcements.post.assert_called()
+    args = announcements.post.call_args.kwargs
+    assert "[DRY-RUN]" in args["title"]
+    assert "[DRY-RUN]" in args["description"]
+
+
+@pytest.mark.asyncio
+async def test_autodryer_boot_reconciles_persisted_drying_into_cooldown(tmp_path):
+    """If multiace-web restarted mid-DRYING and Klipper now reports dryer.status=stop
+    (cycle ended during the restart window), boot reconciliation goes to COOLDOWN."""
+    state_path = tmp_path / "autodry.json"
+    persisted = PersistedState(mode="active", target_pct=15)
+    persisted.fsm.state = FSMState.DRYING
+    save_persisted_state(state_path, persisted)
+
+    # Klipper reports dryer is idle (cycle ended during restart)
+    def fetcher(): return Inputs(
+        active_device=0, head_source={"0": {"ace": 0, "type": "PLA"}},
+        swap_in_progress=False, humidity_ok=True, humidity_pct=14.0,
+        cavity_temp_c=22.0, klipper_print_state="standby",
+        dryer_status="stop", user_profiles=None,
+    )
+    events: list[dict] = []
+    async def emit(p): events.append(p)
+    ann = MagicMock(); ann.post = AsyncMock(return_value="x"); ann.dismiss = AsyncMock(return_value=True)
+
+    dryer = AutoDryer(state_path=state_path, inputs_fetcher=fetcher,
+                     emit_event=emit, announcements=ann, tick_sec=0.0)
+    await dryer._tick_once(now_ts=1000.0)
+    p = load_persisted_state(state_path)
+    assert p.fsm.state in (FSMState.COOLDOWN, FSMState.WATCHING)
