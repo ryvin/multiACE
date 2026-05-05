@@ -136,6 +136,26 @@
         <summary>klippy.log tail (last 200 lines)</summary>
         <pre id="diag-klippy">Open this section to load.</pre>
       </details>
+      <details class="diag-block">
+        <summary>Auto-dry diagnostics</summary>
+        <div id="diag-autodry">
+          <p class="muted small">Live FSM state, current inputs, persisted state, last run.</p>
+          <div class="diag-autodry-grid">
+            <div class="diag-autodry-section">
+              <h4>FSM</h4>
+              <pre id="diag-autodry-fsm"></pre>
+            </div>
+            <div class="diag-autodry-section">
+              <h4>Inputs (this tick)</h4>
+              <pre id="diag-autodry-inputs"></pre>
+            </div>
+            <div class="diag-autodry-section">
+              <h4>Persisted</h4>
+              <pre id="diag-autodry-persisted"></pre>
+            </div>
+          </div>
+        </div>
+      </details>
     </section>
 
     <section data-view="hardware" class="view">

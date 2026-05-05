@@ -213,6 +213,14 @@ const HELP_SECTIONS = [
     ],
   },
   {
+    title: "Auto-dry",
+    items: [
+      ["What it does", "Auto-dry watches chamber humidity (via the Govee BLE sensor) and runs ACE_DRY cycles automatically when humidity climbs past the target threshold. Temperature and duration are picked per-filament: PLA dries cooler/shorter, PETG/ABS hotter/longer. Cycles never start during a print or while a swap is in progress."],
+      ["Modes", "Off disables it. Log only logs every decision the FSM makes but never actually starts a dryer — useful for verifying behavior before going hands-off. Active runs cycles for real. Default after install is off; mode is sticky across multiace-web restarts. Set this in the Dryer tab → Auto-dry panel."],
+      ["Where to look", "Dashboard humidity tile shows the current FSM state in a colored band (\"watching\", \"drying 60°C 4h00\", \"cooldown 12m\", \"fault — click to clear\"). Dryer tab has the full panel: mode toggle, humidity target slider, last-run summary, and an \"Evaluate now\" button that bypasses the debounce buffer. Activity tab shows AUTODRY_* events with friendly labels. Diagnostics tab shows the raw FSM/inputs/persisted state for troubleshooting."],
+    ],
+  },
+  {
     title: "Action bar",
     items: [
       ["Unload All", "Unloads filament from every loaded toolhead back to its ACE slot, one at a time. Disabled during an active swap. Asks to confirm because it's a multi-minute operation."],
@@ -317,6 +325,7 @@ async function fetchAutodry() {
     autodryState = await r.json();
     renderEnvStripFooter();
     renderAutodryPanel();  // safe to call even when panel doesn't exist
+    renderDiag();          // keeps Diag tab's autodry block live (cheap; bails if elements absent)
   } catch (_) {
     _autodryHandleFailure();
   }
@@ -1620,6 +1629,37 @@ document.addEventListener("submit", async (ev) => {
 function renderDiag() {
   document.getElementById("diag-state").textContent =
     JSON.stringify(state, null, 2);
+
+  // Auto-dry diagnostics — only renders when autodryState is loaded
+  const fsmPre = document.getElementById("diag-autodry-fsm");
+  const inputsPre = document.getElementById("diag-autodry-inputs");
+  const persistedPre = document.getElementById("diag-autodry-persisted");
+  if (fsmPre && inputsPre && persistedPre) {
+    if (autodryState) {
+      fsmPre.textContent = JSON.stringify(autodryState.fsm || {}, null, 2);
+      // Derive a "current inputs" view from printState + state
+      const lastPrint = printState || {};
+      const hum = (lastPrint.humidity) || {};
+      const dryer = (lastPrint.dryer) || {};
+      const inputs = {
+        humidity_ok: !!hum.ok,
+        humidity_pct: hum.humidity_pct ?? null,
+        cavity_temp_c: lastPrint.cavity_temp_c ?? null,
+        klipper_print_state: lastPrint.state ?? "(unknown)",
+        dryer_status: dryer.status ?? "(unknown)",
+        active_device: state.active_device ?? null,
+        head_source: state.head_source || {},
+        swap_in_progress: !!state.swap_in_progress,
+      };
+      inputsPre.textContent = JSON.stringify(inputs, null, 2);
+      const { fsm: _fsm, ...persisted } = autodryState;
+      persistedPre.textContent = JSON.stringify(persisted, null, 2);
+    } else {
+      fsmPre.textContent = "(autodry status unavailable)";
+      inputsPre.textContent = "(no data — open dashboard or check Moonraker reachability)";
+      persistedPre.textContent = "(no data)";
+    }
+  }
 }
 
 // Lazy-load klippy log slice when diag view opens
