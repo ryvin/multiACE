@@ -1103,3 +1103,53 @@ body.multiace-embed { background: transparent; }
 .env-autodry-footer[data-fsm-state="FAULTED"] { color: #b91c1c; }
 .env-autodry-footer.unavailable { color: var(--muted, #6b7280); }
 
+.autodry-panel { margin-bottom: 1.5rem; }
+.autodry-card {
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem;
+}
+.autodry-header h3 { margin: 0 0 1rem 0; }
+.autodry-row { display: flex; align-items: center; gap: 1rem; margin: 0.5rem 0; }
+.autodry-row label { min-width: 9rem; font-weight: 600; }
+.autodry-row input[type=range] { flex: 1; }
+.autodry-value { min-width: 3rem; text-align: right; font-variant-numeric: tabular-nums; }
+.autodry-mode-btns { display: inline-flex; gap: 0.25rem; }
+.autodry-mode-btn {
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--border, #d1d5db);
+  background: transparent;
+  border-radius: 0.35rem;
+  cursor: pointer;
+}
+.autodry-mode-btn.active {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: white;
+}
+.autodry-state {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--muted-bg, #f3f4f6);
+  border-radius: 0.35rem;
+  font-family: monospace;
+}
+.autodry-warn {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #fef3c7;
+  border-radius: 0.35rem;
+  color: #92400e;
+}
+.autodry-last-run { margin-top: 0.5rem; }
+.autodry-tools { margin-top: 0.75rem; }
+.autodry-reset {
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid #b91c1c;
+  background: white;
+  color: #b91c1c;
+  border-radius: 0.3rem;
+  cursor: pointer;
+}

@@ -595,7 +595,130 @@ function renderWorkflow() {
   }
 }
 
-function renderAutodryPanel() { /* implemented in Task 9 */ }
+function renderAutodryPanel() {
+  const panel = document.getElementById("autodry-panel");
+  if (!panel) return;
+  const s = autodryState;
+  if (!s) return;
+  const fsm = s.fsm || {};
+
+  panel.innerHTML = "";  // OK to rebuild — re-renders are infrequent
+  const card = document.createElement("div");
+  card.className = "autodry-card";
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "autodry-header";
+  header.innerHTML = `<h3>Auto-dry</h3>`;
+  card.appendChild(header);
+
+  // Mode selector
+  const modeRow = document.createElement("div");
+  modeRow.className = "autodry-row";
+  modeRow.innerHTML = `<label>Mode</label>`;
+  const modeBtns = document.createElement("div");
+  modeBtns.className = "autodry-mode-btns";
+  for (const m of ["off", "log", "active"]) {
+    const b = document.createElement("button");
+    b.textContent = m === "off" ? "Off" : m === "log" ? "Log only" : "Active";
+    b.className = "autodry-mode-btn" + (s.mode === m ? " active" : "");
+    b.onclick = () => postAutodry({ action: "set_mode", value: m });
+    modeBtns.appendChild(b);
+  }
+  modeRow.appendChild(modeBtns);
+  card.appendChild(modeRow);
+
+  // Target slider
+  const targetRow = document.createElement("div");
+  targetRow.className = "autodry-row";
+  targetRow.innerHTML = `<label>Target humidity</label>`;
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "5";
+  slider.max = "60";
+  slider.value = String(s.target_pct);
+  const targetLabel = document.createElement("span");
+  targetLabel.className = "autodry-value";
+  targetLabel.textContent = `${s.target_pct}%`;
+  slider.oninput = () => {
+    targetLabel.textContent = `${slider.value}%`;
+  };
+  slider.onchange = () => {
+    postAutodry({ action: "set_target", value: parseInt(slider.value, 10) });
+  };
+  targetRow.appendChild(slider);
+  targetRow.appendChild(targetLabel);
+  card.appendChild(targetRow);
+
+  // Sensor-floor warning if applicable
+  if (s.target_pct < 13) {
+    const warn = document.createElement("div");
+    warn.className = "autodry-warn";
+    warn.textContent =
+      "Near H5104 sensor floor — auto-dry may not stop reliably below 12%.";
+    card.appendChild(warn);
+  }
+
+  // FSM state line
+  const stateRow = document.createElement("div");
+  stateRow.className = "autodry-state";
+  let stateText = `${fsm.state}`;
+  if (fsm.state === "FAULTED" && fsm.fault) {
+    stateText += ` — ${fsm.fault.code}: ${fsm.fault.msg}`;
+    const reset = document.createElement("button");
+    reset.textContent = "Reset fault";
+    reset.className = "autodry-reset";
+    reset.onclick = () => postAutodry({ action: "reset_fault" });
+    stateRow.appendChild(document.createTextNode(stateText + " "));
+    stateRow.appendChild(reset);
+  } else {
+    stateRow.textContent = stateText;
+  }
+  card.appendChild(stateRow);
+
+  // Last run summary
+  if (fsm.last_run) {
+    const lr = document.createElement("div");
+    lr.className = "autodry-last-run muted small";
+    const lrFmt = `${fsm.last_run.kind} ${fsm.last_run.outcome}: ` +
+                  `${fsm.last_run.trigger_rh.toFixed(1)} → ` +
+                  `${fsm.last_run.end_rh.toFixed(1)}%, ` +
+                  `${fsm.last_run.ran_min}m`;
+    lr.textContent = `Last run: ${lrFmt}`;
+    card.appendChild(lr);
+  }
+
+  // Force-evaluate button
+  const tools = document.createElement("div");
+  tools.className = "autodry-tools";
+  const fe = document.createElement("button");
+  fe.textContent = "Evaluate now";
+  fe.onclick = () => postAutodry({ action: "force_evaluate" });
+  tools.appendChild(fe);
+  card.appendChild(tools);
+
+  panel.appendChild(card);
+}
+
+async function postAutodry(body) {
+  try {
+    const r = await fetch(api("api/autodry"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      toast(`Auto-dry: ${detail || r.statusText}`, "error");
+      return;
+    }
+    autodryState = await r.json();
+    renderAutodryPanel();
+    renderEnvStripFooter();
+  } catch (e) {
+    toast(`Auto-dry: ${e.message}`, "error");
+  }
+}
 
 function renderEnvStripFooter() {
   const tile = document.querySelector(".env-strip .env-tile.env-humidity, .env-strip .env-tile:nth-child(2)");
