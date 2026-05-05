@@ -1303,6 +1303,22 @@ function renderActivityPreview() {
     "No multiACE events yet — load or unload a toolhead to see activity here.");
 }
 
+// Friendly labels for AUTODRY_* events emitted by the auto-dry subsystem.
+// Falls through to the raw action code if not present here.
+const AUTODRY_ACTION_LABELS = {
+  AUTODRY_TRIGGERED:      "Auto-dry triggered",
+  AUTODRY_DRY_RUN:        "Auto-dry would trigger (log mode)",
+  AUTODRY_FINISHED:       "Auto-dry finished",
+  AUTODRY_SKIPPED_PRINT:  "Auto-dry skipped — print active",
+  AUTODRY_SKIPPED_SWAP:   "Auto-dry skipped — swap in progress",
+  AUTODRY_SKIPPED_DAILY:  "Auto-dry skipped — daily cap reached",
+  AUTODRY_FAILED_SENSOR:  "Auto-dry FAULT — sensor unreadable",
+  AUTODRY_FAILED_LIMIT:   "Auto-dry FAULT — max run reached",
+  AUTODRY_FAILED_DELTA:   "Auto-dry FAULT — RH delta too small",
+  AUTODRY_FAULT_CLEARED:  "Auto-dry fault cleared",
+  AUTODRY_FINISHED_AFTER_RESTART: "Auto-dry finished after restart",
+};
+
 function fillActivityList(list, items, emptyText) {
   list.innerHTML = "";
   if (items.length === 0) {
@@ -1312,14 +1328,15 @@ function fillActivityList(list, items, emptyText) {
   for (const ev of items) {
     const li = setEl(list, "li");
     const action = ev.action || "?";
-    const isFail = action.endsWith("_FAILED");
+    const label = AUTODRY_ACTION_LABELS[action] || action;
+    const isFail = action.endsWith("_FAILED") || action.startsWith("AUTODRY_FAILED");
     const isOk = !isFail && ["LOAD_HEAD", "UNLOAD_HEAD", "UNLOAD_ALL", "ACE_SWITCH"]
       .some((a) => action.startsWith(a));
     if (isFail) li.classList.add("fail");
     else if (isOk) li.classList.add("ok");
     setEl(li, "span", { className: "ts", textContent: ev.ts || "" });
     const right = setEl(li, "span");
-    setEl(right, "span", { className: "action", textContent: action + " " });
+    setEl(right, "span", { className: "action", textContent: label + " " });
     if (ev.params) {
       setEl(right, "span", { className: "params", textContent: JSON.stringify(ev.params) });
     }
