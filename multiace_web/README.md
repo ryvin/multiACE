@@ -335,6 +335,14 @@ GPL-3.0 — same as the parent multiACE project.
 
 ## Changelog
 
+## 0.7.1 — 2026-05-05
+
+- Auto-dry CSS contrast fix — the new Dryer/Diag panels were using
+  hardcoded light-mode hex values (`#fff`, `#f3f4f6`, `#6b7280`) that
+  rendered light-on-light in dark mode and ignored the project's
+  `--surface` / `--fg` / `--accent` token palette. Now uses the
+  proper tokens, so both light and dark themes are readable.
+
 ## 0.7.0 — 2026-05-04
 
 - New **Auto-dry** feature — humidity-driven, filament-aware filament
