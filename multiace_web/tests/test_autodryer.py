@@ -89,3 +89,82 @@ def test_unknown_fields_in_loaded_json_are_ignored(tmp_path: Path):
     s = load_persisted_state(path)
     assert s.mode == "log"
     assert s.fsm.state == FSMState.WATCHING
+
+
+from multiace_web.autodryer import (
+    DEFAULT_PROFILES,
+    cycle_params_for,
+    reconcile_loaded_slots,
+)
+
+
+# ---- profile lookup ----
+
+def test_default_profiles_cover_industry_set():
+    """All major filament types have a default profile."""
+    ids = {p["id"] for p in DEFAULT_PROFILES}
+    for required in {"PLA", "PETG", "TPU", "ABS", "ASA", "PA", "PC", "PVA"}:
+        assert required in ids
+
+
+def test_cycle_params_for_known_filament_uses_default():
+    p = cycle_params_for("PLA", user_profiles=None)
+    assert p["temp_c"] == 50
+    assert p["duration_min"] == 360
+
+
+def test_cycle_params_for_user_override():
+    user = [{"id": "PLA", "temp": 55, "duration": 420}]
+    p = cycle_params_for("PLA", user_profiles=user)
+    assert p["temp_c"] == 55
+    assert p["duration_min"] == 420
+
+
+def test_cycle_params_for_unknown_filament_uses_fallback():
+    p = cycle_params_for("UnknownExoticBlend", user_profiles=None)
+    # 50°C × 360 min — conservative PLA-equivalent
+    assert p["temp_c"] == 50
+    assert p["duration_min"] == 360
+
+
+def test_cycle_params_for_case_insensitive_match():
+    p = cycle_params_for("pla", user_profiles=None)
+    assert p["temp_c"] == 50
+
+
+# ---- mixed-load reconciliation ----
+
+def test_reconcile_single_slot_no_warning():
+    r = reconcile_loaded_slots(["PLA"], user_profiles=None)
+    assert r["effective_temp_c"] == 50
+    assert r["effective_duration_min"] == 360
+    assert r["mixed_filament_warning"] is False
+
+
+def test_reconcile_pla_plus_nylon_uses_strictest_temp_and_shortest_duration():
+    """PLA = 50°C × 360 min, Nylon = 70°C × 1440 min (capped at 480).
+    Mixed: 50°C (strictest cap) × 360 min (shortest), with warning."""
+    r = reconcile_loaded_slots(["PLA", "PA"], user_profiles=None)
+    assert r["effective_temp_c"] == 50  # min(50, 70) = 50 (PLA)
+    assert r["effective_duration_min"] == 360  # min(360, 1440) = 360 (PLA)
+    assert r["mixed_filament_warning"] is True
+
+
+def test_reconcile_clamps_duration_at_480():
+    """Even a single-load Nylon profile (1440 min) gets clamped at the
+    hardware ACE cycle limit of 480 min."""
+    r = reconcile_loaded_slots(["PA"], user_profiles=None)
+    assert r["effective_duration_min"] == 480
+    assert r["mixed_filament_warning"] is False
+
+
+def test_reconcile_empty_load_returns_none():
+    r = reconcile_loaded_slots([], user_profiles=None)
+    assert r["effective_temp_c"] is None
+    assert r["effective_duration_min"] is None
+
+
+def test_reconcile_dedupes_same_type():
+    """PLA + PLA isn't mixed — no warning."""
+    r = reconcile_loaded_slots(["PLA", "PLA"], user_profiles=None)
+    assert r["mixed_filament_warning"] is False

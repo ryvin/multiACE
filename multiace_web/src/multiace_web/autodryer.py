@@ -176,3 +176,83 @@ def save_persisted_state(path: Path, state: PersistedState) -> None:
         except OSError:
             pass
         raise
+
+
+# ---- per-filament defaults (cross-referenced manufacturer recommendations) ----
+
+# Cycle DURATION upper bound enforced at issue time. Profiles can store any
+# value; the FSM clamps before passing to ACE_DRY (see spec hardware section).
+PER_CYCLE_MAX_MIN = 480
+
+DEFAULT_PROFILES: list[dict[str, Any]] = [
+    {"id": "PLA",  "temp_c": 50, "duration_min": 360},
+    {"id": "PETG", "temp_c": 60, "duration_min": 480},
+    {"id": "TPU",  "temp_c": 50, "duration_min": 480},  # wants 720; capped
+    {"id": "ABS",  "temp_c": 65, "duration_min": 360},
+    {"id": "ASA",  "temp_c": 65, "duration_min": 360},
+    {"id": "PA",   "temp_c": 70, "duration_min": 1440},  # clamped at 480 per cycle; FSM retries
+    {"id": "PC",   "temp_c": 70, "duration_min": 1440},
+    {"id": "PVA",  "temp_c": 45, "duration_min": 480},
+]
+
+_FALLBACK_PROFILE = {"id": "(unknown)", "temp_c": 50, "duration_min": 360}
+
+
+def cycle_params_for(
+    filament_type: str,
+    user_profiles: list[dict[str, Any]] | None,
+) -> dict[str, int]:
+    """Resolve cycle params for a filament type.
+
+    Lookup order: user_profiles (case-insensitive id match), then
+    DEFAULT_PROFILES, then the conservative fallback. The user_profiles
+    list is the localStorage `multiace_dryer_profiles` shape — entries
+    have either {temp, duration} (existing manual-dryer schema) OR
+    {temp_c, duration_min} (newer auto-dry schema). We accept both.
+    """
+    target = (filament_type or "").strip().upper()
+
+    def _normalize(p: dict[str, Any]) -> dict[str, int]:
+        return {
+            "temp_c": int(p.get("temp_c", p.get("temp", 50))),
+            "duration_min": int(p.get("duration_min", p.get("duration", 360))),
+        }
+
+    if user_profiles:
+        for p in user_profiles:
+            if str(p.get("id", "")).strip().upper() == target:
+                return _normalize(p)
+    for p in DEFAULT_PROFILES:
+        if p["id"].upper() == target:
+            return _normalize(p)
+    return _normalize(_FALLBACK_PROFILE)
+
+
+def reconcile_loaded_slots(
+    loaded_types: list[str],
+    user_profiles: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Reconcile cycle params for a set of loaded filament types in one ACE.
+
+    Rule:
+    - effective_temp_c     = min(per-slot temp_c)        — strictest cap
+    - effective_duration   = min(per-slot duration_min)  — never bake the soft one
+    - mixed_filament_warning = True if >1 distinct type
+    - Per-cycle DURATION clamped at PER_CYCLE_MAX_MIN (480) before return
+    """
+    if not loaded_types:
+        return {
+            "effective_temp_c": None,
+            "effective_duration_min": None,
+            "mixed_filament_warning": False,
+        }
+    cycles = [cycle_params_for(t, user_profiles) for t in loaded_types]
+    distinct = {(t or "").strip().upper() for t in loaded_types}
+    return {
+        "effective_temp_c": min(c["temp_c"] for c in cycles),
+        "effective_duration_min": min(
+            min(c["duration_min"] for c in cycles),
+            PER_CYCLE_MAX_MIN,
+        ),
+        "mixed_filament_warning": len(distinct) > 1,
+    }
