@@ -1090,3 +1090,14 @@ body.multiace-embed { background: transparent; }
     transition: stroke-dashoffset 0.4s linear;
   }
 }
+
+/* Auto-dry footer on the dashboard humidity tile (Task 8). */
+.env-autodry-footer {
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+  color: var(--muted, #6b7280);
+}
+.env-autodry-footer[data-fsm-state="DRYING"] { color: #d97706; }
+.env-autodry-footer[data-fsm-state="OBSERVED_DRYING"] { color: #d97706; }
+.env-autodry-footer[data-fsm-state="FAULTED"] { color: #b91c1c; cursor: pointer; }
+

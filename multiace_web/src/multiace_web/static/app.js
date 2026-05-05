@@ -290,6 +290,23 @@ async function fetchPrint() {
   }
 }
 
+// ---------------------------------------------------------------------
+// Auto-dry state — polled from /api/autodry every 5s. The FSM ticks every
+// 60s server-side, so 5s is plenty fresh for the UI without spamming.
+// ---------------------------------------------------------------------
+let autodryState = { mode: "off", target_pct: 15, hysteresis_pp: 5,
+                     fsm: { state: "IDLE", fault: null, last_run: null } };
+
+async function fetchAutodry() {
+  try {
+    const r = await fetch(api("api/autodry"), { headers: authHeader() });
+    if (!r.ok) return;
+    autodryState = await r.json();
+    renderEnvStripFooter();
+    renderAutodryPanel();  // safe to call even when panel doesn't exist
+  } catch (_) { /* network blip — try again next poll */ }
+}
+
 // =====================================================================
 // Workflow visual feedback (Unload All, single Load/Unload, Mode switch).
 //
@@ -553,6 +570,44 @@ function renderWorkflow() {
   }
 }
 
+function renderAutodryPanel() { /* implemented in Task 9 */ }
+
+function renderEnvStripFooter() {
+  const tile = document.querySelector(".env-strip .env-tile.env-humidity, .env-strip .env-tile:nth-child(2)");
+  if (!tile) return;
+  let footer = tile.querySelector(".env-autodry-footer");
+  const fsm = autodryState.fsm || {};
+  const text = autodryFooterText(autodryState, fsm);
+  if (!text) {
+    if (footer) footer.remove();
+    return;
+  }
+  if (!footer) {
+    footer = document.createElement("div");
+    footer.className = "env-autodry-footer muted";
+    tile.appendChild(footer);
+  }
+  footer.textContent = text;
+  footer.dataset.fsmState = fsm.state || "IDLE";
+}
+
+function autodryFooterText(s, fsm) {
+  const mode = s.mode || "off";
+  if (mode === "off") return null;
+  const state = fsm.state || "IDLE";
+  if (state === "WATCHING") return `Auto-dry: armed · target ${s.target_pct}%`;
+  if (state === "DRYING")
+    return mode === "log"
+      ? `Would dry [log-only]`
+      : `Drying… target ${s.target_pct}%`;
+  if (state === "OBSERVED_DRYING") return `Manual dry running`;
+  if (state === "COOLDOWN") return `Cooldown · resumes soon`;
+  if (state === "FAULTED")
+    return `Auto-dry paused · ${fsm.fault ? fsm.fault.code : "fault"}`;
+  if (state === "IDLE") return null;
+  return null;
+}
+
 function renderEnvStrip() {
   const strip = document.getElementById("env-strip");
   if (!strip) return;
@@ -604,6 +659,9 @@ function renderEnvStrip() {
     setEl(tile, "div", { className: "env-val", textContent: t.value });
     setEl(tile, "div", { className: "env-sub muted", textContent: t.sub });
   }
+  // Re-attach autodry footer after the strip is rebuilt; otherwise the next
+  // 4s fetchPrint() would wipe it until the next 5s autodry poll.
+  renderEnvStripFooter();
 }
 
 function renderDryerStatus() {
@@ -663,6 +721,13 @@ function startPrintPolling() {
   if (_printPollTimer) return;
   fetchPrint();
   _printPollTimer = setInterval(fetchPrint, 4000);
+}
+
+let _autodryPollTimer = null;
+function startAutodryPolling() {
+  if (_autodryPollTimer) return;
+  fetchAutodry();
+  _autodryPollTimer = setInterval(fetchAutodry, 5000);  // 5s — FSM ticks every 60s
 }
 
 // Pause/Resume/Cancel hit Moonraker directly (same origin via fluidd nginx).
@@ -1466,4 +1531,5 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   connectWS();
   startPrintPolling();
+  startAutodryPolling();
 });
