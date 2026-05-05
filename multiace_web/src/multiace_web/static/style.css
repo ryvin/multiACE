@@ -1099,5 +1099,7 @@ body.multiace-embed { background: transparent; }
 }
 .env-autodry-footer[data-fsm-state="DRYING"] { color: #d97706; }
 .env-autodry-footer[data-fsm-state="OBSERVED_DRYING"] { color: #d97706; }
-.env-autodry-footer[data-fsm-state="FAULTED"] { color: #b91c1c; cursor: pointer; }
+/* FAULTED is not yet clickable — fault-reset wiring lands in Task 9. */
+.env-autodry-footer[data-fsm-state="FAULTED"] { color: #b91c1c; }
+.env-autodry-footer.unavailable { color: var(--muted, #6b7280); }
 

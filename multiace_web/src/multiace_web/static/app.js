@@ -297,14 +297,39 @@ async function fetchPrint() {
 let autodryState = { mode: "off", target_pct: 15, hysteresis_pp: 5,
                      fsm: { state: "IDLE", fault: null, last_run: null } };
 
+// Track consecutive /api/autodry fetch failures so a persistently-broken
+// endpoint surfaces in the footer instead of silently freezing the last
+// good state. Threshold is 3 polls (~15s at 5s cadence).
+let _autodryFetchFailCount = 0;
+const _AUTODRY_FETCH_FAIL_THRESHOLD = 3;
+
 async function fetchAutodry() {
   try {
     const r = await fetch(api("api/autodry"), { headers: authHeader() });
-    if (!r.ok) return;
+    if (!r.ok) {
+      _autodryHandleFailure();
+      return;
+    }
+    if (_autodryFetchFailCount >= _AUTODRY_FETCH_FAIL_THRESHOLD) {
+      console.log("autodry: fetch recovered, footer back online");
+    }
+    _autodryFetchFailCount = 0;
     autodryState = await r.json();
     renderEnvStripFooter();
     renderAutodryPanel();  // safe to call even when panel doesn't exist
-  } catch (_) { /* network blip — try again next poll */ }
+  } catch (_) {
+    _autodryHandleFailure();
+  }
+}
+
+function _autodryHandleFailure() {
+  _autodryFetchFailCount += 1;
+  if (_autodryFetchFailCount === _AUTODRY_FETCH_FAIL_THRESHOLD) {
+    console.warn("autodry: fetch failed " + _AUTODRY_FETCH_FAIL_THRESHOLD +
+                 " times in a row, marking footer unavailable");
+    autodryState = null;
+    renderEnvStripFooter();
+  }
 }
 
 // =====================================================================
@@ -576,7 +601,7 @@ function renderEnvStripFooter() {
   const tile = document.querySelector(".env-strip .env-tile.env-humidity, .env-strip .env-tile:nth-child(2)");
   if (!tile) return;
   let footer = tile.querySelector(".env-autodry-footer");
-  const fsm = autodryState.fsm || {};
+  const fsm = (autodryState && autodryState.fsm) || {};
   const text = autodryFooterText(autodryState, fsm);
   if (!text) {
     if (footer) footer.remove();
@@ -588,10 +613,20 @@ function renderEnvStripFooter() {
     tile.appendChild(footer);
   }
   footer.textContent = text;
-  footer.dataset.fsmState = fsm.state || "IDLE";
+  if (autodryState === null) {
+    footer.classList.add("unavailable");
+    delete footer.dataset.fsmState;
+  } else {
+    footer.classList.remove("unavailable");
+    footer.dataset.fsmState = fsm.state || "IDLE";
+  }
 }
 
+// TODO(task-9): wire FAULTED footer to fault-reset action — the cursor
+// affordance was removed from style.css for now to avoid implying a click
+// target that does nothing.
 function autodryFooterText(s, fsm) {
+  if (s === null) return "Auto-dry: status unavailable";
   const mode = s.mode || "off";
   if (mode === "off") return null;
   const state = fsm.state || "IDLE";
