@@ -10,6 +10,7 @@ This module is split into:
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import enum
 import json
@@ -18,7 +19,7 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 log = logging.getLogger("multiace.autodryer")
 
@@ -676,9 +677,6 @@ def tick_fsm(
 
 # ---- AutoDryer runtime task wrapper ----
 
-import asyncio
-from typing import Awaitable, Callable
-
 # Type aliases for the injected callables.
 InputsFetcher = Callable[[], Inputs]
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -749,6 +747,12 @@ class AutoDryer:
         return p
 
     def reset_fault(self) -> PersistedState:
+        """Clear the FAULTED flag and demote FAULTED state to IDLE.
+
+        Note: the AUTODRY_FAULT_CLEARED event/announcement is emitted by the
+        API layer (server.py POST /api/autodry handler) after this returns,
+        not by the runtime — there's no FSM tick that would otherwise emit it.
+        """
         p = load_persisted_state(self._state_path)
         p.fsm.fault = None
         # Move FAULTED → IDLE so guards re-evaluate on next tick.
@@ -774,11 +778,15 @@ class AutoDryer:
                 await self._tick_once(now_ts=_now())
             except Exception:
                 log.exception("AutoDryer tick failed; continuing")
+            if self._tick_sec <= 0:
+                # Test/instant mode — yield once so other tasks can run.
+                await asyncio.sleep(0)
+                continue
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._tick_sec)
-                return
+                return  # stop was signalled
             except asyncio.TimeoutError:
-                pass
+                continue
 
     async def _tick_once(self, *, now_ts: float) -> None:
         persisted = load_persisted_state(self._state_path)
