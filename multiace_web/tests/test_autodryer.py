@@ -168,3 +168,51 @@ def test_reconcile_dedupes_same_type():
     """PLA + PLA isn't mixed — no warning."""
     r = reconcile_loaded_slots(["PLA", "PLA"], user_profiles=None)
     assert r["mixed_filament_warning"] is False
+
+
+from multiace_web.autodryer import DebounceBuffer
+
+
+def test_debounce_buffer_starts_unfilled():
+    b = DebounceBuffer(required=5)
+    assert b.is_above_threshold() is False
+    assert len(b) == 0
+
+
+def test_debounce_buffer_fills_after_5_consecutive_above():
+    b = DebounceBuffer(required=5)
+    for _ in range(4):
+        b.observe_above()
+        assert b.is_above_threshold() is False
+    b.observe_above()
+    assert b.is_above_threshold() is True
+
+
+def test_debounce_buffer_single_dip_resets_count():
+    b = DebounceBuffer(required=5)
+    for _ in range(4):
+        b.observe_above()
+    b.observe_below()  # one dip
+    assert b.is_above_threshold() is False
+    # Need 5 fresh consecutive aboves, not just 1 more.
+    for _ in range(4):
+        b.observe_above()
+        assert b.is_above_threshold() is False
+    b.observe_above()
+    assert b.is_above_threshold() is True
+
+
+def test_debounce_buffer_required_one_triggers_immediately():
+    b = DebounceBuffer(required=1)
+    b.observe_above()
+    assert b.is_above_threshold() is True
+
+
+def test_debounce_buffer_reset_clears_count():
+    b = DebounceBuffer(required=3)
+    b.observe_above()
+    b.observe_above()
+    b.reset()
+    assert b.is_above_threshold() is False
+    b.observe_above()
+    assert b.is_above_threshold() is False  # need 3 fresh, not continue

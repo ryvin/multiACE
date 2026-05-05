@@ -256,3 +256,35 @@ def reconcile_loaded_slots(
         ),
         "mixed_filament_warning": len(distinct) > 1,
     }
+
+
+class DebounceBuffer:
+    """Counts consecutive above-threshold observations.
+
+    Used to debounce wake-threshold crossings — we want N samples in a row
+    above the wake line before we trust it (lid-opening / sensor blip
+    rejection). A single dip below resets the count.
+    """
+
+    __slots__ = ("_required", "_count")
+
+    def __init__(self, required: int) -> None:
+        if required < 1:
+            raise ValueError(f"required must be >= 1, got {required}")
+        self._required = required
+        self._count = 0
+
+    def __len__(self) -> int:  # for test introspection
+        return self._count
+
+    def observe_above(self) -> None:
+        self._count = min(self._count + 1, self._required)
+
+    def observe_below(self) -> None:
+        self._count = 0
+
+    def reset(self) -> None:
+        self._count = 0
+
+    def is_above_threshold(self) -> bool:
+        return self._count >= self._required
