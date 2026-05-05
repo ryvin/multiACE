@@ -21,6 +21,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setenv("MULTIACE_LOG_DIR", str(log_dir))
     monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
     monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
+    monkeypatch.setenv("MULTIACE_AUTODRY_STATE_PATH", str(tmp_path / "autodry.json"))
     monkeypatch.delenv("MULTIACE_TOKEN", raising=False)
 
     # Patch MoonrakerClient so lifespan uses a mock instance instead of real HTTP client.
@@ -66,6 +67,7 @@ def test_bootstrap_state_from_log_when_log_has_recent_entry(tmp_path, monkeypatc
     monkeypatch.setenv("MULTIACE_LOG_DIR", str(log_dir))
     monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
     monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
+    monkeypatch.setenv("MULTIACE_AUTODRY_STATE_PATH", str(tmp_path / "autodry.json"))
 
     mock_class = MagicMock()
     mock_instance = MagicMock()
@@ -92,6 +94,7 @@ def test_bootstrap_state_handles_missing_log(tmp_path, monkeypatch):
     monkeypatch.setenv("MULTIACE_LOG_DIR", str(log_dir))
     monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
     monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
+    monkeypatch.setenv("MULTIACE_AUTODRY_STATE_PATH", str(tmp_path / "autodry.json"))
     mock_class = MagicMock()
     mock_instance = MagicMock(); mock_instance.close = AsyncMock()
     mock_class.return_value = mock_instance
@@ -269,6 +272,7 @@ def test_websocket_rejects_missing_token_when_configured(monkeypatch, tmp_path):
     monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
     monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
     monkeypatch.setenv("MULTIACE_TOKEN", "secret")
+    monkeypatch.setenv("MULTIACE_AUTODRY_STATE_PATH", str(tmp_path / "autodry.json"))
 
     # Patch MoonrakerClient so lifespan can construct a mock
     from unittest.mock import AsyncMock, MagicMock
@@ -523,6 +527,7 @@ def test_websocket_accepts_correct_token_via_query(monkeypatch, tmp_path):
     monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
     monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
     monkeypatch.setenv("MULTIACE_TOKEN", "secret")
+    monkeypatch.setenv("MULTIACE_AUTODRY_STATE_PATH", str(tmp_path / "autodry.json"))
 
     from unittest.mock import AsyncMock, MagicMock
     mock_class = MagicMock()
@@ -537,3 +542,76 @@ def test_websocket_accepts_correct_token_via_query(monkeypatch, tmp_path):
         with client.websocket_connect("/ws?token=secret") as ws:
             msg = ws.receive_json()
     assert msg["type"] == "state"
+
+
+# ---------------------------------------------------------------------------
+# Auto-dry endpoints (/api/autodry)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def autodry_test_client(tmp_path, monkeypatch):
+    """Spin up an app with autodry state persisted to a temp dir."""
+    monkeypatch.setenv("MULTIACE_AUTODRY_STATE_PATH", str(tmp_path / "autodry.json"))
+    monkeypatch.setenv("MULTIACE_AUTODRY_MODE", "off")
+    app = create_app(start_background_tasks=False)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_get_autodry_returns_defaults(autodry_test_client):
+    r = autodry_test_client.get("/api/autodry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "off"
+    assert body["target_ace"] == 0
+    assert body["target_pct"] == 15
+    assert body["hysteresis_pp"] == 5
+    assert body["fsm"]["state"] == "IDLE"
+
+
+def test_post_autodry_set_mode_persists(autodry_test_client):
+    r = autodry_test_client.post("/api/autodry",
+                                 json={"action": "set_mode", "value": "log"})
+    assert r.status_code == 200
+    assert r.json()["mode"] == "log"
+    # GET reflects it
+    r2 = autodry_test_client.get("/api/autodry")
+    assert r2.json()["mode"] == "log"
+
+
+def test_post_autodry_set_target_validation(autodry_test_client):
+    r_ok = autodry_test_client.post("/api/autodry",
+                                    json={"action": "set_target", "value": 12})
+    assert r_ok.status_code == 200
+    assert r_ok.json()["target_pct"] == 12
+
+    r_bad_low = autodry_test_client.post("/api/autodry",
+                                         json={"action": "set_target", "value": 1})
+    assert r_bad_low.status_code == 400
+
+    r_bad_high = autodry_test_client.post("/api/autodry",
+                                          json={"action": "set_target", "value": 99})
+    assert r_bad_high.status_code == 400
+
+
+def test_post_autodry_set_hysteresis_validation(autodry_test_client):
+    r = autodry_test_client.post("/api/autodry",
+                                 json={"action": "set_hysteresis", "value": 3})
+    assert r.status_code == 200
+    assert r.json()["hysteresis_pp"] == 3
+    r_bad = autodry_test_client.post("/api/autodry",
+                                     json={"action": "set_hysteresis", "value": 99})
+    assert r_bad.status_code == 400
+
+
+def test_post_autodry_unknown_action_400(autodry_test_client):
+    r = autodry_test_client.post("/api/autodry",
+                                 json={"action": "do_something_weird"})
+    assert r.status_code == 400
+
+
+def test_post_autodry_invalid_mode_400(autodry_test_client):
+    r = autodry_test_client.post("/api/autodry",
+                                 json={"action": "set_mode", "value": "bogus"})
+    assert r.status_code == 400

@@ -21,6 +21,14 @@ from .auth import TokenAuth
 from .config_io import read_ace_config, write_ace_config
 from .moonraker import MoonrakerClient, MoonrakerError
 from .poller import StatusPoller
+from .announcements import AnnouncementsClient
+from .autodryer import (
+    AutoDryer,
+    Inputs,
+    PersistedState,
+    load_persisted_state,
+    save_persisted_state,
+)
 from .state import CurrentState, EventBuffer, parse_state_log_line
 from .tailer import LogTailer
 
@@ -194,6 +202,7 @@ async def lifespan(app: FastAPI):
     app.state.state = state
     app.state.events = events
     app.state.ws_clients = ws_clients
+    app.state.last_print = {}
 
     # Allow tests to inject a mock before lifespan runs.
     _lifespan_owns_moonraker = not hasattr(app.state, "moonraker")
@@ -227,11 +236,76 @@ async def lifespan(app: FastAPI):
     state_tailer = LogTailer(state_log, on_line=on_state_line)
     poller = StatusPoller(moonraker, interval=5.0)
 
+    # ---- AutoDryer ----
+    autodry_state_path = Path(_env(
+        "MULTIACE_AUTODRY_STATE_PATH",
+        "/userdata/multiace-web/app/.autodry_state.json",
+    ))
+    # Apply env defaults to the persisted state file the *first* time it's
+    # created. Subsequent runs use whatever the user has set via POST.
+    if not autodry_state_path.exists():
+        save_persisted_state(autodry_state_path, PersistedState(
+            mode=os.environ.get("MULTIACE_AUTODRY_MODE", "off"),
+            target_ace=int(os.environ.get("MULTIACE_AUTODRY_TARGET_ACE", "0")),
+            target_pct=int(os.environ.get("MULTIACE_AUTODRY_DEFAULT_TARGET_PCT", "15")),
+            hysteresis_pp=int(os.environ.get(
+                "MULTIACE_AUTODRY_DEFAULT_HYSTERESIS_PP", "5",
+            )),
+        ))
+
+    # We need an httpx.AsyncClient for the announcements client. Reuse the
+    # one Moonraker uses if available, else create a sibling.
+    if hasattr(moonraker, "_client") and isinstance(getattr(moonraker, "_client"), httpx.AsyncClient):
+        ann_http = moonraker._client
+    else:
+        ann_http = httpx.AsyncClient()
+    announcements = AnnouncementsClient(ann_http, moonraker_url)
+
+    def autodry_inputs_fetcher() -> Inputs:
+        """Snapshot the data the FSM needs from the in-process state model.
+
+        Humidity comes from the cached _read_humidity output (the same the
+        dashboard uses); klipper_print_state and dryer_status come from the
+        most recent /api/print fetch (cached on app.state)."""
+        st = state.to_dict()
+        last_print: dict = getattr(app.state, "last_print", {}) or {}
+        humidity = last_print.get("humidity") or {}
+        dryer = last_print.get("dryer") or {}
+        return Inputs(
+            active_device=st.get("active_device"),
+            head_source=st.get("head_source") or {},
+            swap_in_progress=bool(st.get("swap_in_progress")),
+            humidity_ok=bool(humidity.get("ok")),
+            humidity_pct=float(humidity.get("humidity_pct") or 0.0),
+            cavity_temp_c=last_print.get("cavity_temp_c"),
+            klipper_print_state=str(last_print.get("state") or "standby"),
+            dryer_status=str(dryer.get("status") or "stop"),
+            user_profiles=None,
+        )
+
+    async def autodry_emit_event(payload: dict) -> None:
+        """Emit an AUTODRY_* event into the existing event broadcaster."""
+        import time as _t
+        ts = _t.time()
+        eid = events.append({**payload, "ts": ts})
+        msg = json.dumps({"type": "event", "id": eid, "ts": ts, "payload": payload})
+        await _broadcast(ws_clients, msg)
+
+    autodry = AutoDryer(
+        state_path=autodry_state_path,
+        inputs_fetcher=autodry_inputs_fetcher,
+        emit_event=autodry_emit_event,
+        announcements=announcements,
+        tick_sec=float(os.environ.get("MULTIACE_AUTODRY_TICK_SEC", "60")),
+    )
+    app.state.autodry = autodry
+
     tasks: list[asyncio.Task] = []
     if app.state.start_background_tasks:
         tasks = [
             asyncio.create_task(state_tailer.run()),
             asyncio.create_task(poller.run()),
+            asyncio.create_task(autodry.run()),
         ]
     app.state.background_tasks = tasks
 
@@ -240,6 +314,7 @@ async def lifespan(app: FastAPI):
     finally:
         state_tailer.stop()
         poller.stop()
+        autodry.stop()
         if tasks:
             done, pending = await asyncio.wait(tasks, timeout=2.0)
             for t in pending:
@@ -402,7 +477,7 @@ def create_app(
         # External humidity is fetched lazily and cached; failures don't poison /api/print.
         humidity = await _read_humidity()
 
-        return {
+        payload = {
             "state": ps.get("state") or "standby",
             "filename": ps.get("filename") or None,
             "progress": progress,
@@ -418,6 +493,8 @@ def create_app(
             "cavity_temp_c": cavity_temp,
             "humidity": humidity,
         }
+        request.app.state.last_print = payload
+        return payload
 
     @app.post("/api/dry")
     async def post_dry(request: Request, body: DryRequest) -> dict:
@@ -429,6 +506,41 @@ def create_app(
         except MoonrakerError as e:
             raise HTTPException(502, str(e))
         return {"ok": True, "result": result, "gcode": gcode}
+
+    @app.get("/api/autodry")
+    async def get_autodry(request: Request) -> dict:
+        ad: AutoDryer = request.app.state.autodry
+        p = ad.persisted
+        return _autodry_to_dict(p)
+
+    @app.post("/api/autodry")
+    async def post_autodry(request: Request, body: dict) -> dict:
+        ad: AutoDryer = request.app.state.autodry
+        action = body.get("action")
+        value = body.get("value")
+        if action == "set_mode":
+            if value not in ("off", "log", "active"):
+                raise HTTPException(400, "value must be off|log|active")
+            ad.update_config(mode=value)
+        elif action == "set_target":
+            if not isinstance(value, int) or not (5 <= value <= 60):
+                raise HTTPException(400, "value must be int 5-60")
+            ad.update_config(target_pct=value)
+        elif action == "set_hysteresis":
+            if not isinstance(value, int) or not (1 <= value <= 15):
+                raise HTTPException(400, "value must be int 1-15")
+            ad.update_config(hysteresis_pp=value)
+        elif action == "set_target_ace":
+            if not isinstance(value, int) or not (0 <= value <= 3):
+                raise HTTPException(400, "value must be int 0-3")
+            ad.update_config(target_ace=value)
+        elif action == "force_evaluate":
+            ad.force_evaluate()
+        elif action == "reset_fault":
+            ad.reset_fault()
+        else:
+            raise HTTPException(400, f"unknown action: {action}")
+        return _autodry_to_dict(ad.persisted)
 
     @app.put("/api/config")
     async def put_config(request: Request, body: ConfigRequest) -> dict:
@@ -500,6 +612,39 @@ def create_app(
             return FileResponse(static_dir / "index.html")
 
     return app
+
+
+def _autodry_to_dict(p: PersistedState) -> dict:
+    return {
+        "mode": p.mode,
+        "target_ace": p.target_ace,
+        "target_pct": p.target_pct,
+        "hysteresis_pp": p.hysteresis_pp,
+        "fsm": {
+            "state": p.fsm.state.value,
+            "since_ts": p.fsm.since_ts,
+            "fault": (
+                {"code": p.fsm.fault.code,
+                 "since_ts": p.fsm.fault.since_ts,
+                 "msg": p.fsm.fault.msg}
+                if p.fsm.fault else None
+            ),
+            "last_run": (
+                {"kind": p.fsm.last_run.kind,
+                 "outcome": p.fsm.last_run.outcome,
+                 "started_ts": p.fsm.last_run.started_ts,
+                 "ended_ts": p.fsm.last_run.ended_ts,
+                 "trigger_rh": p.fsm.last_run.trigger_rh,
+                 "end_rh": p.fsm.last_run.end_rh,
+                 "temp_c_used": p.fsm.last_run.temp_c_used,
+                 "duration_min": p.fsm.last_run.duration_min,
+                 "ran_min": p.fsm.last_run.ran_min}
+                if p.fsm.last_run else None
+            ),
+            "trigger_announcement_id": p.fsm.trigger_announcement_id,
+            "cooldown_until_ts": p.fsm.cooldown_until_ts,
+        },
+    }
 
 
 def main() -> None:
