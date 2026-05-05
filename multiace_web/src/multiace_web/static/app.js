@@ -600,9 +600,16 @@ function renderAutodryPanel() {
   if (!panel) return;
   const s = autodryState;
   if (!s) return;
+
+  // Skip rebuild while the user is interacting with a control inside the panel
+  // (otherwise a 5s poll mid-drag would clobber the slider). The next poll
+  // (or postAutodry response) will refresh once interaction ends.
+  const active = document.activeElement;
+  if (active && panel.contains(active)) return;
+
   const fsm = s.fsm || {};
 
-  panel.innerHTML = "";  // OK to rebuild — re-renders are infrequent
+  panel.innerHTML = "";  // Full rebuild — guarded above so we don't run mid-interaction
   const card = document.createElement("div");
   card.className = "autodry-card";
 
@@ -713,6 +720,11 @@ async function postAutodry(body) {
       return;
     }
     autodryState = await r.json();
+    // Blur active control so the activeElement-guard in renderAutodryPanel
+    // doesn't skip the re-render after a successful action.
+    if (document.activeElement && document.activeElement !== document.body) {
+      document.activeElement.blur();
+    }
     renderAutodryPanel();
     renderEnvStripFooter();
   } catch (e) {
