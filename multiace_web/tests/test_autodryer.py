@@ -4,12 +4,14 @@ The live scan loop and Moonraker calls are tested separately in
 test_announcements.py and the server-level integration tests."""
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 
 from multiace_web.autodryer import (
+    Fault,
     FSMState,
     PersistedState,
     load_persisted_state,
@@ -216,3 +218,266 @@ def test_debounce_buffer_reset_clears_count():
     assert b.is_above_threshold() is False
     b.observe_above()
     assert b.is_above_threshold() is False  # need 3 fresh, not continue
+
+
+from multiace_web.autodryer import (
+    Ephemeral,
+    Inputs,
+    Transition,
+    tick_fsm,
+)
+
+
+def _base_inputs(**overrides) -> Inputs:
+    """Convenient default inputs for tests — single-ACE, single-PLA, idle Klipper."""
+    base = Inputs(
+        active_device=0,
+        head_source={"0": {"ace": 0, "slot": 0, "type": "PLA"}},
+        swap_in_progress=False,
+        humidity_ok=True,
+        humidity_pct=18.0,
+        cavity_temp_c=22.0,
+        klipper_print_state="standby",
+        dryer_status="stop",
+        user_profiles=None,
+    )
+    return dataclasses.replace(base, **overrides)
+
+
+def _base_persisted(**overrides) -> PersistedState:
+    base = PersistedState(mode="active", target_ace=0, target_pct=15, hysteresis_pp=5)
+    base.fsm.state = FSMState.WATCHING
+    for k, v in overrides.items():
+        setattr(base, k, v)
+    return base
+
+
+# ---- IDLE → WATCHING ----
+
+def test_idle_to_watching_when_mode_log_and_loaded():
+    p = _base_persisted()
+    p.fsm.state = FSMState.IDLE
+    p.mode = "log"
+    eph = Ephemeral()
+    new, transitions = tick_fsm(p, eph, _base_inputs(humidity_pct=10.0), now_ts=1000.0)
+    assert new.fsm.state == FSMState.WATCHING
+
+
+def test_idle_when_mode_off():
+    p = _base_persisted()
+    p.fsm.state = FSMState.IDLE
+    p.mode = "off"
+    eph = Ephemeral()
+    new, transitions = tick_fsm(p, eph, _base_inputs(), now_ts=1000.0)
+    assert new.fsm.state == FSMState.IDLE
+
+
+def test_idle_when_active_device_not_target():
+    p = _base_persisted()
+    p.fsm.state = FSMState.IDLE
+    p.target_ace = 0
+    eph = Ephemeral()
+    new, _ = tick_fsm(p, eph, _base_inputs(active_device=1), now_ts=1000.0)
+    assert new.fsm.state == FSMState.IDLE
+
+
+def test_idle_when_no_filament_in_target_ace():
+    p = _base_persisted()
+    p.fsm.state = FSMState.IDLE
+    eph = Ephemeral()
+    inputs = _base_inputs(head_source={})
+    new, _ = tick_fsm(p, eph, inputs, now_ts=1000.0)
+    assert new.fsm.state == FSMState.IDLE
+
+
+def test_idle_when_sensor_unavailable():
+    p = _base_persisted()
+    p.fsm.state = FSMState.IDLE
+    eph = Ephemeral()
+    new, _ = tick_fsm(p, eph, _base_inputs(humidity_ok=False), now_ts=1000.0)
+    assert new.fsm.state == FSMState.IDLE
+
+
+# ---- WATCHING → DRYING ----
+
+def test_watching_does_not_trigger_below_wake_threshold():
+    p = _base_persisted()
+    eph = Ephemeral()
+    # Wake = 15 + 5 = 20%. RH at 18% should not trigger.
+    new, _ = tick_fsm(p, eph, _base_inputs(humidity_pct=18.0), now_ts=1000.0)
+    assert new.fsm.state == FSMState.WATCHING
+
+
+def test_watching_requires_5_consecutive_above_to_trigger():
+    p = _base_persisted()
+    eph = Ephemeral()
+    inputs = _base_inputs(humidity_pct=22.0)
+    # First 4 ticks above wake — still WATCHING (debounce not satisfied)
+    for i in range(4):
+        new, _ = tick_fsm(p, eph, inputs, now_ts=1000.0 + 60 * i)
+        assert new.fsm.state == FSMState.WATCHING
+        p = new
+    # 5th tick triggers
+    new, transitions = tick_fsm(p, eph, inputs, now_ts=1000.0 + 60 * 4)
+    assert new.fsm.state == FSMState.DRYING
+    assert any(t.event == "AUTODRY_TRIGGERED" for t in transitions)
+
+
+def test_watching_single_dip_resets_debounce():
+    p = _base_persisted()
+    eph = Ephemeral()
+    high = _base_inputs(humidity_pct=22.0)
+    low = _base_inputs(humidity_pct=10.0)
+    for i in range(4):
+        new, _ = tick_fsm(p, eph, high, now_ts=1000.0 + 60 * i)
+        p = new
+    # Dip below
+    new, _ = tick_fsm(p, eph, low, now_ts=1000.0 + 60 * 4)
+    assert new.fsm.state == FSMState.WATCHING
+    p = new
+    # Need 5 fresh aboves now, not 1 more
+    new, _ = tick_fsm(p, eph, high, now_ts=1000.0 + 60 * 5)
+    assert new.fsm.state == FSMState.WATCHING
+
+
+# ---- mode=log gates the trigger ----
+
+def test_mode_log_emits_dry_run_event_no_drying_state():
+    p = _base_persisted()
+    p.mode = "log"
+    eph = Ephemeral()
+    inputs = _base_inputs(humidity_pct=22.0)
+    for _ in range(5):
+        p, transitions = tick_fsm(p, eph, inputs, now_ts=1000.0)
+    # Mode=log: emits AUTODRY_DRY_RUN, goes straight to COOLDOWN (no DRYING)
+    assert p.fsm.state == FSMState.COOLDOWN
+    assert any(t.event == "AUTODRY_DRY_RUN" for t in transitions)
+    assert not any(t.event == "AUTODRY_TRIGGERED" for t in transitions)
+
+
+# ---- guards (skip events) ----
+
+def test_skipped_print_when_klipper_printing():
+    p = _base_persisted()
+    eph = Ephemeral()
+    inputs = _base_inputs(humidity_pct=22.0, klipper_print_state="printing")
+    all_transitions = []
+    # Even with 5 sustained above-wake samples, the print guard blocks.
+    for _ in range(5):
+        p, transitions = tick_fsm(p, eph, inputs, now_ts=1000.0)
+        all_transitions.extend(transitions)
+    assert p.fsm.state == FSMState.WATCHING
+    assert any(t.event == "AUTODRY_SKIPPED_PRINT" for t in all_transitions)
+
+
+def test_skipped_swap_when_swap_in_progress():
+    p = _base_persisted()
+    eph = Ephemeral()
+    inputs = _base_inputs(humidity_pct=22.0, swap_in_progress=True)
+    all_transitions = []
+    for _ in range(5):
+        p, transitions = tick_fsm(p, eph, inputs, now_ts=1000.0)
+        all_transitions.extend(transitions)
+    assert p.fsm.state == FSMState.WATCHING
+    assert any(t.event == "AUTODRY_SKIPPED_SWAP" for t in all_transitions)
+
+
+# ---- OBSERVED_DRYING ----
+
+def test_watching_to_observed_drying_when_user_starts_manual():
+    p = _base_persisted()
+    eph = Ephemeral()
+    inputs = _base_inputs(dryer_status="drying")
+    new, transitions = tick_fsm(p, eph, inputs, now_ts=1000.0)
+    assert new.fsm.state == FSMState.OBSERVED_DRYING
+    # No TRIGGERED event — user already knows
+    assert not any(t.event == "AUTODRY_TRIGGERED" for t in transitions)
+
+
+def test_observed_drying_to_cooldown_when_dryer_stops():
+    p = _base_persisted()
+    p.fsm.state = FSMState.OBSERVED_DRYING
+    eph = Ephemeral()
+    inputs = _base_inputs(dryer_status="stop")
+    new, _ = tick_fsm(p, eph, inputs, now_ts=1000.0)
+    assert new.fsm.state == FSMState.COOLDOWN
+
+
+# ---- DRYING → COOLDOWN (success) ----
+
+def test_drying_to_cooldown_when_target_reached():
+    p = _base_persisted()
+    p.fsm.state = FSMState.DRYING
+    p.fsm.since_ts = 1000.0
+    eph = Ephemeral(drying_started_ts=1000.0, drying_start_rh=22.0,
+                    effective_temp_c=50, effective_duration_min=360)
+    new, transitions = tick_fsm(
+        p, eph, _base_inputs(humidity_pct=14.0), now_ts=1000.0 + 60 * 30,
+    )
+    assert new.fsm.state == FSMState.COOLDOWN
+    assert any(t.event == "AUTODRY_FINISHED" for t in transitions)
+    assert new.fsm.last_run is not None
+    assert new.fsm.last_run.outcome == "success"
+
+
+# ---- DRYING → FAULTED (max_run_min reached without crossing target) ----
+
+def test_drying_to_faulted_on_max_run():
+    p = _base_persisted()
+    p.fsm.state = FSMState.DRYING
+    eph = Ephemeral(drying_started_ts=1000.0, drying_start_rh=22.0,
+                    effective_temp_c=50, effective_duration_min=360)
+    # Tick 13 hours later (> 720 min cap), still above target
+    new, transitions = tick_fsm(
+        p, eph, _base_inputs(humidity_pct=22.0), now_ts=1000.0 + 60 * 60 * 13,
+    )
+    assert new.fsm.state == FSMState.FAULTED
+    assert new.fsm.fault is not None
+    assert new.fsm.fault.code == "FAILED_LIMIT"
+
+
+# ---- DRYING → FAULTED (min_delta not met) ----
+
+def test_drying_to_faulted_when_delta_too_small():
+    p = _base_persisted()
+    p.fsm.state = FSMState.DRYING
+    # Cycle ran the full 360 min but RH only dropped 22 → 21 (Δ=1pp; min=3)
+    eph = Ephemeral(drying_started_ts=1000.0, drying_start_rh=22.0,
+                    effective_temp_c=50, effective_duration_min=360)
+    new, transitions = tick_fsm(
+        p, eph, _base_inputs(humidity_pct=21.0),
+        now_ts=1000.0 + 60 * 360,
+    )
+    assert new.fsm.state == FSMState.FAULTED
+    assert new.fsm.fault.code == "FAILED_DELTA"
+
+
+# ---- COOLDOWN → WATCHING ----
+
+def test_cooldown_to_watching_after_cooldown_min():
+    p = _base_persisted()
+    p.fsm.state = FSMState.COOLDOWN
+    p.fsm.cooldown_until_ts = 1000.0 + 60 * 30  # 30 min cooldown
+    eph = Ephemeral()
+    new, _ = tick_fsm(p, eph, _base_inputs(), now_ts=1000.0 + 60 * 31)
+    assert new.fsm.state == FSMState.WATCHING
+
+
+def test_cooldown_stays_during_window():
+    p = _base_persisted()
+    p.fsm.state = FSMState.COOLDOWN
+    p.fsm.cooldown_until_ts = 1000.0 + 60 * 30
+    eph = Ephemeral()
+    new, _ = tick_fsm(p, eph, _base_inputs(), now_ts=1000.0 + 60 * 15)
+    assert new.fsm.state == FSMState.COOLDOWN
+
+
+# ---- FAULTED is sticky ----
+
+def test_faulted_stays_faulted():
+    p = _base_persisted()
+    p.fsm.state = FSMState.FAULTED
+    p.fsm.fault = Fault(code="FAILED_DELTA", since_ts=1.0, msg="x")
+    eph = Ephemeral()
+    new, _ = tick_fsm(p, eph, _base_inputs(humidity_pct=22.0), now_ts=1000.0)
+    assert new.fsm.state == FSMState.FAULTED
