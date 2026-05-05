@@ -682,6 +682,9 @@ InputsFetcher = Callable[[], Inputs]
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+_UPDATABLE_CONFIG_FIELDS = {"mode", "target_ace", "target_pct", "hysteresis_pp"}
+
+
 class AutoDryer:
     """Runtime task that drives the FSM.
 
@@ -738,10 +741,14 @@ class AutoDryer:
 
     def update_config(self, **kw: Any) -> PersistedState:
         """Mutate persisted config (mode/target_pct/hysteresis_pp/target_ace) and
-        write through. Used by the /api/autodry POST handler."""
+        write through. Used by the /api/autodry POST handler.
+
+        Only fields in _UPDATABLE_CONFIG_FIELDS are accepted; unknown keys are
+        silently ignored to prevent FSM-state clobbering via the API.
+        """
         p = load_persisted_state(self._state_path)
         for k, v in kw.items():
-            if hasattr(p, k):
+            if k in _UPDATABLE_CONFIG_FIELDS:
                 setattr(p, k, v)
         save_persisted_state(self._state_path, p)
         return p

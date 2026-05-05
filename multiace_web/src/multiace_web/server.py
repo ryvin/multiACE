@@ -244,21 +244,28 @@ async def lifespan(app: FastAPI):
     # Apply env defaults to the persisted state file the *first* time it's
     # created. Subsequent runs use whatever the user has set via POST.
     if not autodry_state_path.exists():
-        save_persisted_state(autodry_state_path, PersistedState(
-            mode=os.environ.get("MULTIACE_AUTODRY_MODE", "off"),
-            target_ace=int(os.environ.get("MULTIACE_AUTODRY_TARGET_ACE", "0")),
-            target_pct=int(os.environ.get("MULTIACE_AUTODRY_DEFAULT_TARGET_PCT", "15")),
-            hysteresis_pp=int(os.environ.get(
-                "MULTIACE_AUTODRY_DEFAULT_HYSTERESIS_PP", "5",
-            )),
-        ))
+        try:
+            save_persisted_state(autodry_state_path, PersistedState(
+                mode=os.environ.get("MULTIACE_AUTODRY_MODE", "off"),
+                target_ace=int(os.environ.get("MULTIACE_AUTODRY_TARGET_ACE", "0")),
+                target_pct=int(os.environ.get("MULTIACE_AUTODRY_DEFAULT_TARGET_PCT", "15")),
+                hysteresis_pp=int(os.environ.get(
+                    "MULTIACE_AUTODRY_DEFAULT_HYSTERESIS_PP", "5",
+                )),
+            ))
+        except OSError as e:
+            log.info(
+                "autodry state seed skipped (path %s not writable: %s); using runtime defaults",
+                autodry_state_path, e,
+            )
 
     # We need an httpx.AsyncClient for the announcements client. Reuse the
     # one Moonraker uses if available, else create a sibling.
-    if hasattr(moonraker, "_client") and isinstance(getattr(moonraker, "_client"), httpx.AsyncClient):
-        ann_http = moonraker._client
-    else:
+    _lifespan_owns_ann_http = not (hasattr(moonraker, "_client") and isinstance(getattr(moonraker, "_client"), httpx.AsyncClient))
+    if _lifespan_owns_ann_http:
         ann_http = httpx.AsyncClient()
+    else:
+        ann_http = moonraker._client
     announcements = AnnouncementsClient(ann_http, moonraker_url)
 
     def autodry_inputs_fetcher() -> Inputs:
@@ -285,8 +292,7 @@ async def lifespan(app: FastAPI):
 
     async def autodry_emit_event(payload: dict) -> None:
         """Emit an AUTODRY_* event into the existing event broadcaster."""
-        import time as _t
-        ts = _t.time()
+        ts = time.time()
         eid = events.append({**payload, "ts": ts})
         msg = json.dumps({"type": "event", "id": eid, "ts": ts, "payload": payload})
         await _broadcast(ws_clients, msg)
@@ -321,6 +327,8 @@ async def lifespan(app: FastAPI):
                 t.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+        if _lifespan_owns_ann_http:
+            await ann_http.aclose()
         if _lifespan_owns_moonraker:
             await moonraker.close()
 
