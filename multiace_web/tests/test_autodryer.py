@@ -481,3 +481,70 @@ def test_faulted_stays_faulted():
     eph = Ephemeral()
     new, _ = tick_fsm(p, eph, _base_inputs(humidity_pct=22.0), now_ts=1000.0)
     assert new.fsm.state == FSMState.FAULTED
+
+
+# ---- Purity: tick_fsm must not mutate caller-owned PersistedState ----
+
+def test_tick_fsm_does_not_mutate_input_daily_duty():
+    """tick_fsm must not mutate the caller's daily_duty list."""
+    p = _base_persisted()
+    p.fsm.state = FSMState.DRYING
+    p.fsm.daily_duty = [{"started_ts": 0, "ran_min": 60}]
+    original = list(p.fsm.daily_duty)
+    eph = Ephemeral(drying_started_ts=1000.0, drying_start_rh=22.0,
+                    effective_temp_c=50, effective_duration_min=360)
+    new, _ = tick_fsm(p, eph, _base_inputs(humidity_pct=14.0), now_ts=1000.0 + 60 * 30)
+    assert p.fsm.daily_duty == original  # input unchanged
+    assert len(new.fsm.daily_duty) == 2  # new state has the new entry
+
+
+# ---- DRYING → COOLDOWN: success-ish (delta OK, still above target) ----
+
+def test_drying_to_cooldown_when_duration_ran_out_with_acceptable_delta():
+    """Duration elapsed, RH dropped meaningfully (delta >= min_delta), but still
+    above target → success-ish, go to COOLDOWN with last_run.outcome=success and
+    payload includes still_above_target=True."""
+    p = _base_persisted()
+    p.fsm.state = FSMState.DRYING
+    eph = Ephemeral(drying_started_ts=1000.0, drying_start_rh=22.0,
+                    effective_temp_c=50, effective_duration_min=360)
+    # 360 min elapsed; RH went 22 → 17 (delta=5pp >= min 3); but 17 > target 15.
+    new, transitions = tick_fsm(
+        p, eph, _base_inputs(humidity_pct=17.0),
+        now_ts=1000.0 + 60 * 360,
+    )
+    assert new.fsm.state == FSMState.COOLDOWN
+    assert new.fsm.last_run is not None
+    assert new.fsm.last_run.outcome == "success"
+    assert any(t.event == "AUTODRY_FINISHED" and t.payload.get("still_above_target") is True
+               for t in transitions)
+
+
+# ---- DRYING → COOLDOWN: interrupted by print start ----
+
+def test_drying_to_cooldown_when_print_starts_mid_cycle():
+    """If a print starts (klipper_print_state='printing') during DRYING,
+    the FSM exits to COOLDOWN with AUTODRY_SKIPPED_PRINT (interrupted_drying=True)."""
+    p = _base_persisted()
+    p.fsm.state = FSMState.DRYING
+    eph = Ephemeral(drying_started_ts=1000.0, drying_start_rh=22.0,
+                    effective_temp_c=50, effective_duration_min=360)
+    new, transitions = tick_fsm(
+        p, eph, _base_inputs(humidity_pct=18.0, klipper_print_state="printing"),
+        now_ts=1000.0 + 60 * 30,
+    )
+    assert new.fsm.state == FSMState.COOLDOWN
+    assert any(t.event == "AUTODRY_SKIPPED_PRINT" and t.payload.get("interrupted_drying") is True
+               for t in transitions)
+
+
+# ---- WATCHING → IDLE demotion ----
+
+def test_watching_demotes_to_idle_when_mode_set_off():
+    """If user sets mode=off mid-WATCHING, FSM should drop back to IDLE."""
+    p = _base_persisted()
+    # WATCHING by default
+    p.mode = "off"  # user just disabled
+    eph = Ephemeral()
+    new, _ = tick_fsm(p, eph, _base_inputs(), now_ts=1000.0)
+    assert new.fsm.state == FSMState.IDLE

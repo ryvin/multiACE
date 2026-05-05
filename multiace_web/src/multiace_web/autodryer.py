@@ -320,6 +320,8 @@ class Ephemeral:
     across multiace-web restarts (boot reconciliation handles that case).
     """
     debounce: DebounceBuffer = field(default_factory=lambda: DebounceBuffer(required=5))
+    # TODO Task 6: increment per tick when humidity_ok is False; emit AUTODRY_FAILED_SENSOR
+    # at threshold (>=3 consecutive misses) per spec line 442.
     sensor_miss_count: int = 0
     drying_started_ts: float = 0.0
     drying_start_rh: float = 0.0
@@ -405,7 +407,10 @@ def tick_fsm(
     transitions: list[Transition] = []
     p = dataclasses.replace(
         persisted,
-        fsm=dataclasses.replace(persisted.fsm),  # shallow-copy fsm too
+        fsm=dataclasses.replace(
+            persisted.fsm,
+            daily_duty=list(persisted.fsm.daily_duty),  # deep-copy the list to preserve purity
+        ),
     )
     s = p.fsm.state
 
