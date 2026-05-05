@@ -20,7 +20,7 @@ from . import __version__
 from .auth import TokenAuth
 from .config_io import read_ace_config, write_ace_config
 from .moonraker import MoonrakerClient, MoonrakerError
-from .poller import StatusPoller
+from .poller import StatusPoller, PrintStatePoller
 from .announcements import AnnouncementsClient
 from .autodryer import (
     AutoDryer,
@@ -235,6 +235,11 @@ async def lifespan(app: FastAPI):
 
     state_tailer = LogTailer(state_log, on_line=on_state_line)
     poller = StatusPoller(moonraker, interval=5.0)
+    print_poller = PrintStatePoller(
+        fetcher=lambda: _compute_print_payload(moonraker),
+        app_state=app.state,
+        interval=float(os.environ.get("MULTIACE_PRINT_POLL_SEC", "4")),
+    )
 
     # ---- AutoDryer ----
     autodry_state_path = Path(_env(
@@ -311,6 +316,7 @@ async def lifespan(app: FastAPI):
         tasks = [
             asyncio.create_task(state_tailer.run()),
             asyncio.create_task(poller.run()),
+            asyncio.create_task(print_poller.run()),
             asyncio.create_task(autodry.run()),
         ]
     app.state.background_tasks = tasks
@@ -320,6 +326,7 @@ async def lifespan(app: FastAPI):
     finally:
         state_tailer.stop()
         poller.stop()
+        print_poller.stop()
         autodry.stop()
         if tasks:
             done, pending = await asyncio.wait(tasks, timeout=2.0)
@@ -331,6 +338,87 @@ async def lifespan(app: FastAPI):
             await ann_http.aclose()
         if _lifespan_owns_moonraker:
             await moonraker.close()
+
+
+async def _compute_print_payload(moonraker: MoonrakerClient) -> dict:
+    """Build the print summary used by GET /api/print and the AutoDryer poller.
+
+    Pulled out of the HTTP handler so the autodry FSM can run on a server-side
+    cadence even when no UI client is connected. Includes Klipper print_stats,
+    virtual_sdcard, toolhead, the multiACE [ace] dryer_status, U1 cavity
+    temperature, and (when configured) an external humidity reading.
+    """
+    result = await moonraker.query_objects(
+        ["print_stats", "virtual_sdcard", "toolhead", "ace",
+         "temperature_sensor cavity"]
+    )
+
+    ps = result.get("print_stats") or {}
+    sd = result.get("virtual_sdcard") or {}
+    th = result.get("toolhead") or {}
+    ace_obj = result.get("ace") or {}
+    cavity = result.get("temperature_sensor cavity") or {}
+
+    progress = float(sd.get("progress") or 0.0)
+    print_duration = float(ps.get("print_duration") or 0.0)
+    total_duration = float(ps.get("total_duration") or 0.0)
+    # ETA: simple linear extrapolation from print_duration only (excludes pauses).
+    eta_sec: float | None = None
+    if progress > 0.001:
+        eta_sec = max(0.0, (print_duration / progress) - print_duration)
+
+    # Map Klipper extruder name to a head index (extruder=0, extruderN=N).
+    ext = th.get("extruder")
+    head_idx: int | None = None
+    if isinstance(ext, str):
+        if ext == "extruder":
+            head_idx = 0
+        elif ext.startswith("extruder"):
+            tail = ext[len("extruder"):]
+            if tail.isdigit():
+                head_idx = int(tail)
+
+    info = ps.get("info") or {}
+    exc = ps.get("exception") or None
+    # Klipper's exception is sometimes {} (empty); treat as None.
+    if isinstance(exc, dict) and not exc:
+        exc = None
+
+    # Dryer status from multiACE's [ace] printer object.
+    # Field units (verified live): status ("stop" | "drying" | …),
+    # target_temp °C, duration MINUTES, remain_time SECONDS (yes, mixed).
+    # We normalize remain to minutes for the dashboard.
+    ds = ace_obj.get("dryer_status") or {}
+    dryer = {
+        "status": ds.get("status") or "stop",
+        "target_temp": int(ds.get("target_temp") or 0),
+        "duration_min": int(ds.get("duration") or 0),
+        "remain_min": int(round((ds.get("remain_time") or 0) / 60.0)),
+        "remain_sec": int(ds.get("remain_time") or 0),
+    }
+
+    cavity_temp_raw = cavity.get("temperature")
+    cavity_temp = float(cavity_temp_raw) if cavity_temp_raw is not None else None
+
+    # External humidity is fetched lazily and cached; failures don't poison the payload.
+    humidity = await _read_humidity()
+
+    return {
+        "state": ps.get("state") or "standby",
+        "filename": ps.get("filename") or None,
+        "progress": progress,
+        "print_duration": print_duration,
+        "total_duration": total_duration,
+        "eta_sec": eta_sec,
+        "layer": info.get("current_layer"),
+        "total_layer": info.get("total_layer"),
+        "current_extruder": head_idx,
+        "exception": exc,
+        "message": ps.get("message") or None,
+        "dryer": dryer,
+        "cavity_temp_c": cavity_temp,
+        "humidity": humidity,
+    }
 
 
 def _bootstrap_state_from_log(state: "CurrentState", log_path: Path) -> None:
@@ -425,82 +513,13 @@ def create_app(
 
         Also includes the multiACE dryer_status, the U1 cavity temperature,
         and (when configured) an external humidity reading so the Dashboard
-        can render an environment strip without extra polls.
+        can render an environment strip without extra polls. Identical to the
+        payload the server-side PrintStatePoller writes into app.state.last_print.
         """
         try:
-            result = await request.app.state.moonraker.query_objects(
-                ["print_stats", "virtual_sdcard", "toolhead", "ace",
-                 "temperature_sensor cavity"]
-            )
+            payload = await _compute_print_payload(request.app.state.moonraker)
         except MoonrakerError as e:
             raise HTTPException(502, str(e))
-
-        ps = result.get("print_stats") or {}
-        sd = result.get("virtual_sdcard") or {}
-        th = result.get("toolhead") or {}
-        ace_obj = result.get("ace") or {}
-        cavity = result.get("temperature_sensor cavity") or {}
-
-        progress = float(sd.get("progress") or 0.0)
-        print_duration = float(ps.get("print_duration") or 0.0)
-        total_duration = float(ps.get("total_duration") or 0.0)
-        # ETA: simple linear extrapolation from print_duration only (excludes pauses).
-        eta_sec: float | None = None
-        if progress > 0.001:
-            eta_sec = max(0.0, (print_duration / progress) - print_duration)
-
-        # Map Klipper extruder name to a head index (extruder=0, extruderN=N).
-        ext = th.get("extruder")
-        head_idx: int | None = None
-        if isinstance(ext, str):
-            if ext == "extruder":
-                head_idx = 0
-            elif ext.startswith("extruder"):
-                tail = ext[len("extruder"):]
-                if tail.isdigit():
-                    head_idx = int(tail)
-
-        info = ps.get("info") or {}
-        exc = ps.get("exception") or None
-        # Klipper's exception is sometimes {} (empty); treat as None.
-        if isinstance(exc, dict) and not exc:
-            exc = None
-
-        # Dryer status from multiACE's [ace] printer object.
-        # Field units (verified live): status ("stop" | "drying" | …),
-        # target_temp °C, duration MINUTES, remain_time SECONDS (yes, mixed).
-        # We normalize remain to minutes for the dashboard.
-        ds = ace_obj.get("dryer_status") or {}
-        dryer = {
-            "status": ds.get("status") or "stop",
-            "target_temp": int(ds.get("target_temp") or 0),
-            "duration_min": int(ds.get("duration") or 0),
-            "remain_min": int(round((ds.get("remain_time") or 0) / 60.0)),
-            "remain_sec": int(ds.get("remain_time") or 0),
-        }
-
-        cavity_temp_raw = cavity.get("temperature")
-        cavity_temp = float(cavity_temp_raw) if cavity_temp_raw is not None else None
-
-        # External humidity is fetched lazily and cached; failures don't poison /api/print.
-        humidity = await _read_humidity()
-
-        payload = {
-            "state": ps.get("state") or "standby",
-            "filename": ps.get("filename") or None,
-            "progress": progress,
-            "print_duration": print_duration,
-            "total_duration": total_duration,
-            "eta_sec": eta_sec,
-            "layer": info.get("current_layer"),
-            "total_layer": info.get("total_layer"),
-            "current_extruder": head_idx,
-            "exception": exc,
-            "message": ps.get("message") or None,
-            "dryer": dryer,
-            "cavity_temp_c": cavity_temp,
-            "humidity": humidity,
-        }
         request.app.state.last_print = payload
         return payload
 

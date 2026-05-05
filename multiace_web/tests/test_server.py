@@ -610,3 +610,88 @@ def test_post_autodry_invalid_mode_400(autodry_test_client):
     r = autodry_test_client.post("/api/autodry",
                                  json={"action": "set_mode", "value": "bogus"})
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# M-4: server-side PrintStatePoller — autodry must see live data even when
+# no UI client is polling /api/print.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def app_with_bg(tmp_path, monkeypatch):
+    """Like `app`, but with background tasks enabled so the PrintStatePoller
+    actually runs. Used by the M-4 regression test."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    cfg_path = tmp_path / "ace.cfg"
+    cfg_path.write_text(
+        "[ace]\nfeed_speed: 80\nretract_speed: 30\nload_length: 880\n"
+    )
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    monkeypatch.setenv("MULTIACE_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("MULTIACE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("MOONRAKER_URL", "http://printer:7125")
+    monkeypatch.delenv("MULTIACE_TOKEN", raising=False)
+    # Tight poll interval so the test doesn't have to wait 4s for a tick.
+    monkeypatch.setenv("MULTIACE_PRINT_POLL_SEC", "0.05")
+    # Keep autodry quiet — the FSM tick is unrelated to this regression.
+    monkeypatch.setenv("MULTIACE_AUTODRY_TICK_SEC", "60")
+    monkeypatch.setenv("MULTIACE_AUTODRY_STATE_PATH", str(tmp_path / "autodry.json"))
+
+    mock_moonraker_class = MagicMock()
+    mock_instance = MagicMock()
+    mock_instance.close = AsyncMock()
+    mock_instance.run_gcode = AsyncMock(return_value="ok")
+    mock_instance.get_logs = AsyncMock(return_value=[])
+    mock_instance.query_objects = AsyncMock(return_value=_print_query_payload())
+    mock_moonraker_class.return_value = mock_instance
+    monkeypatch.setattr("multiace_web.server.MoonrakerClient", mock_moonraker_class)
+
+    return create_app(static_dir=static_dir, start_background_tasks=True)
+
+
+def test_print_poller_populates_last_print_without_ui(app_with_bg):
+    """The server-side PrintStatePoller writes to app.state.last_print so the
+    autodry FSM gets live data even when no UI client is polling /api/print.
+
+    Regression for M-4: with no browser open, autodry inputs were stale because
+    last_print was only filled by GET /api/print on a UI tick.
+    """
+    import time as _time
+    with TestClient(app_with_bg):
+        # Wait for the first poller tick to populate last_print.
+        deadline = _time.time() + 5.0
+        while _time.time() < deadline:
+            if app_with_bg.state.last_print:
+                break
+            _time.sleep(0.05)
+    assert app_with_bg.state.last_print, "PrintStatePoller did not populate last_print"
+    assert app_with_bg.state.last_print["state"] == "printing"
+    assert app_with_bg.state.last_print["dryer"]["status"] == "drying"
+
+
+def test_print_poller_swallows_moonraker_errors(app_with_bg):
+    """Moonraker hiccups must not stop the poller — the previous payload should
+    remain in last_print and the loop should keep ticking."""
+    from multiace_web.moonraker import MoonrakerError
+    import time as _time
+    mr = app_with_bg.state if False else None  # silence linters
+    with TestClient(app_with_bg):
+        # First, let the poller seed last_print successfully.
+        deadline = _time.time() + 5.0
+        while _time.time() < deadline:
+            if app_with_bg.state.last_print:
+                break
+            _time.sleep(0.05)
+        assert app_with_bg.state.last_print, "initial poll never populated last_print"
+        seeded = app_with_bg.state.last_print
+
+        # Now make Moonraker fail. The poller should swallow the error; the
+        # cached payload should remain in place.
+        app_with_bg.state.moonraker.query_objects = AsyncMock(
+            side_effect=MoonrakerError("transient")
+        )
+        # Give a few tick cycles for any failure to surface.
+        _time.sleep(0.3)
+        assert app_with_bg.state.last_print is seeded or app_with_bg.state.last_print == seeded
