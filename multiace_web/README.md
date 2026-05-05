@@ -335,6 +335,19 @@ GPL-3.0 — same as the parent multiACE project.
 
 ## Changelog
 
+## 0.7.0 — 2026-05-04
+
+- New **Auto-dry** feature — humidity-driven, filament-aware filament
+  maintenance. Watches chamber RH and runs `ACE_DRY` cycles when needed,
+  with per-filament temp/duration profiles, single global RH target
+  (default 15%), and a sticky FAULTED state for failed cycles.
+- New `MULTIACE_AUTODRY_MODE` env (off/log/active) plus dry-run logging
+  mode for safe rollout.
+- Mainsail/Fluidd toasts for triggered/finished/failed transitions via
+  Moonraker `[server_announcements]`.
+- New endpoints: `GET /api/autodry`, `POST /api/autodry`.
+- Persisted FSM state across multiace-web restarts.
+
 ## 0.6.1 — 2026-05-03
 
 - Hardware tab: text contrast fix — labels on top of filament colors
