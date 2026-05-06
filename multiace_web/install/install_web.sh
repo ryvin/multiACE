@@ -35,6 +35,12 @@ log "Target: $INSTALL_BASE"
 # Copy app to persistent partition
 mkdir -p "$INSTALL_BASE"
 chmod 0755 "$INSTALL_BASE"  # so user 'lava' can traverse into app/ and venv/
+# Persistence files (e.g. .autodry_state.json) live at $INSTALL_BASE — outside
+# $APP_DIR so they survive `rm -rf "$APP_DIR"` below. uvicorn runs as user
+# 'lava' (see S62multiace-web), so $INSTALL_BASE must be lava-writable for
+# atomic-write-via-tmp-then-rename to succeed. Without this chown the saves
+# silently fail and per-ACE autodry config doesn't persist across restarts.
+chown lava:lava "$INSTALL_BASE"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -r "$SOURCE_DIR/src" "$APP_DIR/"
