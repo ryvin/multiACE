@@ -1218,3 +1218,34 @@ body.multiace-embed { background: transparent; }
 @media (max-width: 800px) {
   .diag-autodry-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- Multi-ACE Dashboard layout ---- */
+.slots-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 1rem;
+}
+.ace-block {
+  background: var(--surface, rgba(255,255,255,.03));
+  border: 1px solid var(--border, rgba(255,255,255,.08));
+  border-radius: var(--radius, 8px);
+  padding: .85rem;
+  display: flex; flex-direction: column; gap: .65rem;
+}
+.ace-block.is-stale { opacity: .85; }
+.ace-block.is-unreachable { opacity: .45; filter: grayscale(.6); }
+.ace-block-head {
+  display: flex; justify-content: space-between; align-items: center;
+}
+.ace-label { font-weight: 600; }
+.badge { font-size: .72rem; padding: .15rem .55rem; border-radius: 999px; line-height: 1.4; }
+.badge-active { background: var(--accent, #3aa); color: var(--on-accent, #fff); }
+.badge-stale  { background: rgba(255,255,255,.08); color: var(--muted, #888); }
+.ace-block-slots {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: .5rem;
+}
+@media (max-width: 480px) {
+  .ace-block-slots { grid-template-columns: 1fr; }
+}
