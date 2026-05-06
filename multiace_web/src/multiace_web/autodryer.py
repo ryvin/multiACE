@@ -970,7 +970,14 @@ class AutodryManager:
         per-ACE shape. Only the FSM at `target_ace` keeps the legacy config;
         all others are constructed with defaults and `enabled = False`."""
         target_ace = int(legacy.get("target_ace", 0))
-        enabled = legacy.get("mode") == "active"
+        if not (0 <= target_ace < device_count):
+            log.warning(
+                "[multiace.autodryer] migrate_from_legacy: target_ace=%d is out of range "
+                "for device_count=%d; clamping to 0 (legacy config preserved on ACE 0)",
+                target_ace, device_count,
+            )
+            target_ace = 0
+        enabled = legacy.get("mode") in ("log", "active")
         cfg = PerAceConfig(
             enabled=enabled,
             target_pct=int(legacy.get("target_pct", 15)),
@@ -982,7 +989,7 @@ class AutodryManager:
 
         fsms: list[PerAceFSM] = []
         for i in range(device_count):
-            if i == target_ace and 0 <= i < device_count:
+            if i == target_ace:
                 fsms.append(PerAceFSM(ace=i, config=cfg, snapshot=snap))
             else:
                 fsms.append(PerAceFSM(ace=i))
