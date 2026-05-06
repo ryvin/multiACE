@@ -133,6 +133,12 @@ button — read-only navigation only.
 > `/api/dry` against a real printer mid-print without explicit reason. They
 > work; that's the point. They also affect physical hardware.
 
+For dual-ACE end-to-end validation (golden path: open dashboard, verify
+both ACE blocks render, exercise the FilamentHub deep-link, issue a
+real `ACE_LOAD_HEAD` via the chevron menu and assert `head_source[0]`
+resolves), use `tools/e2e_dual_ace.py` — pre-flights `print_stats.state`
+and aborts unless the printer is `standby`/`complete`/`cancelled`/`error`.
+
 ## Install on the printer
 
 `install_multiace.sh` runs `install/install_web.sh` automatically as part of
@@ -233,6 +239,8 @@ so any new variables are auto-exported to the uvicorn process):
 | `MULTIACE_HUMIDITY_HUM_PATH` | (auto) | Dot-path into the JSON for the humidity number |
 | `MULTIACE_HUMIDITY_TEMP_PATH` | (auto) | Dot-path for ambient temperature |
 | `MULTIACE_HUMIDITY_LABEL` | `Sensor` | Display label on the dashboard tile |
+| `FILAMENTHUB_URL` | (unset) | If set, enables the per-slot 📖 picker. Points at FilamentHub's nginx (e.g. `https://filamenthub.local`) so the web console can poll Spoolman for `(ACE, slot) → spool` bindings every 5 s and deep-link the picker on click. |
+| `FILAMENTHUB_PRINTER_ID` | `u1-1` | Printer id this multiACE instance corresponds to in FilamentHub's `config/printers.json`. Used in the deep-link `?printer=<id>` query param and to filter Spoolman bindings to this printer only. |
 
 ### Wiring a humidity sensor
 
