@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -189,6 +189,19 @@ class ConfigRequest(BaseModel):
         return v
 
 
+class DryStopRequest(BaseModel):
+    """Request body for POST /api/dry/stop — select which ACE to stop drying."""
+    ace: int = Field(ge=0, le=3)
+
+
+class AutodryConfigUpdate(BaseModel):
+    """Per-ACE autodry config update — used by POST /api/autodry?ace=N."""
+    enabled: Optional[bool] = None
+    target_pct: Optional[int] = Field(default=None, ge=5, le=60)
+    hysteresis_pp: Optional[int] = Field(default=None, ge=1, le=15)
+    default_filament_type: Optional[str] = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Wire up background tasks + Moonraker client."""
@@ -207,6 +220,10 @@ async def lifespan(app: FastAPI):
     # (by either the PrintStatePoller or GET /api/print). The autodry FSM
     # uses this to detect Moonraker outages — see autodry_inputs_fetcher.
     app.state.last_print_at = 0.0
+    # Spool cache: {ace_idx: {slot: SpoolBinding}}. Populated by Task 8
+    # SpoolmanPoller. Defaults to empty so /api/slots works immediately.
+    if not hasattr(app.state, "spool_cache"):
+        app.state.spool_cache = {}
 
     # Allow tests to inject a mock before lifespan runs.
     _lifespan_owns_moonraker = not hasattr(app.state, "moonraker")
@@ -331,12 +348,19 @@ async def lifespan(app: FastAPI):
         msg = json.dumps({"type": "event", "id": eid, "ts": ts, "payload": payload})
         await _broadcast(ws_clients, msg)
 
+    # Resolve device_count for the per-ACE manager. At boot time last_state
+    # (from the log bootstrap) may already be available; default to 1 so the
+    # single-ACE legacy path still works when state hasn't been populated yet.
+    _boot_device_count = int(getattr(state, "device_count", 0) or 1)
+    _manager = AutoDryer.load_manager(autodry_state_path, device_count=_boot_device_count)
+
     autodry = AutoDryer(
         state_path=autodry_state_path,
         inputs_fetcher=autodry_inputs_fetcher,
         emit_event=autodry_emit_event,
         announcements=announcements,
         tick_sec=float(os.environ.get("MULTIACE_AUTODRY_TICK_SEC", "60")),
+        manager=_manager,
     )
     app.state.autodry = autodry
 
@@ -567,48 +591,138 @@ def create_app(
             raise HTTPException(502, str(e))
         return {"ok": True, "result": result, "gcode": gcode}
 
+    @app.get("/api/slots")
+    async def get_slots(request: Request) -> dict:
+        s = request.app.state.state
+        device_count = int(getattr(s, "device_count", 1) or 1) if s else 1
+        if device_count < 1:
+            device_count = 1
+        active = int(getattr(s, "active_device", 0) or 0) if s else 0
+        gate_status = list(getattr(s, "gate_status", [0, 0, 0, 0]) or [0, 0, 0, 0]) if s else [0, 0, 0, 0]
+        cache = getattr(request.app.state, "spool_cache", {}) or {}
+        aces = []
+        for ace_idx in range(device_count):
+            slots = []
+            for slot in range(4):
+                binding = (cache.get(ace_idx) or {}).get(slot)
+                slots.append({
+                    "slot": slot,
+                    "gate_status": gate_status[slot] if ace_idx == active and slot < len(gate_status) else None,
+                    "spool": (
+                        {
+                            "spool_id": binding.spool_id,
+                            "name": binding.name,
+                            "material": binding.material,
+                            "color": binding.color,
+                            "weight_remaining_g": binding.weight_remaining_g,
+                        }
+                        if binding else None
+                    ),
+                })
+            aces.append({"index": ace_idx, "is_active": ace_idx == active, "slots": slots})
+        return {"aces": aces}
+
+    @app.post("/api/dry/stop")
+    async def post_dry_stop(request: Request, body: DryStopRequest) -> dict:
+        mr = request.app.state.moonraker
+        try:
+            await mr.run_gcode(f"ACE_SWITCH TARGET={body.ace}")
+        except MoonrakerError as e:
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"could not switch to ACE {body.ace}: {e}"},
+            )
+        try:
+            await mr.run_gcode("ACE_STOP_DRYING")
+        except MoonrakerError as e:
+            return JSONResponse(status_code=502, content={"error": str(e)})
+        return {"ok": True}
+
     @app.get("/api/autodry")
-    async def get_autodry(request: Request) -> dict:
+    async def get_autodry(request: Request, ace: Optional[int] = None) -> Any:
         ad: AutoDryer = request.app.state.autodry
-        p = ad.persisted
-        return _autodry_to_dict(p)
+        if ace is None:
+            return _autodry_to_dict(ad.persisted)
+        try:
+            fsm = ad.manager.get(ace)
+        except (KeyError, AttributeError):
+            return JSONResponse(status_code=404, content={"error": f"no FSM for ace={ace}"})
+        return {
+            "ace": ace,
+            "enabled": fsm.config.enabled,
+            "target_pct": fsm.config.target_pct,
+            "hysteresis_pp": fsm.config.hysteresis_pp,
+            "default_filament_type": fsm.config.default_filament_type,
+            "state": fsm.snapshot.state.value,
+            "locked": fsm.locked,
+            "unreachable": fsm.unreachable,
+        }
 
     @app.post("/api/autodry")
-    async def post_autodry(request: Request, body: dict) -> dict:
+    async def post_autodry(request: Request, body: dict, ace: Optional[int] = None) -> Any:
         ad: AutoDryer = request.app.state.autodry
-        action = body.get("action")
-        value = body.get("value")
-        if action == "set_mode":
-            if value not in ("off", "log", "active"):
-                raise HTTPException(400, "value must be off|log|active")
-            ad.update_config(mode=value)
-        elif action == "set_target":
-            if not isinstance(value, int) or not (5 <= value <= 60):
-                raise HTTPException(400, "value must be int 5-60")
-            ad.update_config(target_pct=value)
-        elif action == "set_hysteresis":
-            if not isinstance(value, int) or not (1 <= value <= 15):
-                raise HTTPException(400, "value must be int 1-15")
-            ad.update_config(hysteresis_pp=value)
-        elif action == "set_target_ace":
-            if not isinstance(value, int) or not (0 <= value <= 3):
-                raise HTTPException(400, "value must be int 0-3")
-            ad.update_config(target_ace=value)
-        elif action == "set_default_filament_type":
-            allowed = {None, "PLA", "PETG", "TPU", "ABS", "ASA", "PA", "PC", "PVA"}
-            if value is not None and not isinstance(value, str):
-                raise HTTPException(400, "value must be a string or null")
-            normalized = value.strip().upper() if isinstance(value, str) and value.strip() else None
-            if normalized not in allowed:
-                raise HTTPException(400, f"value must be one of {sorted(x for x in allowed if x)} or null")
-            ad.update_config(default_filament_type=normalized)
-        elif action == "force_evaluate":
-            ad.force_evaluate()
-        elif action == "reset_fault":
-            ad.reset_fault()
-        else:
-            raise HTTPException(400, f"unknown action: {action}")
-        return _autodry_to_dict(ad.persisted)
+        if ace is None:
+            # ===== Existing single-FSM action handler, UNCHANGED =====
+            action = body.get("action")
+            value = body.get("value")
+            if action == "set_mode":
+                if value not in ("off", "log", "active"):
+                    raise HTTPException(400, "value must be off|log|active")
+                ad.update_config(mode=value)
+            elif action == "set_target":
+                if not isinstance(value, int) or not (5 <= value <= 60):
+                    raise HTTPException(400, "value must be int 5-60")
+                ad.update_config(target_pct=value)
+            elif action == "set_hysteresis":
+                if not isinstance(value, int) or not (1 <= value <= 15):
+                    raise HTTPException(400, "value must be int 1-15")
+                ad.update_config(hysteresis_pp=value)
+            elif action == "set_target_ace":
+                if not isinstance(value, int) or not (0 <= value <= 3):
+                    raise HTTPException(400, "value must be int 0-3")
+                ad.update_config(target_ace=value)
+            elif action == "set_default_filament_type":
+                allowed = {None, "PLA", "PETG", "TPU", "ABS", "ASA", "PA", "PC", "PVA"}
+                if value is not None and not isinstance(value, str):
+                    raise HTTPException(400, "value must be a string or null")
+                normalized = value.strip().upper() if isinstance(value, str) and value.strip() else None
+                if normalized not in allowed:
+                    raise HTTPException(400, f"value must be one of {sorted(x for x in allowed if x)} or null")
+                ad.update_config(default_filament_type=normalized)
+            elif action == "force_evaluate":
+                ad.force_evaluate()
+            elif action == "reset_fault":
+                ad.reset_fault()
+            else:
+                raise HTTPException(400, f"unknown action: {action}")
+            return _autodry_to_dict(ad.persisted)
+
+        # ===== New per-ACE config update =====
+        try:
+            fsm = ad.manager.get(ace)
+        except (KeyError, AttributeError):
+            return JSONResponse(status_code=404, content={"error": f"no FSM for ace={ace}"})
+        # Validate via pydantic
+        try:
+            update = AutodryConfigUpdate(**body)
+        except Exception as e:
+            return JSONResponse(status_code=422, content={"error": str(e)})
+        # Validate filament type allowlist
+        _ALLOWED_FILAMENT_TYPES = {None, "PLA", "PETG", "TPU", "ABS", "ASA", "PA", "PC", "PVA"}
+        if update.default_filament_type is not None:
+            normalized = update.default_filament_type.strip().upper() if update.default_filament_type.strip() else None
+            if normalized not in _ALLOWED_FILAMENT_TYPES:
+                return JSONResponse(status_code=400,
+                                    content={"error": "invalid default_filament_type"})
+            fsm.config.default_filament_type = normalized
+        if update.enabled is not None:
+            fsm.config.enabled = update.enabled
+        if update.target_pct is not None:
+            fsm.config.target_pct = update.target_pct
+        if update.hysteresis_pp is not None:
+            fsm.config.hysteresis_pp = update.hysteresis_pp
+        ad._save_manager()
+        return {"ok": True, "ace": ace}
 
     @app.put("/api/config")
     async def put_config(request: Request, body: ConfigRequest) -> dict:
