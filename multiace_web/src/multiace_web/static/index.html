@@ -124,6 +124,13 @@
         <h2>Diagnostics</h2>
         <p class="muted small">For troubleshooting. Read-only diagnostic G-code and log slices.</p>
       </div>
+      <div class="diag-toolbar">
+        <label class="diag-ace-picker">
+          Show ACE: <select id="diag-ace"></select>
+        </label>
+        <span class="muted small">Per-ACE blocks below scope to this selection. Globals (klippy log, ACE_LIST, raw state JSON) stay full-printer.</span>
+      </div>
+      <div id="diag-per-ace" class="diag-per-ace"></div>
       <div class="diag-actions">
         <button data-cmd="ACE_HEAD_STATUS" class="primary">Run ACE_HEAD_STATUS</button>
         <button data-cmd="ACE_LIST">Run ACE_LIST</button>

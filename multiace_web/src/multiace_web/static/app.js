@@ -1925,7 +1925,91 @@ document.addEventListener("submit", async (ev) => {
   }
 });
 
+// Diag tab — selected ACE for per-ACE blocks. null = legacy single-FSM view.
+window._diagAce = 0;
+// Per-ACE autodry data fetched on-demand when the dropdown changes.
+let _diagAceState = null;
+
+async function fetchDiagAceState(ace) {
+  try {
+    const r = await fetch(api(`api/autodry?ace=${ace}`), { headers: authHeader() });
+    if (!r.ok) { _diagAceState = null; return; }
+    _diagAceState = await r.json();
+  } catch (_) {
+    _diagAceState = null;
+  }
+}
+
+function renderDiagAceDropdown() {
+  const sel = document.getElementById("diag-ace");
+  if (!sel) return;
+  const deviceCount = Math.max(state.device_count || 1, 1);
+  const current = window._diagAce ?? 0;
+  // Repopulate only if device_count changed (preserves user selection)
+  if (sel.options.length !== deviceCount) {
+    sel.innerHTML = "";
+    for (let i = 0; i < deviceCount; i++) {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = `ACE ${String.fromCharCode(65 + i)} (#${i})`;
+      if (i === current) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    if (!sel.dataset.bound) {
+      sel.addEventListener("change", async (ev) => {
+        window._diagAce = parseInt(ev.target.value, 10);
+        await fetchDiagAceState(window._diagAce);
+        renderDiag();
+      });
+      sel.dataset.bound = "1";
+    }
+  }
+}
+
+function renderDiagPerAce() {
+  const host = document.getElementById("diag-per-ace");
+  if (!host) return;
+  host.innerHTML = "";
+  const ace = window._diagAce ?? 0;
+  const isActive = state.active_device === ace;
+
+  const block = setEl(host, "div"); block.className = "diag-ace-block";
+  setEl(block, "h4", { textContent: `ACE ${String.fromCharCode(65 + ace)} (#${ace})` });
+
+  // Connection status
+  const status = setEl(block, "div"); status.className = "diag-row";
+  setEl(status, "span", { className: "muted", textContent: "Status:" });
+  setEl(status, "span", {
+    textContent: isActive ? "active (currently connected)" : "inactive (last-known data)",
+  });
+
+  // Heads sourced from this ACE
+  const headsRow = setEl(block, "div"); headsRow.className = "diag-row";
+  setEl(headsRow, "span", { className: "muted", textContent: "Heads sourced:" });
+  const headsList = Object.entries(state.head_source || {})
+    .filter(([, src]) => src && src.ace === ace)
+    .map(([h, src]) => `${tName(h)} ← ${slotName(src.slot)} (${src.type || "?"})`)
+    .join(", ") || "none";
+  setEl(headsRow, "span", { textContent: headsList });
+
+  // Gate status (only meaningful for active ACE)
+  if (isActive) {
+    const gateRow = setEl(block, "div"); gateRow.className = "diag-row";
+    setEl(gateRow, "span", { className: "muted", textContent: "Gate status:" });
+    const gates = (state.gate_status || []).map((g, i) => `S${i+1}=${g === 1 ? "filled" : "empty"}`).join("  ");
+    setEl(gateRow, "span", { textContent: gates });
+  }
+
+  // Per-ACE autodry FSM (fetched via /api/autodry?ace=N)
+  setEl(block, "h5", { textContent: "Autodry FSM (per-ACE)" });
+  const fsmPre = setEl(block, "pre");
+  fsmPre.className = "diag-json";
+  fsmPre.textContent = _diagAceState ? JSON.stringify(_diagAceState, null, 2) : "(not yet fetched — change dropdown to refresh)";
+}
+
 function renderDiag() {
+  renderDiagAceDropdown();
+  renderDiagPerAce();
   document.getElementById("diag-state").textContent =
     JSON.stringify(state, null, 2);
 
@@ -2059,4 +2143,7 @@ document.addEventListener("DOMContentLoaded", () => {
   connectWS();
   startPrintPolling();
   startAutodryPolling();
+  // Eagerly fetch per-ACE autodry state so the Diag tab has data on first
+  // open even if the user hasn't touched the dropdown yet.
+  fetchDiagAceState(window._diagAce ?? 0).then(() => renderDiag());
 });
