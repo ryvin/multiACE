@@ -949,3 +949,105 @@ class TestAutodryPerAceEndpoint:
         r = autodry_client.post("/api/autodry?ace=0",
                                 json={"default_filament_type": "PEEK"})
         assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — /api/print per-ACE block + /api/command 409 preflight
+# ---------------------------------------------------------------------------
+
+
+class TestApiPrintMultiAce:
+    def test_includes_per_ace_dryer_block(self, app) -> None:
+        with TestClient(app) as client:
+            # Set last_ace_data with one cached entry for ACE 1
+            app.state.last_ace_data = {
+                1: {
+                    "dryer_status": {"status": "drying", "target_temp": 45, "remain_time": 3600},
+                    "humidity": 18.0,
+                    "last_seen_ts": 1760000000.0,
+                }
+            }
+            # Set live state with device_count=2
+            app.state.state.device_count = 2
+            app.state.state.active_device = 0
+            app.state.moonraker.query_objects = AsyncMock(return_value=_print_query_payload())
+            r = client.get("/api/print")
+        assert r.status_code == 200
+        body = r.json()
+        assert "aces" in body
+        assert len(body["aces"]) == 2
+        a0 = next(a for a in body["aces"] if a["index"] == 0)
+        a1 = next(a for a in body["aces"] if a["index"] == 1)
+        assert a0["is_active"] is True
+        assert a1["is_active"] is False
+        # ACE 1 should have last-known cached data
+        assert a1["humidity"] == 18.0
+        assert a1["dryer"]["status"] == "drying"
+
+    def test_returns_aces_with_nulls_when_no_cache(self, app) -> None:
+        with TestClient(app) as client:
+            app.state.last_ace_data = {}
+            app.state.state.device_count = 2
+            app.state.state.active_device = 0
+            app.state.moonraker.query_objects = AsyncMock(return_value=_print_query_payload())
+            r = client.get("/api/print")
+        body = r.json()
+        assert "aces" in body
+        a1 = next(a for a in body["aces"] if a["index"] == 1)
+        assert a1["dryer"] is None
+        assert a1["humidity"] is None
+        assert a1["last_seen_ts"] is None
+
+
+class TestCommandPreflight409:
+    def test_load_into_busy_head_returns_409(self, app) -> None:
+        with TestClient(app) as client:
+            app.state.state.head_source = {0: {"ace": 0, "slot": 0, "type": "PLA", "color": "000"},
+                                            1: None, 2: None, 3: None}
+            app.state.state.gate_status = [1, 1, 1, 1]
+            app.state.state.active_device = 0
+            r = client.post("/api/command", json={"script": "ACE_LOAD_HEAD HEAD=0 ACE=1 SLOT=0"})
+        assert r.status_code == 409
+        body = r.json()
+        msg = body.get("error") or body.get("detail") or ""
+        assert "busy" in msg.lower()
+
+    def test_load_from_empty_slot_returns_409(self, app) -> None:
+        with TestClient(app) as client:
+            app.state.state.head_source = {0: None, 1: None, 2: None, 3: None}
+            app.state.state.gate_status = [0, 1, 1, 1]  # slot 0 empty (active ACE)
+            app.state.state.active_device = 0
+            r = client.post("/api/command", json={"script": "ACE_LOAD_HEAD HEAD=0 ACE=0 SLOT=0"})
+        assert r.status_code == 409
+        body = r.json()
+        msg = body.get("error") or body.get("detail") or ""
+        assert "empty" in msg.lower()
+
+    def test_unparseable_script_passes_through(self, app) -> None:
+        """Don't break existing callers — only fail-fast on the specific ACE_LOAD_HEAD shape."""
+        with TestClient(app) as client:
+            app.state.moonraker.run_gcode = AsyncMock(return_value="ok")
+            r = client.post("/api/command", json={"script": "G28"})
+        # Whatever the existing happy-path returns; not 409
+        assert r.status_code != 409
+
+    def test_load_for_inactive_ace_skips_slot_check(self, app) -> None:
+        """gate_status reflects only the active ACE — don't reject loads for the other ACE
+        on a slot-empty basis (we have no information for the inactive ACE)."""
+        with TestClient(app) as client:
+            app.state.state.head_source = {0: None, 1: None, 2: None, 3: None}
+            app.state.state.gate_status = [0, 0, 0, 0]  # active ACE 0 has all empty slots
+            app.state.state.active_device = 0
+            app.state.state.device_count = 2
+            app.state.moonraker.run_gcode = AsyncMock(return_value="ok")
+            # Load from ACE 1 slot 0 — gate_status irrelevant since ACE 1 is not active
+            r = client.post("/api/command", json={"script": "ACE_LOAD_HEAD HEAD=0 ACE=1 SLOT=0"})
+        assert r.status_code != 409  # not blocked by slot-empty check
+
+    def test_existing_macro_field_still_works(self, app) -> None:
+        """Existing callers using macro= field must not break."""
+        with TestClient(app) as client:
+            app.state.moonraker.run_gcode = AsyncMock(return_value="ok")
+            r = client.post("/api/command", json={"macro": "ACEC__Load_T1"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True

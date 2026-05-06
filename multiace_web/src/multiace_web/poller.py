@@ -105,6 +105,11 @@ class MultiAcePoller:
     - idle: switch to next ACE if needed, query [ace] state, tick that FSM.
     - printing: skip switch, query active ACE only, lock other FSMs.
     - 2 consecutive switch failures → mark target FSM unreachable.
+
+    Optional ``last_ace_data`` dict: when provided, after each successful
+    tick the poller snapshots ``{**ace_obj, "last_seen_ts": time.time()}``
+    under the polled ACE index. The ``/api/print`` endpoint reads this cache
+    to show per-ACE dryer/humidity data for inactive ACEs.
     """
 
     def __init__(
@@ -113,6 +118,7 @@ class MultiAcePoller:
         autodry: "AutoDryer",
         device_count: int,
         period_s: float = 5.0,
+        last_ace_data: "dict | None" = None,
     ) -> None:
         if device_count < 1:
             raise ValueError(f"device_count must be >= 1, got {device_count}")
@@ -125,6 +131,7 @@ class MultiAcePoller:
         # anchor last_polled to it, so round-robin starts on the NEXT ACE.
         self._last_polled = -1
         self._consecutive_switch_failures: dict[int, int] = {}
+        self._last_ace_data = last_ace_data
 
     def stop(self) -> None:
         self._stop.set()
@@ -155,6 +162,8 @@ class MultiAcePoller:
         for i in range(self._n):
             self._autodry.manager.get(i).locked = (i != active_idx)
         await self._autodry.tick_one_ace(active_idx, now_ts=time.time())
+        if self._last_ace_data is not None:
+            self._last_ace_data[active_idx] = {**ace_obj, "last_seen_ts": time.time()}
 
     async def _tick_idle(self) -> None:
         for i in range(self._n):
@@ -190,4 +199,6 @@ class MultiAcePoller:
                 return
 
         await self._autodry.tick_one_ace(target, now_ts=time.time())
+        if self._last_ace_data is not None:
+            self._last_ace_data[target] = {**ace_obj, "last_seen_ts": time.time()}
         self._last_polled = target

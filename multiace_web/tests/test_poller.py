@@ -185,3 +185,43 @@ async def test_multi_ace_poller_successful_switch_resets_unreachable_flag() -> N
     poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2, period_s=0.0)
     await poller.tick()  # target=1; switch should succeed → resets
     assert autodry._fsms[1].unreachable is False
+
+
+@pytest.mark.asyncio
+async def test_multi_ace_poller_writes_last_ace_data_on_tick() -> None:
+    fake_mr = _FakeMoonraker()
+    autodry = _make_autodry_mock(2)
+    cache: dict[int, dict] = {}
+    poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2,
+                            period_s=0.0, last_ace_data=cache)
+    await poller.tick()
+    # Whatever ACE was just polled should have an entry in cache
+    assert len(cache) == 1
+    polled_idx = next(iter(cache))
+    assert "last_seen_ts" in cache[polled_idx]
+
+
+@pytest.mark.asyncio
+async def test_multi_ace_poller_writes_last_ace_data_during_print() -> None:
+    fake_mr = _FakeMoonraker()
+    fake_mr.print_state = "printing"
+    fake_mr.active_idx = 0
+    autodry = _make_autodry_mock(2)
+    cache: dict[int, dict] = {}
+    poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2,
+                            period_s=0.0, last_ace_data=cache)
+    await poller.tick()
+    # The active ACE should be cached during a print
+    assert 0 in cache
+    assert "last_seen_ts" in cache[0]
+
+
+@pytest.mark.asyncio
+async def test_multi_ace_poller_no_last_ace_data_kwarg_is_noop() -> None:
+    """When last_ace_data is not passed (default None), the poller just skips caching."""
+    fake_mr = _FakeMoonraker()
+    autodry = _make_autodry_mock(2)
+    poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2, period_s=0.0)
+    # Should complete without raising
+    await poller.tick()
+    assert poller._last_ace_data is None
