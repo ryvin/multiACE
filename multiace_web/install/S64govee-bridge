@@ -1,0 +1,92 @@
+#!/bin/sh
+#
+# Start/stop the Govee BLE -> HTTP bridge for multiACE.
+# Modeled on S62multiace-web. Runs as user lava on port 7127.
+#
+# Reads MAC + port from /userdata/multiace-web/app/.env if present:
+#   GOVEE_BRIDGE_MAC=A4:C1:38:XX:XX:XX
+#   GOVEE_BRIDGE_PORT=7127
+# If GOVEE_BRIDGE_MAC is not set, the bridge starts but logs a warning and
+# never produces readings (the dashboard tile stays offline). Safe.
+
+VENV=/userdata/multiace-web/venv
+APP_DIR=/userdata/multiace-web/app
+TOOLS_DIR="$APP_DIR/tools"
+PYTHON="$VENV/bin/python3"
+PIDFILE=/var/run/govee-bridge.pid
+
+GOVEE_BRIDGE_PORT=7127
+
+ENV_FILE="$APP_DIR/.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a; . "$ENV_FILE"; set +a
+fi
+export GOVEE_BRIDGE_MAC GOVEE_BRIDGE_PORT
+
+# tools/ is a flat directory of standalone scripts (not a Python package),
+# so we cd into it and refer to the module by its bare name. govee_bridge.py
+# imports govee_decode from the same dir.
+UVICORN_ARGS="govee_bridge:app --host 127.0.0.1 --port $GOVEE_BRIDGE_PORT"
+
+log()
+{
+	logger -p user.info -t "govee-bridge[$$]" -- "$1"
+	echo "$1"
+}
+
+stop_daemon()
+{
+	log "Stopping govee-bridge..."
+	start-stop-daemon -K -q -p "$PIDFILE"
+	[ $? = 0 ] && log "OK" || log "FAIL"
+	for i in $(seq 1 25); do
+		if [ ! -f "$PIDFILE" ] || ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+			rm -f "$PIDFILE"
+			return 0
+		fi
+		sleep 0.2
+	done
+	log "force kill govee-bridge"
+	start-stop-daemon -K -q -p "$PIDFILE" -s KILL
+	rm -f "$PIDFILE"
+}
+
+case "$1" in
+  start)
+	if [ ! -x "$PYTHON" ]; then
+		log "ERROR: venv missing at $VENV — run install_web.sh first"
+		exit 1
+	fi
+	if [ -z "$GOVEE_BRIDGE_MAC" ]; then
+		log "WARN: GOVEE_BRIDGE_MAC not set in $ENV_FILE — starting anyway, no scan"
+	fi
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		log "Already running (pid $(cat "$PIDFILE"))"
+		exit 0
+	fi
+	log "Starting govee-bridge on port $GOVEE_BRIDGE_PORT (mac=${GOVEE_BRIDGE_MAC:-unset})..."
+	cd "$TOOLS_DIR" || { log "ERROR: $TOOLS_DIR missing"; exit 1; }
+	setsid start-stop-daemon -S -c lava -b -x "$PYTHON" -m -p "$PIDFILE" \
+		-- -m uvicorn $UVICORN_ARGS >>/var/log/govee-bridge.log 2>&1 </dev/null
+	;;
+  stop)
+	stop_daemon
+	;;
+  restart)
+	stop_daemon
+	sleep 0.2
+	"$0" start
+	;;
+  status)
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "running (pid $(cat "$PIDFILE"))"
+		exit 0
+	else
+		echo "stopped"
+		exit 1
+	fi
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart|status}"
+	exit 1
+esac

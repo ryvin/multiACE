@@ -163,6 +163,19 @@ rm -rf "$EXTRAS_DIR/__pycache__"
 rm -rf "$KINEMATICS_DIR/__pycache__"
 log "Python cache deleted"
 
+# --- Optional: Install web console ---
+WEB_INSTALL_DIR="${INSTALL_DIR%/multiace}/multiace_web"
+if [ -d "$WEB_INSTALL_DIR/install" ] && [ -f "$WEB_INSTALL_DIR/install/install_web.sh" ]; then
+    log "Installing multiACE Web Console..."
+    if bash "$WEB_INSTALL_DIR/install/install_web.sh"; then
+        log "  Web console installed (http://<printer-ip>/multiace/)"
+    else
+        log "  WARNING: Web console install failed; continuing without it"
+    fi
+else
+    log "Web console source not found, skipping"
+fi
+
 log ""
 log "=== Installation complete ==="
 log "Please reboot the printer to activate multiACE."

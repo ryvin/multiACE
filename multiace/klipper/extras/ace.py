@@ -85,9 +85,19 @@ class BunnyAce:
         self.retract_length = config.getint('retract_length', 100)
         self.feed_length = config.getint('feed_length', 100)
         
-        self.load_length = config.getint('load_length', 2000)         
-        self.load_retry = config.getint('load_retry', 3)              
-        self.load_retry_retract = config.getint('load_retry_retract', 50)  
+        self.load_length = config.getint('load_length', 2000)
+        self.load_retry = config.getint('load_retry', 3)
+        self.load_retry_retract = config.getint('load_retry_retract', 50)
+        # Pre-load tip refresh: brief retract + re-feed at the gate before the
+        # main load, to trim a malformed/deformed filament tip. Without this,
+        # tips left after a previous unload can fail to engage the toolhead
+        # extruder, producing 'move_extrude!raw msg:logic error!' after many
+        # phase3 retries.
+        self.tip_refresh_before_load = config.getboolean('tip_refresh_before_load', False)
+        self.tip_refresh_retract_length = config.getint('tip_refresh_retract_length', 30, minval=0, maxval=200)
+        self.tip_refresh_feed_length = config.getint('tip_refresh_feed_length', 90, minval=0, maxval=400)
+        self.tip_refresh_retract_speed = config.getint('tip_refresh_retract_speed', 20, minval=5, maxval=100)
+        self.tip_refresh_feed_speed = config.getint('tip_refresh_feed_speed', 30, minval=5, maxval=100)
         self.max_dryer_temperature = config.getint('max_dryer_temperature', 55)
         self.extra_purge_length = config.getfloat('extra_purge_length', 0, minval=0, maxval=200)
         self.swap_default_temp = config.getint('swap_default_temp', 250, minval=180, maxval=300)
@@ -1093,6 +1103,30 @@ class BunnyAce:
     def retract_fil(self, index):
         self._retract(index, self.retract_length, self.retract_speed)
 
+    def _tip_refresh_at_gate(self, slot, head, ace_index):
+        """Pull the filament tip back past the gate, then push fresh filament forward.
+
+        Trims a deformed/cooled tip left over from a previous unload so the
+        toolhead extruder can grip cleanly on the next load. No-op when
+        tip_refresh_before_load is False.
+        """
+        if not self.tip_refresh_before_load:
+            return
+        retract_len = self.tip_refresh_retract_length
+        feed_len = self.tip_refresh_feed_length
+        if retract_len <= 0 or feed_len <= 0:
+            return
+        self.log_always('[multiACE] Tip refresh slot %d: retract %dmm, feed %dmm'
+                        % (slot, retract_len, feed_len))
+        self._retract(slot, retract_len, self.tip_refresh_retract_speed)
+        self.wait_ace_ready()
+        self._feed(slot, feed_len, self.tip_refresh_feed_speed)
+        self.wait_ace_ready()
+        self._audit_state('LOAD_HEAD_TIP_REFRESHED', {
+            'head': head, 'ace': ace_index, 'slot': slot,
+            'retract_length': retract_len, 'feed_length': feed_len,
+        })
+
     cmd_ACE_RETRACT_help = 'Retracts filament back to ACE'
 
     def cmd_ACE_RETRACT(self, gcmd):
@@ -1598,6 +1632,8 @@ class BunnyAce:
             self.log_always('[multiACE] ACE %d / Slot %d has no filament! Aborting load.' % (ace_index, slot))
             self._audit_state('LOAD_HEAD_FAILED', {'head': head, 'ace': ace_index, 'slot': slot, 'reason': 'slot_empty'})
             return
+
+        self._tip_refresh_at_gate(slot, head, ace_index)
 
         active_ext = self.toolhead.get_extruder().get_name()
         target_ext = 'extruder' if head == 0 else 'extruder%d' % head
@@ -2337,6 +2373,7 @@ class BunnyAce:
             'active_device': self._active_device_index + 1,
             'device_count': len(self._ace_devices),
             'head_source': self._head_source,
+            'slots': self._info.get('slots', []),
         }
 
 def load_config(config):

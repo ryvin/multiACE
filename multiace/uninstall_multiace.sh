@@ -86,6 +86,12 @@ find "$EXTRAS_DIR/__pycache__" -name "filament_switch_sensor*" -delete 2>/dev/nu
 find "$KINEMATICS_DIR/__pycache__" -name "extruder*" -delete 2>/dev/null
 log "Python cache cleared"
 
+# --- Remove web console if installed ---
+if [ -f /userdata/multiace-web/app/install/uninstall_web.sh ]; then
+    log "Removing multiACE Web Console..."
+    bash /userdata/multiace-web/app/install/uninstall_web.sh || true
+fi
+
 log ""
 log "=== Uninstall complete ==="
 log "Please reboot the printer to restore stock operation."
