@@ -1330,6 +1330,28 @@ body.multiace-embed { background: transparent; }
 .dot-on { color: var(--accent, #3aa); }
 .dryer-row > button { margin-left: auto; }
 
+/* Per-ACE auto-maintenance subsection inside each Dryer-tab card */
+.dryer-auto-section {
+  margin-top: .65rem;
+  padding-top: .65rem;
+  border-top: 1px solid var(--border, rgba(255,255,255,.08));
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+.dryer-auto-head { font-size: .9rem; }
+.dryer-auto-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  font-size: .85rem;
+  cursor: pointer;
+}
+.dryer-auto-toggle input[type="checkbox"] {
+  margin-top: .15rem;
+  flex-shrink: 0;
+}
+
 /* Activity tab — ACE filter chips + per-row tag */
 .activity-chips {
   display: flex;

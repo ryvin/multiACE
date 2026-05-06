@@ -134,6 +134,49 @@ async function loadWebConfig() {
   }
 }
 
+// ---- Per-ACE autodry (Dryer-tab Auto-maintenance subsection) ----
+// Fetches /api/autodry?ace=N for the current state and POSTs partial
+// updates back. Decoupled from the legacy single-FSM autodry-panel which
+// uses the action-based POST shape.
+async function refreshDryerAutoSection(ace) {
+  try {
+    const r = await fetch(api(`api/autodry?ace=${ace}`), { headers: authHeader() });
+    if (!r.ok) return;
+    const cfg = await r.json();
+    const enabledCb = document.getElementById(`auto-enabled-${ace}`);
+    const keepCb = document.getElementById(`auto-keepready-${ace}`);
+    const stateLbl = document.getElementById(`auto-state-${ace}`);
+    if (enabledCb) enabledCb.checked = !!cfg.enabled;
+    if (keepCb) keepCb.checked = !!cfg.keep_ready;
+    if (stateLbl) {
+      const tag = cfg.unreachable ? "unreachable"
+                : cfg.locked      ? "locked (print)"
+                : cfg.state || "?";
+      stateLbl.textContent = `· state: ${tag}`;
+    }
+  } catch (_) { /* non-fatal */ }
+}
+
+async function postAutodryAce(ace, body) {
+  try {
+    const r = await fetch(api(`api/autodry?ace=${ace}`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      toast(`Auto-dry ACE ${String.fromCharCode(65 + ace)}: ${detail || r.statusText}`, "error");
+    } else {
+      toast(`Auto-dry ACE ${String.fromCharCode(65 + ace)} updated`, "success");
+    }
+  } catch (e) {
+    toast(`Auto-dry ACE ${String.fromCharCode(65 + ace)} failed: ${e.message}`, "error");
+  }
+  // Always refresh so the UI reflects whatever the server actually has.
+  refreshDryerAutoSection(ace);
+}
+
 async function sendScript(script) {
   try {
     const resp = await fetch(api("api/command"), {
@@ -1816,6 +1859,32 @@ function renderDryer() {
     stop.dataset.cmd = "ACED__Dry_Stop";
     stop.dataset.confirm = "Stop dryer?";
     stop.classList.add("danger");
+
+    // Per-ACE auto-maintenance subsection: shows enabled + keep_ready
+    // toggles and the current FSM state. Fed by /api/autodry?ace=N.
+    const autoSection = setEl(card, "div");
+    autoSection.className = "dryer-auto-section";
+    autoSection.dataset.ace = String(i);
+    setEl(autoSection, "div", {
+      className: "dryer-auto-head",
+      innerHTML: `<strong>Auto-maintenance</strong> <span class="muted small" id="auto-state-${i}">…</span>`,
+    });
+    const enabledLbl = setEl(autoSection, "label"); enabledLbl.className = "dryer-auto-toggle";
+    const enabledCb = setEl(enabledLbl, "input"); enabledCb.type = "checkbox";
+    enabledCb.id = `auto-enabled-${i}`;
+    setEl(enabledLbl, "span", {
+      textContent: " Enabled — watch humidity and trigger dryer when threshold crossed",
+    });
+    const keepLbl = setEl(autoSection, "label"); keepLbl.className = "dryer-auto-toggle";
+    const keepCb = setEl(keepLbl, "input"); keepCb.type = "checkbox";
+    keepCb.id = `auto-keepready-${i}`;
+    setEl(keepLbl, "span", {
+      innerHTML: " Keep ready — maintain dryness even when no head is sourcing this ACE " +
+                 "<span class='muted small'>(uses default-filament profile)</span>",
+    });
+    enabledCb.addEventListener("change", () => postAutodryAce(i, { enabled: enabledCb.checked }));
+    keepCb.addEventListener("change", () => postAutodryAce(i, { keep_ready: keepCb.checked }));
+    refreshDryerAutoSection(i);
   }
 
   // "Edit profiles" link below the grid
