@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re as _re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -157,9 +158,51 @@ async def _read_humidity() -> dict:
 _MACRO_RE = r"^[A-Z][A-Za-z0-9_]{0,63}$"
 _CONFIG_KEY_RE = r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$"
 
+# ACE_LOAD_HEAD preflight: parse HEAD=N [ACE=M] [SLOT=S] from a free-form script string.
+_LOAD_HEAD_RE = _re.compile(
+    r"^\s*ACE_LOAD_HEAD\s+HEAD=(\d+)(?:\s+ACE=(\d+))?(?:\s+SLOT=(\d+))?\s*$",
+    _re.IGNORECASE,
+)
+
+
+def _preflight_load_head(state: Any, script: str) -> "str | None":
+    """Return error string if the load is provably going to fail, else None.
+
+    state is the current CurrentState; checks head_source[head] for busy, and
+    gate_status[slot] for empty (only when ACE matches active_device, since
+    gate_status reflects only the active ACE per firmware design).
+    """
+    if state is None:
+        return None
+    m = _LOAD_HEAD_RE.match(script)
+    if not m:
+        return None
+    head = int(m.group(1))
+    active_device = int(getattr(state, "active_device", 0) or 0)
+    ace = int(m.group(2)) if m.group(2) is not None else active_device
+    slot = int(m.group(3)) if m.group(3) is not None else head
+
+    head_source = getattr(state, "head_source", {}) or {}
+    if head_source.get(head) or head_source.get(str(head)):
+        return f"head T{head} is busy — unload first"
+    if ace == active_device:
+        gate = getattr(state, "gate_status", []) or []
+        if slot < len(gate) and gate[slot] == 0:
+            return f"ACE {ace} slot {slot} is empty"
+    return None
+
 
 class CommandRequest(BaseModel):
-    macro: str = Field(min_length=1, max_length=64, pattern=_MACRO_RE)
+    macro: Optional[str] = Field(default=None, min_length=1, max_length=64, pattern=_MACRO_RE)
+    script: Optional[str] = Field(default=None, min_length=1, max_length=256)
+
+    def effective_script(self) -> str:
+        """Return the gcode string to forward to Moonraker."""
+        if self.script is not None:
+            return self.script
+        if self.macro is not None:
+            return self.macro
+        raise ValueError("either 'macro' or 'script' must be provided")
 
 
 class DryRequest(BaseModel):
@@ -224,6 +267,11 @@ async def lifespan(app: FastAPI):
     # SpoolmanPoller. Defaults to empty so /api/slots works immediately.
     if not hasattr(app.state, "spool_cache"):
         app.state.spool_cache = {}
+    # Per-ACE data cache: {ace_idx: {dryer_status, humidity, last_seen_ts}}.
+    # Written by MultiAcePoller on each tick (Task 8). Defaults to empty so
+    # /api/print works immediately with null fields for inactive ACEs.
+    if not hasattr(app.state, "last_ace_data"):
+        app.state.last_ace_data = {}
 
     # Allow tests to inject a mock before lifespan runs.
     _lifespan_owns_moonraker = not hasattr(app.state, "moonraker")
@@ -554,8 +602,17 @@ def create_app(
 
     @app.post("/api/command")
     async def post_command(request: Request, body: CommandRequest) -> dict:
+        # Validate that at least one of macro/script was provided.
+        if body.macro is None and body.script is None:
+            raise HTTPException(422, "either 'macro' or 'script' must be provided")
+        gcode = body.effective_script()
+        # ACE_LOAD_HEAD preflight: reject provably invalid loads before round-tripping.
+        if body.script is not None:
+            err = _preflight_load_head(request.app.state.state, gcode)
+            if err:
+                return JSONResponse(status_code=409, content={"error": err})
         try:
-            result = await request.app.state.moonraker.run_gcode(body.macro)
+            result = await request.app.state.moonraker.run_gcode(gcode)
         except MoonrakerError as e:
             raise HTTPException(502, str(e))
         return {"ok": True, "result": result}
@@ -568,6 +625,10 @@ def create_app(
         and (when configured) an external humidity reading so the Dashboard
         can render an environment strip without extra polls. Identical to the
         payload the server-side PrintStatePoller writes into app.state.last_print.
+
+        The response also includes an `aces` list with per-ACE dryer/humidity
+        data: live values for the active ACE, last-known cached values from
+        MultiAcePoller ticks for inactive ACEs (nulls when cache is empty).
         """
         try:
             payload = await _compute_print_payload(request.app.state.moonraker)
@@ -578,6 +639,38 @@ def create_app(
         # a UI-driven fetch as a fresh tick.
         request.app.state.last_print = payload
         request.app.state.last_print_at = time.time()
+
+        # Per-ACE block: live data for active ACE, last-known cached for others.
+        s = request.app.state.state
+        device_count = int(getattr(s, "device_count", 1) or 1) if s else 1
+        if device_count < 1:
+            device_count = 1
+        active = int(getattr(s, "active_device", 0) or 0) if s else 0
+        cache = getattr(request.app.state, "last_ace_data", {}) or {}
+        # payload["dryer"] / payload["humidity"] are the live data for the active ACE.
+        live_dryer = payload.get("dryer")
+        live_humidity = payload.get("humidity")
+        aces_block = []
+        for ace_idx in range(device_count):
+            if ace_idx == active:
+                aces_block.append({
+                    "index": ace_idx,
+                    "dryer": live_dryer,
+                    "humidity": live_humidity,
+                    "last_seen_ts": time.time(),
+                    "is_active": True,
+                })
+            else:
+                cached = cache.get(ace_idx) or {}
+                aces_block.append({
+                    "index": ace_idx,
+                    "dryer": cached.get("dryer_status"),
+                    "humidity": cached.get("humidity"),
+                    "last_seen_ts": cached.get("last_seen_ts"),
+                    "is_active": False,
+                })
+        payload["aces"] = aces_block
+
         return payload
 
     @app.post("/api/dry")
