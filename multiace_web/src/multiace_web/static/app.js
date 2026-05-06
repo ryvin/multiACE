@@ -1158,25 +1158,25 @@ function renderAll() {
 function renderTopbar() {
   const label = document.getElementById("active-ace-label");
   label.innerHTML = "";
-  if (state.device_count <= 1) {
-    const pill = document.createElement("span");
-    pill.className = "ace-pill";
-    const k = document.createElement("span"); k.className = "muted"; k.textContent = "Active:";
-    const v = document.createElement("strong");
-    v.textContent = state.active_device !== null ? `ACE ${state.active_device}` : "—";
-    pill.append(k, v);
-    label.appendChild(pill);
+  const deviceCount = state.device_count || 0;
+  const pill = document.createElement("span");
+  pill.className = "ace-pill";
+  const k = document.createElement("span"); k.className = "muted";
+  k.textContent = deviceCount > 1 ? "ACEs:" : "Active:";
+  const v = document.createElement("strong");
+  if (deviceCount > 1) {
+    v.textContent = `${deviceCount} (active: ACE ${String.fromCharCode(65 + (state.active_device ?? 0))})`;
   } else {
-    for (let i = 0; i < state.device_count; i++) {
-      const b = document.createElement("button");
-      b.textContent = `ACE ${i}`;
-      b.dataset.cmd = `ACEA__Switch_${i}`;
-      if (i === state.active_device) b.classList.add("primary");
-      label.appendChild(b);
-    }
+    v.textContent = state.active_device !== null ? `ACE ${state.active_device}` : "—";
   }
+  pill.append(k, v);
+  label.appendChild(pill);
+  // The slots-active-ace chip in the toolheads section header — keep showing
+  // active for the toolheads view, since toolheads belong to a single printer.
   const slotsBadge = document.getElementById("slots-active-ace");
-  slotsBadge.textContent = state.active_device !== null ? `ACE ${state.active_device}` : "no ACE";
+  if (slotsBadge) {
+    slotsBadge.textContent = state.active_device !== null ? `ACE ${state.active_device}` : "no ACE";
+  }
 }
 
 // ACE color is 0xAARRGGBB (or 0xFFRRGGBB on real data); low 24 bits = RGB.
@@ -1233,45 +1233,95 @@ function pill(parent, text, kind) {
 }
 
 function renderSlots() {
-  const grid = document.getElementById("slots-grid");
-  grid.innerHTML = "";
-  const ace = state.active_device;
-  for (let i = 0; i < 4; i++) {
-    const filled = state.gate_status[i] === 1;
-    const loadedToEntry = Object.entries(state.head_source).find(
-      ([, src]) => src && src.ace === ace && src.slot === i
-    );
-    const loadedToHead = loadedToEntry ? loadedToEntry[0] : null;
-    // If this slot is feeding head H, derive the filament color from H's task cfg
-    const hcfg = loadedToHead != null ? (state.print_task_config[loadedToHead] || {}) : {};
-    const color = rgbFromUint(hcfg.color);
-
-    const card = setEl(grid, "div");
-    card.className = "card" + (color ? "" : " no-color");
-    if (color) card.style.setProperty("--card-color", color);
-    setEl(card, "div", { className: "color-band" });
-
-    const head = setEl(card, "div"); head.className = "card-head";
-    setEl(head, "span", { className: "card-id", textContent: slotName(i) });
-    setEl(head, "span", { className: "card-swatch" });
-    if (filled) pill(head, "Filled", "ok"); else pill(head, "Empty");
-
-    const meta = setEl(card, "div"); meta.className = "card-meta";
-    metaRow(meta, "Feeding", loadedToHead != null ? tName(loadedToHead) : "—");
-    metaRow(meta, "Material", hcfg.type || (loadedToHead != null ? "—" : "—"));
-    metaRow(meta, "Vendor", hcfg.vendor || "—");
-
-    const actions = setEl(card, "div"); actions.className = "actions";
-    const loadBtn = setEl(actions, "button", { textContent: `Load → ${tName(i)}` });
-    loadBtn.dataset.cmd = `ACEC__Load_T${i}`;
-    loadBtn.classList.add("primary");
-    loadBtn.disabled = !filled || state.swap_in_progress;
-    const unloadBtn = setEl(actions, "button", { textContent: `Unload ${tName(i)}` });
-    unloadBtn.dataset.cmd = `ACEC__Unload_T${i}`;
-    unloadBtn.dataset.confirm = `Unload ${tName(i)}?`;
-    unloadBtn.classList.add("danger");
-    unloadBtn.disabled = !loadedToEntry || state.swap_in_progress;
+  const container = document.getElementById("slots-grid");
+  container.innerHTML = "";
+  container.classList.add("slots-panel");
+  const deviceCount = Math.max(state.device_count || 1, 1);
+  for (let ace = 0; ace < deviceCount; ace++) {
+    container.appendChild(renderAceBlock(ace));
   }
+}
+
+function renderAceBlock(ace) {
+  const block = document.createElement("div");
+  block.className = "ace-block";
+  block.dataset.ace = String(ace);
+  const isActive = (state.active_device === ace);
+  if (isActive) block.classList.add("is-active");
+  else block.classList.add("is-stale");
+
+  const head = document.createElement("header");
+  head.className = "ace-block-head";
+  const label = document.createElement("span");
+  label.className = "ace-label";
+  // ACE A=0, ACE B=1, etc. — show both letter and index for clarity
+  label.innerHTML = `ACE ${String.fromCharCode(65 + ace)} <span class="muted">(#${ace})</span>`;
+  head.appendChild(label);
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  if (isActive) {
+    badge.classList.add("badge-active");
+    badge.textContent = "active";
+  } else {
+    badge.classList.add("badge-stale");
+    badge.textContent = "stale";
+  }
+  head.appendChild(badge);
+  block.appendChild(head);
+
+  const slotsGrid = document.createElement("div");
+  slotsGrid.className = "ace-block-slots";
+  for (let i = 0; i < 4; i++) {
+    slotsGrid.appendChild(renderSlotCard(ace, i));
+  }
+  block.appendChild(slotsGrid);
+  return block;
+}
+
+function renderSlotCard(ace, slotIdx) {
+  // Reuses the existing slot-card markup. For inactive ACEs, gate_status is
+  // unknown — show "?" pill. For active ACE, use the existing logic.
+  const isActive = state.active_device === ace;
+  const filled = isActive ? (state.gate_status[slotIdx] === 1) : null;
+  // head_source is global — find any head sourced from (ace, slotIdx)
+  const loadedToEntry = Object.entries(state.head_source).find(
+    ([, src]) => src && src.ace === ace && src.slot === slotIdx
+  );
+  const loadedToHead = loadedToEntry ? loadedToEntry[0] : null;
+  const hcfg = loadedToHead != null ? (state.print_task_config[loadedToHead] || {}) : {};
+  const color = rgbFromUint(hcfg.color);
+
+  const card = document.createElement("div");
+  card.className = "card" + (color ? "" : " no-color");
+  if (color) card.style.setProperty("--card-color", color);
+  setEl(card, "div", { className: "color-band" });
+
+  const head = setEl(card, "div"); head.className = "card-head";
+  setEl(head, "span", { className: "card-id", textContent: slotName(slotIdx) });
+  setEl(head, "span", { className: "card-swatch" });
+  if (filled === true) pill(head, "Filled", "ok");
+  else if (filled === false) pill(head, "Empty");
+  else pill(head, "?");  // unknown gate_status (inactive ACE)
+
+  const meta = setEl(card, "div"); meta.className = "card-meta";
+  metaRow(meta, "Feeding", loadedToHead != null ? tName(loadedToHead) : "—");
+  metaRow(meta, "Material", hcfg.type || "—");
+  metaRow(meta, "Vendor", hcfg.vendor || "—");
+
+  // Actions — keep existing simple Load/Unload buttons. Task 10 replaces with split-button.
+  const actions = setEl(card, "div"); actions.className = "actions";
+  const loadBtn = setEl(actions, "button", { textContent: `Load → ${tName(slotIdx)}` });
+  loadBtn.dataset.cmd = `ACEC__Load_T${slotIdx}`;
+  loadBtn.classList.add("primary");
+  // Disable if active+empty, or if swap in progress; for inactive ACE keep enabled
+  // (firmware will switch + check gate_status itself).
+  loadBtn.disabled = (filled === false) || state.swap_in_progress;
+  const unloadBtn = setEl(actions, "button", { textContent: `Unload ${tName(slotIdx)}` });
+  unloadBtn.dataset.cmd = `ACEC__Unload_T${slotIdx}`;
+  unloadBtn.dataset.confirm = `Unload ${tName(slotIdx)}?`;
+  unloadBtn.classList.add("danger");
+  unloadBtn.disabled = !loadedToEntry || state.swap_in_progress;
+  return card;
 }
 
 function renderToolheads() {
