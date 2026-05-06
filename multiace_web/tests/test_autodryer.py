@@ -958,3 +958,99 @@ class TestAutoDryerPerAce:
         mgr = AutoDryer.load_manager(path, device_count=2)
         assert mgr.get(1).config.enabled is True
         assert mgr.get(1).config.target_pct == 12
+
+
+class TestKeepReady:
+    """Verify keep_ready mode arms the FSM even when no head is sourced from this ACE."""
+
+    def _make_inputs(self, *, head_source, active_device=0, humidity_pct=22.0):
+        from multiace_web.autodryer import Inputs
+        return Inputs(
+            active_device=active_device,
+            head_source=head_source,
+            swap_in_progress=False,
+            humidity_ok=True,
+            humidity_pct=humidity_pct,
+            cavity_temp_c=None,
+            klipper_print_state="standby",
+            dryer_status="stop",
+            user_profiles=None,
+        )
+
+    def test_default_off_no_arm_when_no_head_sourced(self):
+        from multiace_web.autodryer import (
+            PersistedState, FSMState, FSMSnapshot, tick_fsm,
+            DebounceBuffer, Ephemeral, DEFAULT_DEBOUNCE_REQUIRED,
+        )
+        p = PersistedState(
+            mode="active", target_ace=0, target_pct=15, hysteresis_pp=5,
+            default_filament_type="PLA", keep_ready=False,
+            fsm=FSMSnapshot(state=FSMState.IDLE),
+        )
+        eph = Ephemeral(debounce=DebounceBuffer(required=DEFAULT_DEBOUNCE_REQUIRED))
+        inputs = self._make_inputs(head_source={})
+        new_p, _ = tick_fsm(
+            p, eph, inputs, now_ts=1000.0,
+            debounce_required=DEFAULT_DEBOUNCE_REQUIRED, cooldown_min=0,
+            max_run_min=600, daily_duty_max_min=600, min_delta_pct=0.0,
+        )
+        assert new_p.fsm.state == FSMState.IDLE
+
+    def test_keep_ready_arms_with_default_filament_type(self):
+        from multiace_web.autodryer import (
+            PersistedState, FSMState, FSMSnapshot, tick_fsm,
+            DebounceBuffer, Ephemeral, DEFAULT_DEBOUNCE_REQUIRED,
+        )
+        p = PersistedState(
+            mode="active", target_ace=0, target_pct=15, hysteresis_pp=5,
+            default_filament_type="PLA", keep_ready=True,
+            fsm=FSMSnapshot(state=FSMState.IDLE),
+        )
+        eph = Ephemeral(debounce=DebounceBuffer(required=DEFAULT_DEBOUNCE_REQUIRED))
+        inputs = self._make_inputs(head_source={})
+        new_p, _ = tick_fsm(
+            p, eph, inputs, now_ts=1000.0,
+            debounce_required=DEFAULT_DEBOUNCE_REQUIRED, cooldown_min=0,
+            max_run_min=600, daily_duty_max_min=600, min_delta_pct=0.0,
+        )
+        assert new_p.fsm.state == FSMState.WATCHING
+
+    def test_keep_ready_without_default_filament_type_does_not_arm(self):
+        from multiace_web.autodryer import (
+            PersistedState, FSMState, FSMSnapshot, tick_fsm,
+            DebounceBuffer, Ephemeral, DEFAULT_DEBOUNCE_REQUIRED,
+        )
+        p = PersistedState(
+            mode="active", target_ace=0, target_pct=15, hysteresis_pp=5,
+            default_filament_type=None, keep_ready=True,
+            fsm=FSMSnapshot(state=FSMState.IDLE),
+        )
+        eph = Ephemeral(debounce=DebounceBuffer(required=DEFAULT_DEBOUNCE_REQUIRED))
+        inputs = self._make_inputs(head_source={})
+        new_p, _ = tick_fsm(
+            p, eph, inputs, now_ts=1000.0,
+            debounce_required=DEFAULT_DEBOUNCE_REQUIRED, cooldown_min=0,
+            max_run_min=600, daily_duty_max_min=600, min_delta_pct=0.0,
+        )
+        assert new_p.fsm.state == FSMState.IDLE
+
+    def test_persisted_state_round_trips_keep_ready(self, tmp_path):
+        from multiace_web.autodryer import (
+            PersistedState, save_persisted_state, load_persisted_state,
+        )
+        path = tmp_path / "ad.json"
+        save_persisted_state(path, PersistedState(
+            mode="active", default_filament_type="PETG", keep_ready=True,
+        ))
+        loaded = load_persisted_state(path)
+        assert loaded.keep_ready is True
+        assert loaded.default_filament_type == "PETG"
+
+    def test_per_ace_config_keep_ready_round_trips(self):
+        from multiace_web.autodryer import AutodryManager
+        mgr = AutodryManager.with_defaults(device_count=2)
+        mgr.get(1).config.keep_ready = True
+        d = mgr.serialize()
+        mgr2 = AutodryManager.deserialize(d, device_count=2)
+        assert mgr2.get(1).config.keep_ready is True
+        assert mgr2.get(0).config.keep_ready is False

@@ -79,6 +79,14 @@ class PersistedState:
     # "no fallback" — autodry stays IDLE if type is unknown (original
     # strict behavior).
     default_filament_type: str | None = None
+    # "Keep ready" mode: when True, the FSM arms even when no toolhead is
+    # currently sourced from this ACE — i.e. it maintains the dryness of
+    # filament sitting in the slots so it's ready when needed. Requires
+    # default_filament_type to be set (it's used as the drying recipe since
+    # there's no head_source.type to consult). When False (default), the FSM
+    # only triggers while a head from this ACE is in active use, matching
+    # the original "keep print-time filament dry" behavior.
+    keep_ready: bool = False
     fsm: FSMSnapshot = field(default_factory=FSMSnapshot)
 
 
@@ -169,6 +177,7 @@ def load_persisted_state(path: Path) -> PersistedState:
         target_pct=int(d.get("target_pct", 15)),
         hysteresis_pp=int(d.get("hysteresis_pp", 5)),
         default_filament_type=default_filament_type,
+        keep_ready=bool(d.get("keep_ready", False)),
         fsm=_from_dict_fsm(d.get("fsm")),
     )
 
@@ -454,6 +463,15 @@ def tick_fsm(
     has_filament = bool(target_loaded_types)
     enabled = p.mode in ("log", "active")
 
+    # "Keep ready" mode: maintain dryness of filament sitting in slots even
+    # when no toolhead is currently sourced from this ACE. Requires
+    # default_filament_type so the dryer recipe (temp + duration) has a
+    # value to use. Without keep_ready, the FSM only arms while a head
+    # from this ACE is in active use (original behavior).
+    if not has_filament and p.keep_ready and p.default_filament_type:
+        target_loaded_types = [p.default_filament_type]
+        has_filament = True
+
     can_be_armed = enabled and sensor_ok and target_active and has_filament
 
     # ---- IDLE ----
@@ -712,6 +730,7 @@ EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
 _UPDATABLE_CONFIG_FIELDS = {
     "mode", "target_ace", "target_pct", "hysteresis_pp", "default_filament_type",
+    "keep_ready",
 }
 
 
@@ -875,6 +894,7 @@ class AutoDryer:
             target_pct=fsm.config.target_pct,
             hysteresis_pp=fsm.config.hysteresis_pp,
             default_filament_type=fsm.config.default_filament_type,
+            keep_ready=fsm.config.keep_ready,
             fsm=fsm.snapshot,
         )
 
@@ -1026,6 +1046,11 @@ class PerAceConfig:
     target_pct: int = 15
     hysteresis_pp: int = 5
     default_filament_type: str | None = None
+    # "Keep ready" mode: when True, the FSM watches humidity and triggers
+    # drying even when no toolhead is currently sourced from this ACE — i.e.
+    # maintain dryness of filament sitting in the slots. Requires
+    # default_filament_type to be set (used as the drying recipe).
+    keep_ready: bool = False
 
 
 @dataclass
