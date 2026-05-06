@@ -38,7 +38,8 @@ The two communicate only via the filesystem (multiACE writes `multiace_state.log
 - `src/multiace_web/static/` — Vanilla HTML/JS/CSS frontend (no build step, no framework). Tabs: Dashboard, Activity, Dryer, Config, Diag.
 - `tests/` — pytest suite (~121 tests, ~13s).
 - `install/` — Printer-side install: `install_web.sh`, `S62multiace-web` (BusyBox sysvinit), `nginx-multiace.conf` snippet.
-- `tools/visual_regression.py` — Playwright-based read-only screenshot capture across viewports (Dashboard / Activity / Dryer / Config / Diag at 1280×900 and 390×844).
+- `tools/visual_regression.py` — Playwright-based read-only screenshot capture across viewports (Dashboard / Activity / Dryer / Config / Diag at 1280×900 and 390×844). Also captures the `Activity → ACE A` filter chip state and the `Diag → ACE B` dropdown selection.
+- `tools/e2e_dual_ace.py` — Manual Playwright golden-path for the dual-ACE GUI: verifies both ACE blocks render, the FilamentHub `📖` deep-link opens with `?picker=ace&printer=&ace=&slot=` query params, and issuing `ACE_LOAD_HEAD HEAD=0 ACE=1 SLOT=0` via the chevron menu makes `head_source[0]` resolve. Pre-flights `print_stats.state`; aborts unless safe.
 
 ## Common commands
 
