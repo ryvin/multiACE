@@ -1580,6 +1580,15 @@ const AUTODRY_ACTION_LABELS = {
   AUTODRY_FINISHED_AFTER_RESTART: "Auto-dry finished after restart",
 };
 
+function extractEventAce(ev) {
+  // Per-event ACE attribution: params.ace > params.target_ace > active_device.
+  const p = ev.params || {};
+  if (typeof p.ace === "number") return p.ace;
+  if (typeof p.target_ace === "number") return p.target_ace;
+  if (typeof ev.active_device === "number") return ev.active_device;
+  return null;
+}
+
 function fillActivityList(list, items, emptyText) {
   list.innerHTML = "";
   if (items.length === 0) {
@@ -1596,6 +1605,14 @@ function fillActivityList(list, items, emptyText) {
     if (isFail) li.classList.add("fail");
     else if (isOk) li.classList.add("ok");
     setEl(li, "span", { className: "ts", textContent: ev.ts || "" });
+    // ACE tag — quick visual attribution per row
+    const ace = extractEventAce(ev);
+    if (ace !== null) {
+      setEl(li, "span", {
+        className: "activity-ace-tag",
+        textContent: `ACE ${String.fromCharCode(65 + ace)}`,
+      });
+    }
     const right = setEl(li, "span");
     setEl(right, "span", { className: "action", textContent: label + " " });
     if (ev.params) {
@@ -1604,11 +1621,41 @@ function fillActivityList(list, items, emptyText) {
   }
 }
 
+// Activity tab filter — null = All, integer = specific ACE
+window._activityFilter = null;
+
+function renderActivityChips() {
+  const host = document.getElementById("activity-chips");
+  if (!host) return;
+  host.innerHTML = "";
+  const deviceCount = Math.max(state.device_count || 1, 1);
+  const filters = [{label: "All", val: null}];
+  for (let i = 0; i < deviceCount; i++) {
+    filters.push({label: `ACE ${String.fromCharCode(65 + i)}`, val: i});
+  }
+  for (const f of filters) {
+    const btn = setEl(host, "button", { textContent: f.label });
+    btn.className = "activity-ace-chip" + (window._activityFilter === f.val ? " is-on" : "");
+    btn.addEventListener("click", () => {
+      window._activityFilter = f.val;
+      renderActivity();
+    });
+  }
+}
+
 function renderActivity() {
   const list = document.getElementById("activity-list");
   if (!list) return;
-  fillActivityList(list, events.slice(0, 50),
-    "No activity yet. Trigger a Load/Unload to see events.");
+  renderActivityChips();
+  const filter = window._activityFilter;
+  let items = events.slice(0, 200);
+  if (filter !== null) {
+    items = items.filter(ev => extractEventAce(ev) === filter);
+  }
+  fillActivityList(list, items.slice(0, 50),
+    filter === null
+      ? "No activity yet. Trigger a Load/Unload to see events."
+      : `No activity for ACE ${String.fromCharCode(65 + filter)} yet.`);
 }
 function renderActionBar() {
   // Topbar toggles (always visible)
