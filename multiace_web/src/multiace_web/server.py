@@ -97,6 +97,34 @@ def _guess_temperature(body: Any) -> Any:
     return None
 
 
+def _serialize_spool_cache(cache: dict) -> dict:
+    """Serialize SpoolBinding dicts to plain JSON-friendly nested dicts.
+    Keys are stringified (ace, slot are int → str) for stable WS shape."""
+    out: dict[str, dict[str, dict]] = {}
+    for ace, slots in (cache or {}).items():
+        sub: dict[str, dict] = {}
+        for slot, b in (slots or {}).items():
+            sub[str(slot)] = {
+                "spool_id": b.spool_id,
+                "name": b.name,
+                "material": b.material,
+                "color": b.color,
+                "weight_remaining_g": b.weight_remaining_g,
+            }
+        out[str(ace)] = sub
+    return out
+
+
+def _state_payload(app: Any) -> dict:
+    """Build the WS 'state' payload — CurrentState.to_dict + spool_cache.
+
+    Centralizes the merge so all three call sites stay consistent.
+    """
+    payload = app.state.state.to_dict()
+    payload["spool_cache"] = _serialize_spool_cache(getattr(app.state, "spool_cache", {}))
+    return payload
+
+
 async def _read_humidity() -> dict:
     url = os.environ.get("MULTIACE_HUMIDITY_URL", "").strip()
     if not url:
@@ -290,7 +318,7 @@ async def lifespan(app: FastAPI):
         eid = events.append({**data, "ts": ts})  # I6: ts wins over data["ts"] if collision
         msg = json.dumps({"type": "event", "id": eid, "ts": ts, "payload": data})
         await _broadcast(ws_clients, msg)
-        snap = json.dumps({"type": "state", "payload": state.to_dict()})
+        snap = json.dumps({"type": "state", "payload": _state_payload(app)})
         await _broadcast(ws_clients, snap)
 
     state_log = log_dir / "multiace_state.log"
@@ -412,6 +440,38 @@ async def lifespan(app: FastAPI):
     )
     app.state.autodry = autodry
 
+    # ---- SpoolmanClient boot wiring ----
+    fh_url = os.environ.get("FILAMENTHUB_URL", "").strip()
+    fh_printer = os.environ.get("FILAMENTHUB_PRINTER_ID", "").strip() or "u1-1"
+    app.state.spool_cache_last_seen_ts = 0.0
+    if fh_url:
+        from .spoolman import SpoolmanClient
+        app.state.spoolman = SpoolmanClient(base_url=fh_url, printer_id=fh_printer)
+
+        async def _spool_poll_loop():
+            while True:
+                try:
+                    bindings = await app.state.spoolman.list_all_bindings()
+                    if bindings:
+                        app.state.spool_cache = bindings
+                        app.state.spool_cache_last_seen_ts = time.time()
+                    elif (time.time() - (app.state.spool_cache_last_seen_ts or 0)) > 300:
+                        # 5 minutes of failures → clear cache so the UI shows blank
+                        app.state.spool_cache = {}
+                except Exception:
+                    log.exception("spool_cache poll loop iteration failed")
+                try:
+                    await asyncio.sleep(5.0)
+                except asyncio.CancelledError:
+                    return
+
+        app.state.spool_poll_task = asyncio.create_task(_spool_poll_loop()) if app.state.start_background_tasks else None
+        log.info("Spoolman polling enabled at %s", fh_url)
+    else:
+        app.state.spoolman = None
+        app.state.spool_poll_task = None
+        log.info("FILAMENTHUB_URL not set — spool cache disabled")
+
     tasks: list[asyncio.Task] = []
     if app.state.start_background_tasks:
         tasks = [
@@ -429,6 +489,12 @@ async def lifespan(app: FastAPI):
         poller.stop()
         print_poller.stop()
         autodry.stop()
+        if getattr(app.state, "spool_poll_task", None) is not None:
+            app.state.spool_poll_task.cancel()
+            try:
+                await app.state.spool_poll_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if tasks:
             done, pending = await asyncio.wait(tasks, timeout=2.0)
             for t in pending:
@@ -867,7 +933,7 @@ def create_app(
         ws_clients.add(ws)
         try:
             # Send initial state on connect
-            snap = json.dumps({"type": "state", "payload": ws.app.state.state.to_dict()})
+            snap = json.dumps({"type": "state", "payload": _state_payload(ws.app)})
             await ws.send_text(snap)
             while True:
                 msg = await ws.receive_text()
