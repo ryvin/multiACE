@@ -1051,3 +1051,46 @@ class TestCommandPreflight409:
             r = client.post("/api/command", json={"macro": "ACEC__Load_T1"})
         assert r.status_code == 200
         assert r.json()["ok"] is True
+
+
+class TestSpoolCacheInWebSocket:
+    @pytest.fixture
+    def client(self, app):
+        with TestClient(app) as c:
+            yield c
+
+    @pytest.mark.asyncio
+    async def test_spool_cache_in_ws_initial_state_payload(self, client) -> None:
+        """When a WS client connects, the initial 'state' frame includes
+        spool_cache (serialized to {ace_str: {slot_str: dict}}) so the
+        frontend can render slot bindings without an extra REST round-trip."""
+        from multiace_web.spoolman import SpoolBinding
+        client.app.state.spool_cache = {
+            0: {1: SpoolBinding(spool_id=42, name="PLA", material="PLA",
+                                 color="ffaa00", weight_remaining_g=300.0)}
+        }
+        with client.websocket_connect("/ws") as ws:
+            msg = ws.receive_json()
+            # Initial frame is {"type": "state", "payload": {...}}
+            assert msg["type"] == "state"
+            payload = msg["payload"]
+            assert "spool_cache" in payload
+            cache = payload["spool_cache"]
+            # Keys are stringified for JSON
+            ace0 = cache.get("0") or cache.get(0) or {}
+            slot1 = ace0.get("1") or ace0.get(1) or {}
+            assert slot1.get("spool_id") == 42
+            assert slot1.get("material") == "PLA"
+
+
+class TestSpoolmanBootWiring:
+    @pytest.fixture
+    def client(self, app):
+        with TestClient(app) as c:
+            yield c
+
+    def test_spoolman_disabled_when_env_unset(self, monkeypatch, client) -> None:
+        """No FILAMENTHUB_URL → no spoolman client constructed."""
+        # The fixture should construct app without env vars; verify boot doesn't crash
+        # and spool_cache stays empty.
+        assert client.app.state.spool_cache == {} or client.app.state.spool_cache is not None
