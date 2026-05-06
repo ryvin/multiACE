@@ -1,0 +1,4 @@
+# Visual regression runs land here as `<timestamp>-<viewport>-<tab>.png`.
+# Ignore the timestamped output but keep the curated workflow/* directory
+# (used as documentation showing each phase of the workflow panel).
+20[0-9][0-9][0-9][0-9][0-9][0-9]-*.png

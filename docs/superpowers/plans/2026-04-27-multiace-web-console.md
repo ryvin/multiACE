@@ -2488,7 +2488,8 @@ function renderActivity() {
     const isFail = (ev.action || "").endsWith("_FAILED");
     const isOk = !isFail && ["LOAD_HEAD", "UNLOAD_HEAD", "UNLOAD_ALL", "ACE_SWITCH"]
       .some((a) => (ev.action || "").startsWith(a));
-    li.classList.add(isFail ? "fail" : (isOk ? "ok" : ""));
+    if (isFail) li.classList.add("fail");
+    else if (isOk) li.classList.add("ok");
     const params = ev.params ? JSON.stringify(ev.params) : "";
     li.textContent = `${ev.ts || ""} ${ev.action || "?"} ${params}`;
     list.appendChild(li);
@@ -2531,15 +2532,16 @@ function renderActionBar() {
   const af = document.getElementById("autofeed-toggle");
   af.textContent = `Auto-feed: ${state.auto_feed ? "ON" : "OFF"}`;
   af.dataset.cmd = state.auto_feed ? "ACEE__Autofeed_Off" : "ACEE__Autofeed_On";
-  af.dataset.confirm = state.auto_feed ? "" : "";
+  af.removeAttribute("data-confirm");
   const mt = document.getElementById("mode-toggle");
   mt.textContent = `Mode: ${state.mode === "normal" ? "Normal" : "Multi"}`;
   mt.dataset.cmd = state.mode === "normal" ? "ACEF__Mode_Multi" : "ACEF__Mode_Normal";
   mt.dataset.confirm = "Switch mode? Reboot required to take effect.";
-  // Disable everything during a swap
+  // Disable the static action-bar buttons during a swap. Per-card Load/Unload
+  // buttons (slots, toolheads) own their own disabled state — don't touch those.
   const disabled = state.swap_in_progress;
-  for (const btn of document.querySelectorAll(".actionbar button, [data-cmd]")) {
-    if (disabled) btn.setAttribute("disabled", "true");
+  for (const btn of document.querySelectorAll(".actionbar button")) {
+    btn.disabled = disabled;
   }
 }
 ```
@@ -2650,7 +2652,14 @@ async function renderConfig() {
   fields.innerHTML = "";
   for (const [k, v] of Object.entries(configValues)) {
     const lbl = document.createElement("label");
-    lbl.innerHTML = `<span>${k}</span><input type="text" name="${k}" value="${v}" />`;
+    const span = document.createElement("span");
+    span.textContent = k;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.name = k;
+    input.value = v;
+    lbl.appendChild(span);
+    lbl.appendChild(input);
     fields.appendChild(lbl);
   }
 }
@@ -2822,7 +2831,6 @@ mkdir -p "$INSTALL_BASE"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -r "$SOURCE_DIR/src" "$APP_DIR/"
-cp -r "$SOURCE_DIR/static" "$APP_DIR/"
 cp "$SOURCE_DIR/pyproject.toml" "$APP_DIR/"
 log "App files copied to $APP_DIR"
 
