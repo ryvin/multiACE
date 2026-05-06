@@ -271,6 +271,7 @@ class AutodryConfigUpdate(BaseModel):
     target_pct: Optional[int] = Field(default=None, ge=5, le=60)
     hysteresis_pp: Optional[int] = Field(default=None, ge=1, le=15)
     default_filament_type: Optional[str] = None
+    keep_ready: Optional[bool] = None
 
 
 @asynccontextmanager
@@ -828,6 +829,7 @@ def create_app(
             "target_pct": fsm.config.target_pct,
             "hysteresis_pp": fsm.config.hysteresis_pp,
             "default_filament_type": fsm.config.default_filament_type,
+            "keep_ready": fsm.config.keep_ready,
             "state": fsm.snapshot.state.value,
             "locked": fsm.locked,
             "unreachable": fsm.unreachable,
@@ -896,6 +898,8 @@ def create_app(
             fsm.config.target_pct = update.target_pct
         if update.hysteresis_pp is not None:
             fsm.config.hysteresis_pp = update.hysteresis_pp
+        if update.keep_ready is not None:
+            fsm.config.keep_ready = update.keep_ready
         ad._save_manager()
         return {"ok": True, "ace": ace}
 
