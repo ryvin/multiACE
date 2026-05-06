@@ -21,7 +21,7 @@ from . import __version__
 from .auth import TokenAuth
 from .config_io import read_ace_config, write_ace_config
 from .moonraker import MoonrakerClient, MoonrakerError
-from .poller import StatusPoller, PrintStatePoller
+from .poller import StatusPoller, PrintStatePoller, MultiAcePoller
 from .announcements import AnnouncementsClient
 from .autodryer import (
     AutoDryer,
@@ -339,9 +339,12 @@ async def lifespan(app: FastAPI):
     )
 
     # ---- AutoDryer ----
+    # NOTE: default lives at INSTALL_BASE (parent of $APP_DIR), NOT inside
+    # $APP_DIR — install_web.sh `rm -rf $APP_DIR` would otherwise wipe persisted
+    # autodry state on every redeploy.
     autodry_state_path = Path(_env(
         "MULTIACE_AUTODRY_STATE_PATH",
-        "/userdata/multiace-web/app/.autodry_state.json",
+        "/userdata/multiace-web/.autodry_state.json",
     ))
     # Apply env defaults to the persisted state file the *first* time it's
     # created. Subsequent runs use whatever the user has set via POST.
@@ -472,13 +475,26 @@ async def lifespan(app: FastAPI):
         app.state.spool_poll_task = None
         log.info("FILAMENTHUB_URL not set — spool cache disabled")
 
+    # ---- MultiAcePoller — drives per-ACE autodry FSMs in round-robin while
+    # idle; pins to the active ACE during a print. Replaces the legacy
+    # autodry.run() loop which only managed a single FSM. The poller calls
+    # autodry.tick_one_ace(N) per cycle so each FSM advances independently.
+    multi_ace_poller = MultiAcePoller(
+        moonraker=moonraker,
+        autodry=autodry,
+        device_count=max(_boot_device_count, 1),
+        period_s=float(os.environ.get("MULTIACE_AUTODRY_POLLER_SEC", "30")),
+        last_ace_data=app.state.last_ace_data,
+    )
+    app.state.multi_ace_poller = multi_ace_poller
+
     tasks: list[asyncio.Task] = []
     if app.state.start_background_tasks:
         tasks = [
             asyncio.create_task(state_tailer.run()),
             asyncio.create_task(poller.run()),
             asyncio.create_task(print_poller.run()),
-            asyncio.create_task(autodry.run()),
+            asyncio.create_task(multi_ace_poller.run()),
         ]
     app.state.background_tasks = tasks
 
@@ -488,7 +504,7 @@ async def lifespan(app: FastAPI):
         state_tailer.stop()
         poller.stop()
         print_poller.stop()
-        autodry.stop()
+        multi_ace_poller.stop()
         if getattr(app.state, "spool_poll_task", None) is not None:
             app.state.spool_poll_task.cancel()
             try:
