@@ -774,3 +774,178 @@ def test_autodry_inputs_fetcher_treats_stale_print_as_standby(app_with_bg):
         assert inputs.humidity_pct == 0.0
         assert inputs.cavity_temp_c is None
         assert inputs.dryer_status == "stop"
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — /api/slots, /api/dry/stop, /api/autodry?ace= per-ACE endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestSlotsEndpoint:
+    def test_returns_one_block_per_ace_with_slots(self, app) -> None:
+        from multiace_web.spoolman import SpoolBinding
+        with TestClient(app) as client:
+            # Inject a spool binding for ACE 1, slot 0
+            app.state.spool_cache = {
+                1: {0: SpoolBinding(spool_id=142, name="PLA Black", material="PLA",
+                                     color="000000", weight_remaining_g=920.0)}
+            }
+            # Set live state with device_count=2, active_device=0
+            app.state.state.device_count = 2
+            app.state.state.active_device = 0
+            app.state.state.gate_status = [1, 1, 1, 1]
+
+            r = client.get("/api/slots")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["aces"]) == 2
+
+        # Inactive ACE (index 1) should have gate_status=null, spool on slot 0
+        ace1 = next(a for a in body["aces"] if a["index"] == 1)
+        s0 = next(s for s in ace1["slots"] if s["slot"] == 0)
+        assert s0["spool"]["spool_id"] == 142
+        assert s0["spool"]["material"] == "PLA"
+        assert ace1["is_active"] is False
+        assert s0["gate_status"] is None
+
+        # Active ACE (index 0) should have gate_status numeric
+        ace0 = next(a for a in body["aces"] if a["index"] == 0)
+        assert ace0["is_active"] is True
+        s0_active = next(s for s in ace0["slots"] if s["slot"] == 0)
+        assert s0_active["gate_status"] == 1
+
+    def test_returns_empty_spool_when_no_cache(self, app) -> None:
+        with TestClient(app) as client:
+            app.state.spool_cache = {}
+            app.state.state.device_count = 1
+            app.state.state.active_device = 0
+            r = client.get("/api/slots")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["aces"]) == 1
+        for s in body["aces"][0]["slots"]:
+            assert s["spool"] is None
+
+    def test_defaults_to_one_ace_when_device_count_zero(self, app) -> None:
+        with TestClient(app) as client:
+            app.state.spool_cache = {}
+            app.state.state.device_count = 0
+            r = client.get("/api/slots")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["aces"]) == 1
+
+
+class TestDryStopEndpoint:
+    def test_post_dry_stop_with_ace_param_switches_then_stops(self, app) -> None:
+        from unittest.mock import AsyncMock
+        sent: list[str] = []
+
+        async def fake_gcode(s: str) -> str:
+            sent.append(s)
+            return "ok"
+
+        with TestClient(app) as client:
+            app.state.moonraker.run_gcode = fake_gcode
+            r = client.post("/api/dry/stop", json={"ace": 1})
+        assert r.status_code == 200
+        assert sent == ["ACE_SWITCH TARGET=1", "ACE_STOP_DRYING"]
+
+    def test_returns_502_when_switch_fails(self, app) -> None:
+        from multiace_web.moonraker import MoonrakerError
+
+        async def fail_gcode(s: str) -> str:
+            if "ACE_SWITCH" in s:
+                raise MoonrakerError("usb gone")
+            return "ok"
+
+        with TestClient(app) as client:
+            app.state.moonraker.run_gcode = fail_gcode
+            r = client.post("/api/dry/stop", json={"ace": 1})
+        assert r.status_code == 502
+        detail = r.json().get("error", r.json().get("detail", ""))
+        assert "switch" in detail.lower()
+
+    def test_returns_502_when_stop_drying_fails(self, app) -> None:
+        from multiace_web.moonraker import MoonrakerError
+
+        async def fail_stop(s: str) -> str:
+            if "ACE_STOP_DRYING" in s:
+                raise MoonrakerError("drying failed")
+            return "ok"
+
+        with TestClient(app) as client:
+            app.state.moonraker.run_gcode = fail_stop
+            r = client.post("/api/dry/stop", json={"ace": 0})
+        assert r.status_code == 502
+
+    def test_returns_422_for_invalid_ace(self, app) -> None:
+        with TestClient(app) as client:
+            r = client.post("/api/dry/stop", json={"ace": 9})
+        assert r.status_code == 422
+
+
+class TestAutodryPerAceEndpoint:
+    @pytest.fixture
+    def autodry_client(self, tmp_path, monkeypatch, app):
+        """App with autodry state in tmp dir and a 2-FSM manager pre-loaded."""
+        from multiace_web.autodryer import AutodryManager
+        monkeypatch.setenv("MULTIACE_AUTODRY_STATE_PATH", str(tmp_path / "autodry.json"))
+        with TestClient(app) as client:
+            # Replace manager with a 2-FSM one
+            app.state.autodry._manager = AutodryManager.with_defaults(device_count=2)
+            yield client
+
+    def test_get_with_ace_returns_one_fsm_state(self, autodry_client, app) -> None:
+        app.state.autodry.manager.get(0).config.target_pct = 12
+        r = autodry_client.get("/api/autodry?ace=0")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ace"] == 0
+        assert "enabled" in body
+        assert body["target_pct"] == 12
+
+    def test_post_with_ace_updates_config(self, autodry_client, app) -> None:
+        r = autodry_client.post("/api/autodry?ace=0", json={
+            "enabled": True, "target_pct": 12, "hysteresis_pp": 4,
+            "default_filament_type": "PETG"
+        })
+        assert r.status_code == 200
+        mgr = app.state.autodry.manager
+        assert mgr.get(0).config.enabled is True
+        assert mgr.get(0).config.target_pct == 12
+        assert mgr.get(0).config.hysteresis_pp == 4
+        assert mgr.get(0).config.default_filament_type == "PETG"
+
+    def test_get_returns_404_for_out_of_range_ace(self, autodry_client) -> None:
+        r = autodry_client.get("/api/autodry?ace=9")
+        assert r.status_code == 404
+
+    def test_post_returns_404_for_out_of_range_ace(self, autodry_client) -> None:
+        r = autodry_client.post("/api/autodry?ace=9", json={"enabled": True})
+        assert r.status_code == 404
+
+    def test_legacy_get_without_ace_still_works(self, autodry_client) -> None:
+        """The existing single-FSM /api/autodry GET (no ace param) is preserved."""
+        r = autodry_client.get("/api/autodry")
+        assert r.status_code == 200
+        body = r.json()
+        # Existing shape has these keys
+        assert "mode" in body or "target_pct" in body
+
+    def test_legacy_post_without_ace_still_works(self, autodry_client) -> None:
+        """The existing single-FSM /api/autodry POST (no ace param) is preserved."""
+        r = autodry_client.post("/api/autodry", json={"action": "set_mode", "value": "log"})
+        assert r.status_code == 200
+        assert r.json()["mode"] == "log"
+
+    def test_post_with_ace_validates_target_pct_range(self, autodry_client) -> None:
+        r_low = autodry_client.post("/api/autodry?ace=0", json={"target_pct": 1})
+        assert r_low.status_code == 422
+        r_high = autodry_client.post("/api/autodry?ace=0", json={"target_pct": 99})
+        assert r_high.status_code == 422
+
+    def test_post_with_ace_rejects_invalid_filament_type(self, autodry_client) -> None:
+        r = autodry_client.post("/api/autodry?ace=0",
+                                json={"default_filament_type": "PEEK"})
+        assert r.status_code == 400
