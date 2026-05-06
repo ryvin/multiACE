@@ -776,3 +776,26 @@ class TestAutodryManager:
         mgr = AutodryManager.deserialize(legacy, device_count=2)
         assert mgr.get(0).config.enabled is True
         assert len(mgr.fsms) == 2
+
+    def test_migrate_from_legacy_log_mode_keeps_enabled(self) -> None:
+        """Log mode in v1 means observation/dry-run — still enabled.
+        Migrating to enabled=False would silently downgrade the user."""
+        from multiace_web.autodryer import AutodryManager
+        legacy = {"mode": "log", "target_ace": 0, "target_pct": 15, "hysteresis_pp": 5}
+        mgr = AutodryManager.migrate_from_legacy(legacy, device_count=2)
+        assert mgr.get(0).config.enabled is True
+
+    def test_migrate_from_legacy_clamps_out_of_range_target_ace(self, caplog) -> None:
+        """If legacy target_ace exceeds device_count, clamp to 0 with a warning
+        so the user's config doesn't silently vanish."""
+        import logging
+        from multiace_web.autodryer import AutodryManager
+        legacy = {"mode": "active", "target_ace": 5, "target_pct": 11, "hysteresis_pp": 3}
+        with caplog.at_level(logging.WARNING):
+            mgr = AutodryManager.migrate_from_legacy(legacy, device_count=2)
+        assert mgr.get(0).config.enabled is True
+        assert mgr.get(0).config.target_pct == 11
+        assert mgr.get(0).config.hysteresis_pp == 3
+        assert mgr.get(1).config.enabled is False
+        assert any("target_ace=5" in rec.getMessage() and "device_count=2" in rec.getMessage()
+                   for rec in caplog.records)
