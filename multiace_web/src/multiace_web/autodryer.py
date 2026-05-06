@@ -744,8 +744,9 @@ class AutoDryer:
         max_run_min: int = DEFAULT_MAX_RUN_MIN,
         daily_duty_max_min: int = DEFAULT_DAILY_DUTY_MAX_MIN,
         min_delta_pct: float = DEFAULT_MIN_DELTA_PCT,
+        manager: "AutodryManager | None" = None,
     ) -> None:
-        self._state_path = state_path
+        self._state_path = Path(state_path)
         self._fetch_inputs = inputs_fetcher
         self._emit_event = emit_event
         self._announcements = announcements
@@ -760,6 +761,8 @@ class AutoDryer:
         self._stop = asyncio.Event()
         # Ephemeral state — debounce buffer + drying-cycle bookkeeping.
         self._eph = Ephemeral(debounce=DebounceBuffer(required=debounce_required))
+        # Per-ACE manager. If None, the single-FSM (legacy) code path is used.
+        self._manager = manager
 
     def stop(self) -> None:
         self._stop.set()
@@ -806,6 +809,102 @@ class AutoDryer:
         # Pre-fill the debounce buffer to its threshold.
         for _ in range(self._cfg["debounce_required"]):
             self._eph.debounce.observe_above()
+
+    # ---- per-ACE entry points (Task 4) ----
+
+    @classmethod
+    def load_manager(cls, path: "Path | str", device_count: int) -> "AutodryManager":
+        """Load an AutodryManager from disk.
+
+        Falls back to AutodryManager.with_defaults(device_count) if the file is
+        missing, empty, or malformed. Routes legacy v1 single-FSM blobs through
+        AutodryManager.migrate_from_legacy() automatically (handled inside
+        AutodryManager.deserialize).
+        """
+        p = Path(path)
+        if not p.exists():
+            return AutodryManager.with_defaults(device_count=device_count)
+        try:
+            d = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("autodry persist load failed (%s); using defaults", e)
+            return AutodryManager.with_defaults(device_count=device_count)
+        return AutodryManager.deserialize(d, device_count=device_count)
+
+    async def tick_one_ace(self, ace_idx: int, *, now_ts: float) -> list[Transition]:
+        """Run one tick of the per-ACE FSM at index ace_idx.
+
+        No-op if the FSM is locked, unreachable, or disabled (config.enabled is
+        False). Returns the list of Transitions for the caller (e.g.
+        MultiAcePoller) to act on — events are also emitted internally via
+        self._emit_event.
+
+        Reuses the existing pure tick_fsm function by synthesizing a
+        PersistedState view from the per-ACE FSM's config + snapshot. Writes the
+        resulting snapshot back into manager.get(ace_idx).snapshot and persists
+        the full AutodryManager to disk via _save_manager().
+
+        Note on on-disk format: when a manager is present, _save_manager()
+        writes the v2 (AutodryManager) shape. The legacy _tick_once path writes
+        the v1 (PersistedState) shape. AutodryManager.deserialize() accepts both,
+        so load_manager() can always read either. A server.py boot that uses the
+        per-ACE shape will not call load_persisted_state / _tick_once.
+        """
+        if self._manager is None:
+            return []
+        fsm = self._manager.get(ace_idx)
+        if fsm.locked or fsm.unreachable or not fsm.config.enabled:
+            return []
+
+        try:
+            inputs = self._fetch_inputs()
+        except Exception:
+            log.exception("AutoDryer.tick_one_ace inputs_fetcher raised; skipping ace=%d", ace_idx)
+            return []
+
+        # Synthesize a PersistedState so we can reuse the existing pure tick_fsm.
+        # mode is "active" because we already gated on config.enabled above.
+        synthesized = PersistedState(
+            mode="active",
+            target_ace=ace_idx,
+            target_pct=fsm.config.target_pct,
+            hysteresis_pp=fsm.config.hysteresis_pp,
+            default_filament_type=fsm.config.default_filament_type,
+            fsm=fsm.snapshot,
+        )
+
+        new_persisted, transitions = tick_fsm(
+            synthesized, self._eph, inputs, now_ts,
+            **self._cfg,
+        )
+
+        # Write the updated FSMSnapshot back into the per-ACE FSM and persist.
+        fsm.snapshot = new_persisted.fsm
+        self._save_manager()
+
+        # Emit events (same path as legacy _tick_once).
+        for t in transitions:
+            await self._emit_event({"action": t.event, "params": t.payload})
+            await self._maybe_announce(t, new_persisted)
+
+        return transitions
+
+    def _save_manager(self) -> None:
+        """Persist the AutodryManager state to self._state_path. Atomic write.
+
+        Writes the v2 shape ({schema: 2, fsms: [...]}).  The legacy
+        _tick_once path writes the v1 PersistedState shape to the same path.
+        AutodryManager.deserialize() handles both shapes, so load_manager()
+        will always produce a valid AutodryManager regardless of which writer
+        last touched the file.
+        """
+        if self._manager is None:
+            return
+        d = self._manager.serialize()
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(d))
+        tmp.replace(self._state_path)
 
     async def run(self) -> None:
         """Tick loop. Runs until stop() is called."""
