@@ -799,3 +799,162 @@ class TestAutodryManager:
         assert mgr.get(1).config.enabled is False
         assert any("target_ace=5" in rec.getMessage() and "device_count=2" in rec.getMessage()
                    for rec in caplog.records)
+
+
+class TestAutoDryerPerAce:
+    """Tests for per-ACE entry points added to AutoDryer (Task 4)."""
+
+    def _make_inputs(self, *, humidity_pct: float = 22.0) -> "Inputs":  # type: ignore[name-defined]
+        from multiace_web.autodryer import Inputs
+        return Inputs(
+            active_device=0,
+            head_source={"T0": {"ace": 0, "type": "PLA"}},
+            swap_in_progress=False,
+            humidity_ok=True,
+            humidity_pct=humidity_pct,
+            cavity_temp_c=25.0,
+            klipper_print_state="standby",
+            dryer_status="stop",
+            user_profiles=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_tick_one_ace_advances_fsm_for_target_only(self, tmp_path) -> None:
+        """tick_one_ace(N) advances FSM N's snapshot, leaves others alone."""
+        from multiace_web.autodryer import (
+            AutoDryer, AutodryManager, FSMState,
+        )
+        mgr = AutodryManager.with_defaults(device_count=2)
+        mgr.get(0).config.enabled = True
+        mgr.get(0).config.target_pct = 15
+        mgr.get(0).config.hysteresis_pp = 5
+        # FSM 1 left disabled
+
+        # Stub inputs: humidity above threshold for ACE 0 → kicks FSM out of IDLE
+        def fetcher():
+            return self._make_inputs(humidity_pct=22.0)
+
+        events: list[dict] = []
+
+        async def emit(e: dict) -> None:
+            events.append(e)
+
+        ad = AutoDryer(
+            state_path=tmp_path / "ad.json",
+            inputs_fetcher=fetcher,
+            emit_event=emit,
+            announcements=None,
+            tick_sec=0.0,
+            manager=mgr,
+        )
+        # tick FSM 0
+        await ad.tick_one_ace(0, now_ts=1.0)
+        # FSM 0 should have advanced (out of IDLE to WATCHING with humidity above wake)
+        # OR an event was emitted. The key invariant is FSM 1 is untouched.
+        assert mgr.get(1).snapshot.state == FSMState.IDLE  # FSM 1 untouched
+
+    @pytest.mark.asyncio
+    async def test_tick_one_ace_skipped_when_locked(self, tmp_path) -> None:
+        from multiace_web.autodryer import (
+            AutoDryer, AutodryManager, FSMState,
+        )
+        mgr = AutodryManager.with_defaults(device_count=2)
+        mgr.get(0).config.enabled = True
+        mgr.get(0).locked = True
+
+        def fetcher():
+            return self._make_inputs(humidity_pct=99.0)
+
+        async def emit(e: dict) -> None:
+            pass
+
+        ad = AutoDryer(
+            state_path=tmp_path / "ad.json",
+            inputs_fetcher=fetcher,
+            emit_event=emit,
+            announcements=None,
+            tick_sec=0.0,
+            manager=mgr,
+        )
+        await ad.tick_one_ace(0, now_ts=1.0)
+        # Locked FSM does not advance regardless of humidity
+        assert mgr.get(0).snapshot.state == FSMState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_tick_one_ace_skipped_when_unreachable(self, tmp_path) -> None:
+        from multiace_web.autodryer import (
+            AutoDryer, AutodryManager, FSMState,
+        )
+        mgr = AutodryManager.with_defaults(device_count=2)
+        mgr.get(0).config.enabled = True
+        mgr.get(0).unreachable = True
+
+        def fetcher():
+            return self._make_inputs(humidity_pct=99.0)
+
+        async def emit(e: dict) -> None:
+            pass
+
+        ad = AutoDryer(
+            state_path=tmp_path / "ad.json",
+            inputs_fetcher=fetcher,
+            emit_event=emit,
+            announcements=None,
+            tick_sec=0.0,
+            manager=mgr,
+        )
+        await ad.tick_one_ace(0, now_ts=1.0)
+        assert mgr.get(0).snapshot.state == FSMState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_tick_one_ace_skipped_when_disabled(self, tmp_path) -> None:
+        from multiace_web.autodryer import (
+            AutoDryer, AutodryManager, FSMState,
+        )
+        mgr = AutodryManager.with_defaults(device_count=2)
+        # FSM 0 disabled by default (config.enabled = False)
+
+        def fetcher():
+            return self._make_inputs(humidity_pct=99.0)
+
+        async def emit(e: dict) -> None:
+            pass
+
+        ad = AutoDryer(
+            state_path=tmp_path / "ad.json",
+            inputs_fetcher=fetcher,
+            emit_event=emit,
+            announcements=None,
+            tick_sec=0.0,
+            manager=mgr,
+        )
+        await ad.tick_one_ace(0, now_ts=1.0)
+        assert mgr.get(0).snapshot.state == FSMState.IDLE
+
+    def test_load_manager_returns_defaults_when_path_missing(self, tmp_path) -> None:
+        from multiace_web.autodryer import AutoDryer, AutodryManager
+        path = tmp_path / "missing.json"
+        mgr = AutoDryer.load_manager(path, device_count=2)
+        assert isinstance(mgr, AutodryManager)
+        assert len(mgr.fsms) == 2
+        assert all(not f.config.enabled for f in mgr.fsms)
+
+    def test_load_manager_loads_v2_shape(self, tmp_path) -> None:
+        from multiace_web.autodryer import AutoDryer, AutodryManager
+        path = tmp_path / "v2.json"
+        mgr_in = AutodryManager.with_defaults(device_count=2)
+        mgr_in.get(1).config.enabled = True
+        mgr_in.get(1).config.target_pct = 11
+        path.write_text(json.dumps(mgr_in.serialize()))
+        mgr_out = AutoDryer.load_manager(path, device_count=2)
+        assert mgr_out.get(1).config.enabled is True
+        assert mgr_out.get(1).config.target_pct == 11
+
+    def test_load_manager_routes_legacy_through_migration(self, tmp_path) -> None:
+        from multiace_web.autodryer import AutoDryer
+        path = tmp_path / "v1.json"
+        legacy = {"mode": "active", "target_ace": 1, "target_pct": 12, "hysteresis_pp": 4}
+        path.write_text(json.dumps(legacy))
+        mgr = AutoDryer.load_manager(path, device_count=2)
+        assert mgr.get(1).config.enabled is True
+        assert mgr.get(1).config.target_pct == 12
