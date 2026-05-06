@@ -335,6 +335,15 @@ GPL-3.0 — same as the parent multiACE project.
 
 ## Changelog
 
+## 0.7.2 — 2026-05-05
+
+- Auto-dry: new "Default filament" dropdown in the Dryer-tab panel.
+  When a toolhead is loaded from the target ACE but the slot has no
+  type metadata (non-RFID spool, no slicer `SET_PRINT_FILAMENT_CONFIG`
+  yet), autodry uses the dropdown's selection as the fallback profile.
+  Default is "(none — strict)" which preserves the original behavior
+  (FSM stays IDLE rather than guess dryer params).
+
 ## 0.7.1 — 2026-05-05
 
 - Auto-dry CSS contrast fix — the new Dryer/Diag panels were using

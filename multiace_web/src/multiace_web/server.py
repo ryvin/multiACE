@@ -594,6 +594,14 @@ def create_app(
             if not isinstance(value, int) or not (0 <= value <= 3):
                 raise HTTPException(400, "value must be int 0-3")
             ad.update_config(target_ace=value)
+        elif action == "set_default_filament_type":
+            allowed = {None, "PLA", "PETG", "TPU", "ABS", "ASA", "PA", "PC", "PVA"}
+            if value is not None and not isinstance(value, str):
+                raise HTTPException(400, "value must be a string or null")
+            normalized = value.strip().upper() if isinstance(value, str) and value.strip() else None
+            if normalized not in allowed:
+                raise HTTPException(400, f"value must be one of {sorted(x for x in allowed if x)} or null")
+            ad.update_config(default_filament_type=normalized)
         elif action == "force_evaluate":
             ad.force_evaluate()
         elif action == "reset_fault":
@@ -680,6 +688,7 @@ def _autodry_to_dict(p: PersistedState) -> dict:
         "target_ace": p.target_ace,
         "target_pct": p.target_pct,
         "hysteresis_pp": p.hysteresis_pp,
+        "default_filament_type": p.default_filament_type,
         "fsm": {
             "state": p.fsm.state.value,
             "since_ts": p.fsm.since_ts,

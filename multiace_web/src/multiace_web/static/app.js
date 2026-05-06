@@ -675,6 +675,37 @@ function renderAutodryPanel() {
     card.appendChild(warn);
   }
 
+  // Default filament type — fallback for non-RFID spools where multiACE has
+  // no `type` metadata. None / blank = strict (FSM stays IDLE if type unknown).
+  const filRow = document.createElement("div");
+  filRow.className = "autodry-row";
+  filRow.innerHTML = `<label title="Used when filament is loaded from this ACE but the slot has no type tag (non-RFID spool, no slicer-set metadata).">Default filament</label>`;
+  const filSelect = document.createElement("select");
+  filSelect.className = "autodry-select";
+  for (const opt of [
+    ["", "(none — strict)"],
+    ["PLA", "PLA"],
+    ["PETG", "PETG"],
+    ["TPU", "TPU"],
+    ["ABS", "ABS"],
+    ["ASA", "ASA"],
+    ["PA", "PA / Nylon"],
+    ["PC", "PC"],
+    ["PVA", "PVA"],
+  ]) {
+    const o = document.createElement("option");
+    o.value = opt[0];
+    o.textContent = opt[1];
+    if ((s.default_filament_type || "") === opt[0]) o.selected = true;
+    filSelect.appendChild(o);
+  }
+  filSelect.onchange = () => {
+    const v = filSelect.value || null;
+    postAutodry({ action: "set_default_filament_type", value: v });
+  };
+  filRow.appendChild(filSelect);
+  card.appendChild(filRow);
+
   // FSM state line
   const stateRow = document.createElement("div");
   stateRow.className = "autodry-state";

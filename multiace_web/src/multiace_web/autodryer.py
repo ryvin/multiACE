@@ -73,6 +73,12 @@ class PersistedState:
     target_ace: int = 0
     target_pct: int = 15
     hysteresis_pp: int = 5
+    # Fallback filament type when a toolhead is loaded from the target ACE
+    # but its type metadata is empty (non-RFID spool, no slicer job set
+    # SET_PRINT_FILAMENT_CONFIG yet). Set via the UI dropdown. None means
+    # "no fallback" — autodry stays IDLE if type is unknown (original
+    # strict behavior).
+    default_filament_type: str | None = None
     fsm: FSMSnapshot = field(default_factory=FSMSnapshot)
 
 
@@ -151,11 +157,18 @@ def load_persisted_state(path: Path) -> PersistedState:
         return PersistedState()
     if not isinstance(d, dict):
         return PersistedState()
+    raw_default = d.get("default_filament_type")
+    default_filament_type = (
+        str(raw_default).strip() or None
+        if isinstance(raw_default, str)
+        else None
+    )
     return PersistedState(
         mode=str(d.get("mode", "off")),
         target_ace=int(d.get("target_ace", 0)),
         target_pct=int(d.get("target_pct", 15)),
         hysteresis_pp=int(d.get("hysteresis_pp", 5)),
+        default_filament_type=default_filament_type,
         fsm=_from_dict_fsm(d.get("fsm")),
     )
 
@@ -353,17 +366,30 @@ DEFAULT_SKIP_RATE_LIMIT_SEC = DEFAULT_COOLDOWN_MIN * 60  # one of each skip type
 def _filament_types_for_ace(
     head_source: dict[str, dict[str, Any] | None],
     target_ace: int,
+    default_filament_type: str | None = None,
 ) -> list[str]:
     """Extract the filament `type` strings for slots that feed any toolhead
-    sourced from `target_ace`. Used to drive the strictest-rule reconciler."""
-    out = []
+    sourced from `target_ace`. Used to drive the strictest-rule reconciler.
+
+    If at least one toolhead is sourced from `target_ace` but every such
+    entry has an empty `type` (non-RFID spool, no slicer metadata), and a
+    `default_filament_type` is configured, fall back to that — one entry
+    per loaded toolhead, so the strictest-rule reconciler still works.
+    Without a default the result stays empty and the FSM declines to arm
+    (original strict behavior — better than guessing dryer params).
+    """
+    out: list[str] = []
+    occupied_count = 0
     for src in head_source.values():
         if not src:
             continue
         if src.get("ace") == target_ace:
+            occupied_count += 1
             t = src.get("type") or ""
             if t.strip():
                 out.append(t)
+    if not out and occupied_count > 0 and default_filament_type:
+        out = [default_filament_type] * occupied_count
     return out
 
 
@@ -420,7 +446,9 @@ def tick_fsm(
         return p, transitions
 
     # IDLE / WATCHING entry-condition shared evaluation
-    target_loaded_types = _filament_types_for_ace(inputs.head_source, p.target_ace)
+    target_loaded_types = _filament_types_for_ace(
+        inputs.head_source, p.target_ace, p.default_filament_type,
+    )
     sensor_ok = inputs.humidity_ok and 0.0 <= inputs.humidity_pct <= 100.0
     target_active = inputs.active_device == p.target_ace
     has_filament = bool(target_loaded_types)
@@ -682,7 +710,9 @@ InputsFetcher = Callable[[], Inputs]
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
 
-_UPDATABLE_CONFIG_FIELDS = {"mode", "target_ace", "target_pct", "hysteresis_pp"}
+_UPDATABLE_CONFIG_FIELDS = {
+    "mode", "target_ace", "target_pct", "hysteresis_pp", "default_filament_type",
+}
 
 
 class AutoDryer:

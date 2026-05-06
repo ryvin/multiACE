@@ -1119,6 +1119,17 @@ body.multiace-embed { background: transparent; }
 .autodry-row input[type=range] { flex: 1; }
 .autodry-value { min-width: 3rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
 .autodry-mode-btns { display: inline-flex; gap: 0.25rem; }
+.autodry-select {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
+  min-width: 12rem;
+}
+.autodry-select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .autodry-mode-btn {
   padding: 0.35rem 0.85rem;
   border: 1px solid var(--border-strong);

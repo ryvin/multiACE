@@ -25,11 +25,28 @@ def test_persisted_state_defaults():
     assert s.target_ace == 0
     assert s.target_pct == 15
     assert s.hysteresis_pp == 5
+    assert s.default_filament_type is None
     assert s.fsm.state == FSMState.IDLE
     assert s.fsm.fault is None
     assert s.fsm.last_run is None
     assert s.fsm.daily_duty == []
     assert s.fsm.trigger_announcement_id is None
+
+
+def test_default_filament_type_roundtrip(tmp_path: Path):
+    path = tmp_path / "autodry.json"
+    save_persisted_state(path, PersistedState(default_filament_type="PLA"))
+    assert load_persisted_state(path).default_filament_type == "PLA"
+
+
+def test_default_filament_type_empty_string_loads_as_none(tmp_path: Path):
+    """Defensive: persisted state could be hand-edited to an empty string."""
+    path = tmp_path / "autodry.json"
+    path.write_text(json.dumps({
+        "mode": "off", "target_ace": 0, "target_pct": 15, "hysteresis_pp": 5,
+        "default_filament_type": "   ",
+    }))
+    assert load_persisted_state(path).default_filament_type is None
 
 
 def test_save_then_load_roundtrip(tmp_path: Path):
@@ -288,6 +305,41 @@ def test_idle_when_no_filament_in_target_ace():
     inputs = _base_inputs(head_source={})
     new, _ = tick_fsm(p, eph, inputs, now_ts=1000.0)
     assert new.fsm.state == FSMState.IDLE
+
+
+def test_idle_when_loaded_but_type_empty_and_no_default():
+    """Strict default behavior: empty type without configured fallback stays IDLE."""
+    p = _base_persisted()
+    p.fsm.state = FSMState.IDLE
+    p.default_filament_type = None
+    eph = Ephemeral()
+    inputs = _base_inputs(head_source={"0": {"ace": 0, "slot": 0, "type": ""}})
+    new, _ = tick_fsm(p, eph, inputs, now_ts=1000.0)
+    assert new.fsm.state == FSMState.IDLE
+
+
+def test_default_filament_type_fallback_arms_when_type_empty():
+    """default_filament_type covers non-RFID spools where multiACE has empty type."""
+    p = _base_persisted()
+    p.fsm.state = FSMState.IDLE
+    p.default_filament_type = "PLA"
+    eph = Ephemeral()
+    inputs = _base_inputs(head_source={"0": {"ace": 0, "slot": 0, "type": ""}})
+    new, _ = tick_fsm(p, eph, inputs, now_ts=1000.0)
+    assert new.fsm.state == FSMState.WATCHING
+
+
+def test_default_filament_type_does_not_override_known_type():
+    """Non-empty type wins; default is only the fallback."""
+    p = _base_persisted()
+    p.fsm.state = FSMState.IDLE
+    p.default_filament_type = "PLA"  # configured but should not override
+    eph = Ephemeral()
+    inputs = _base_inputs(head_source={"0": {"ace": 0, "slot": 0, "type": "PETG"}})
+    new, _ = tick_fsm(p, eph, inputs, now_ts=1000.0)
+    assert new.fsm.state == FSMState.WATCHING
+    # The actual type that would drive cycle params later is PETG, not PLA —
+    # that's covered by reconcile tests; here we just check the gate transitions.
 
 
 def test_idle_when_sensor_unavailable():

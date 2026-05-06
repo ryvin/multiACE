@@ -606,6 +606,33 @@ def test_post_autodry_unknown_action_400(autodry_test_client):
     assert r.status_code == 400
 
 
+def test_post_autodry_set_default_filament_type(autodry_test_client):
+    r = autodry_test_client.post("/api/autodry",
+                                 json={"action": "set_default_filament_type",
+                                       "value": "PLA"})
+    assert r.status_code == 200
+    assert r.json()["default_filament_type"] == "PLA"
+    # case-insensitive normalization
+    r2 = autodry_test_client.post("/api/autodry",
+                                  json={"action": "set_default_filament_type",
+                                        "value": "petg"})
+    assert r2.status_code == 200
+    assert r2.json()["default_filament_type"] == "PETG"
+    # null clears it
+    r3 = autodry_test_client.post("/api/autodry",
+                                  json={"action": "set_default_filament_type",
+                                        "value": None})
+    assert r3.status_code == 200
+    assert r3.json()["default_filament_type"] is None
+
+
+def test_post_autodry_set_default_filament_type_rejects_unknown(autodry_test_client):
+    r = autodry_test_client.post("/api/autodry",
+                                 json={"action": "set_default_filament_type",
+                                       "value": "PEEK"})
+    assert r.status_code == 400
+
+
 def test_post_autodry_invalid_mode_400(autodry_test_client):
     r = autodry_test_client.post("/api/autodry",
                                  json={"action": "set_mode", "value": "bogus"})
