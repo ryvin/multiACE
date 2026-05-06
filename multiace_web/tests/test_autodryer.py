@@ -691,3 +691,48 @@ async def test_autodryer_boot_reconciles_persisted_drying_into_cooldown(tmp_path
     await dryer._tick_once(now_ts=1000.0)
     p = load_persisted_state(state_path)
     assert p.fsm.state in (FSMState.COOLDOWN, FSMState.WATCHING)
+
+
+class TestAutodryManager:
+    def test_default_construction_yields_one_fsm_per_device(self) -> None:
+        from multiace_web.autodryer import AutodryManager, PerAceFSM
+        mgr = AutodryManager.with_defaults(device_count=2)
+        assert len(mgr.fsms) == 2
+        assert mgr.fsms[0].ace == 0
+        assert mgr.fsms[1].ace == 1
+        assert all(isinstance(f, PerAceFSM) for f in mgr.fsms)
+        # disabled by default — explicit opt-in per ACE
+        assert all(not f.config.enabled for f in mgr.fsms)
+
+    def test_get_returns_fsm_by_ace_index(self) -> None:
+        from multiace_web.autodryer import AutodryManager
+        mgr = AutodryManager.with_defaults(device_count=2)
+        f = mgr.get(1)
+        assert f.ace == 1
+
+    def test_get_raises_for_out_of_range_ace(self) -> None:
+        from multiace_web.autodryer import AutodryManager
+        mgr = AutodryManager.with_defaults(device_count=2)
+        with pytest.raises(KeyError):
+            mgr.get(2)
+
+    def test_serialize_roundtrip(self) -> None:
+        from multiace_web.autodryer import AutodryManager
+        mgr = AutodryManager.with_defaults(device_count=2)
+        mgr.get(1).config.enabled = True
+        mgr.get(1).config.target_pct = 12
+        d = mgr.serialize()
+        mgr2 = AutodryManager.deserialize(d, device_count=2)
+        assert mgr2.get(1).config.enabled is True
+        assert mgr2.get(1).config.target_pct == 12
+        assert mgr2.get(0).config.enabled is False
+
+    def test_deserialize_grows_to_device_count_when_persisted_count_is_smaller(self) -> None:
+        """If hardware count grew (1 → 2 ACEs), deserialize fills missing FSMs with defaults."""
+        from multiace_web.autodryer import AutodryManager
+        mgr_one = AutodryManager.with_defaults(device_count=1)
+        mgr_one.get(0).config.enabled = True
+        d = mgr_one.serialize()
+        mgr_two = AutodryManager.deserialize(d, device_count=2)
+        assert mgr_two.get(0).config.enabled is True
+        assert mgr_two.get(1).config.enabled is False

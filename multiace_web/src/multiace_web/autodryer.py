@@ -913,3 +913,90 @@ def _now() -> float:
     """Wall-clock seconds; injectable by patching for tests."""
     import time
     return time.time()
+
+
+@dataclass
+class PerAceConfig:
+    """Per-ACE autodry knobs. Each ACE's FSM has its own copy."""
+    enabled: bool = False
+    target_pct: int = 15
+    hysteresis_pp: int = 5
+    default_filament_type: str | None = None
+
+
+@dataclass
+class PerAceFSM:
+    """One autodry FSM bound to one ACE. Holds config, persisted snapshot,
+    and runtime locks (locked-during-print, USB-unreachable)."""
+    ace: int
+    config: PerAceConfig = field(default_factory=PerAceConfig)
+    snapshot: FSMSnapshot = field(default_factory=FSMSnapshot)
+    locked: bool = False        # set when a print pins another ACE
+    unreachable: bool = False   # set after 2 consecutive ACE_SWITCH failures
+
+
+@dataclass
+class AutodryManager:
+    """Owns one PerAceFSM per ACE. Top-level container that the runtime
+    AutoDryer task delegates to. Persistence shape: {fsms: [{...}, ...]}.
+    """
+    fsms: list[PerAceFSM]
+
+    @classmethod
+    def with_defaults(cls, device_count: int) -> "AutodryManager":
+        return cls(fsms=[PerAceFSM(ace=i) for i in range(device_count)])
+
+    def get(self, ace: int) -> PerAceFSM:
+        if ace < 0 or ace >= len(self.fsms):
+            raise KeyError(f"ace index {ace} out of range (have {len(self.fsms)})")
+        return self.fsms[ace]
+
+    def serialize(self) -> dict[str, Any]:
+        return {
+            "schema": 2,
+            "fsms": [
+                {
+                    "ace": f.ace,
+                    "config": dataclasses.asdict(f.config),
+                    "snapshot": dataclasses.asdict(f.snapshot),
+                }
+                for f in self.fsms
+            ],
+        }
+
+    @classmethod
+    def deserialize(cls, d: dict[str, Any], device_count: int) -> "AutodryManager":
+        raw_fsms = {int(f["ace"]): f for f in (d.get("fsms") or []) if "ace" in f}
+        fsms: list[PerAceFSM] = []
+        for i in range(device_count):
+            raw = raw_fsms.get(i)
+            if raw is None:
+                fsms.append(PerAceFSM(ace=i))
+                continue
+            cfg_d = raw.get("config") or {}
+            snap_d = raw.get("snapshot") or {}
+            fsms.append(PerAceFSM(
+                ace=i,
+                config=PerAceConfig(**{k: v for k, v in cfg_d.items() if k in PerAceConfig.__dataclass_fields__}),
+                snapshot=_snapshot_from_dict(snap_d),
+            ))
+        return cls(fsms=fsms)
+
+
+def _snapshot_from_dict(d: dict[str, Any]) -> FSMSnapshot:
+    """Reconstruct an FSMSnapshot from its serialized form, guarding against
+    schema drift (extra keys ignored, missing keys → defaults)."""
+    state = FSMState(d.get("state", FSMState.IDLE.value))
+    fault_d = d.get("fault")
+    fault = Fault(**fault_d) if fault_d else None
+    last_run_d = d.get("last_run")
+    last_run = LastRun(**last_run_d) if last_run_d else None
+    return FSMSnapshot(
+        state=state,
+        since_ts=float(d.get("since_ts", 0.0)),
+        fault=fault,
+        last_run=last_run,
+        trigger_announcement_id=d.get("trigger_announcement_id"),
+        daily_duty=list(d.get("daily_duty") or []),
+        cooldown_until_ts=float(d.get("cooldown_until_ts", 0.0)),
+    )
