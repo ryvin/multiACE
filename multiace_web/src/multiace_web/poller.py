@@ -9,8 +9,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from .moonraker import MoonrakerClient, MoonrakerError
+
+if TYPE_CHECKING:
+    from .autodryer import AutoDryer
 
 log = logging.getLogger(__name__)
 
@@ -92,3 +96,98 @@ class PrintStatePoller:
                 return
             except asyncio.TimeoutError:
                 pass
+
+
+class MultiAcePoller:
+    """Round-robin between ACEs while idle; pin to the active ACE during prints.
+
+    Behavior:
+    - idle: switch to next ACE if needed, query [ace] state, tick that FSM.
+    - printing: skip switch, query active ACE only, lock other FSMs.
+    - 2 consecutive switch failures → mark target FSM unreachable.
+    """
+
+    def __init__(
+        self,
+        moonraker: MoonrakerClient,
+        autodry: "AutoDryer",
+        device_count: int,
+        period_s: float = 5.0,
+    ) -> None:
+        if device_count < 1:
+            raise ValueError(f"device_count must be >= 1, got {device_count}")
+        self._mr = moonraker
+        self._autodry = autodry
+        self._n = device_count
+        self._period = period_s
+        self._stop = asyncio.Event()
+        # -1 sentinel: on first idle tick we query the current active ACE and
+        # anchor last_polled to it, so round-robin starts on the NEXT ACE.
+        self._last_polled = -1
+        self._consecutive_switch_failures: dict[int, int] = {}
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    async def run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self.tick()
+            except Exception:
+                log.exception("MultiAcePoller tick failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._period)
+                return
+            except asyncio.TimeoutError:
+                pass
+
+    async def tick(self) -> None:
+        ps_obj = await self._mr.query_objects(["print_stats"])
+        state = (ps_obj.get("print_stats") or {}).get("state", "standby")
+        if state == "printing":
+            await self._tick_printing()
+        else:
+            await self._tick_idle()
+
+    async def _tick_printing(self) -> None:
+        ace_obj = (await self._mr.query_objects(["ace"])).get("ace") or {}
+        active_idx = max(0, int(ace_obj.get("active_device", 1)) - 1)
+        for i in range(self._n):
+            self._autodry.manager.get(i).locked = (i != active_idx)
+        await self._autodry.tick_one_ace(active_idx, now_ts=time.time())
+
+    async def _tick_idle(self) -> None:
+        for i in range(self._n):
+            self._autodry.manager.get(i).locked = False
+
+        ace_obj = (await self._mr.query_objects(["ace"])).get("ace") or {}
+        active_idx = max(0, int(ace_obj.get("active_device", 1)) - 1)
+
+        # On first tick, anchor last_polled to the current active ACE so the
+        # round-robin opens on the NEXT ACE rather than always on ACE 0.
+        if self._last_polled == -1:
+            self._last_polled = active_idx
+
+        target = (self._last_polled + 1) % self._n
+
+        if active_idx != target:
+            try:
+                await self._mr.run_gcode(f"ACE_SWITCH TARGET={target}")
+                self._consecutive_switch_failures[target] = 0
+                self._autodry.manager.get(target).unreachable = False
+            except Exception as e:
+                self._consecutive_switch_failures[target] = (
+                    self._consecutive_switch_failures.get(target, 0) + 1
+                )
+                if self._consecutive_switch_failures[target] >= 2:
+                    self._autodry.manager.get(target).unreachable = True
+                log.warning(
+                    "ACE_SWITCH TARGET=%d failed (%d consecutive): %s",
+                    target, self._consecutive_switch_failures[target], e,
+                )
+                # Do NOT advance last_polled on failure so the next tick retries
+                # the same target (enabling consecutive-failure tracking).
+                return
+
+        await self._autodry.tick_one_ace(target, now_ts=time.time())
+        self._last_polled = target

@@ -768,6 +768,11 @@ class AutoDryer:
         self._stop.set()
 
     @property
+    def manager(self) -> "AutodryManager | None":
+        """Public accessor for the per-ACE manager. None in legacy single-FSM mode."""
+        return self._manager
+
+    @property
     def persisted(self) -> PersistedState:
         """Most recent persisted state (re-read each call so tests can verify)."""
         return load_persisted_state(self._state_path)
