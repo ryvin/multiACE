@@ -904,6 +904,15 @@ def create_app(
             raise HTTPException(502, f"saved but RESTART failed: {e}")
         return {"ok": True, "restarted": True}
 
+    @app.get("/api/web-config")
+    async def get_web_config() -> dict:
+        """Frontend boots and reads this once to know if FilamentHub picker
+        is available and what query params to use."""
+        return {
+            "filamenthub_url": os.environ.get("FILAMENTHUB_URL", "").strip(),
+            "filamenthub_printer_id": os.environ.get("FILAMENTHUB_PRINTER_ID", "").strip() or "u1-1",
+        }
+
     @app.get("/api/logs/{kind}")
     async def get_logs(request: Request, kind: str, lines: int = 200) -> dict:
         if kind not in ("klippy",):

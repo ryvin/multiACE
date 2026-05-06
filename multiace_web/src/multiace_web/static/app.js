@@ -13,6 +13,7 @@ const state = {
   head_source: { 0: null, 1: null, 2: null, 3: null },
   sensors: { 0: false, 1: false, 2: false, 3: false },
   print_task_config: {},
+  spool_cache: {},
   last_error: null,
 };
 const events = []; // last 200 activity entries
@@ -114,6 +115,43 @@ function connectWS() {
   ws.sock.onerror = () => {
     setConnState("Disconnected", "disconnected");
   };
+}
+
+// ---- FilamentHub / web-config globals ----
+window.MULTIACE_FH_URL = "";
+window.MULTIACE_FH_PRINTER_ID = "u1-1";
+
+async function loadWebConfig() {
+  try {
+    const r = await fetch(api("api/web-config"));
+    if (r.ok) {
+      const cfg = await r.json();
+      window.MULTIACE_FH_URL = cfg.filamenthub_url || "";
+      window.MULTIACE_FH_PRINTER_ID = cfg.filamenthub_printer_id || "u1-1";
+    }
+  } catch (e) {
+    // Non-fatal — picker buttons render disabled
+  }
+}
+
+async function sendScript(script) {
+  try {
+    const resp = await fetch(api("api/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ script }),
+    });
+    const body = await resp.json();
+    if (!resp.ok) {
+      toast(`${script} failed: ${body.error || body.detail || resp.statusText}`, "error");
+      return false;
+    }
+    toast(`${script.split(/\s+/)[0]} sent`, "success");
+    return true;
+  } catch (e) {
+    toast(`${script} failed: ${e.message}`, "error");
+    return false;
+  }
 }
 
 async function sendCommand(macro) {
@@ -1278,6 +1316,58 @@ function renderAceBlock(ace) {
   return block;
 }
 
+function lowestFreeHead() {
+  for (let h = 0; h < 4; h++) {
+    if (!state.head_source[h] && !state.sensors[h]) return h;
+  }
+  return null;
+}
+
+function buildFilamentHubPickerUrl(ace, slot) {
+  const base = window.MULTIACE_FH_URL;
+  if (!base) return null;
+  const pid = encodeURIComponent(window.MULTIACE_FH_PRINTER_ID || "u1-1");
+  return `${base.replace(/\/$/, '')}/?picker=ace&printer=${pid}&ace=${ace}&slot=${slot}`;
+}
+
+function openHeadTargetMenu(anchor, ace, slot) {
+  // Remove any existing menu first
+  document.querySelectorAll(".head-target-menu").forEach(el => el.remove());
+  const menu = document.createElement("div");
+  menu.className = "head-target-menu";
+  for (let h = 0; h < 4; h++) {
+    const busy = !!state.head_source[h] || !!state.sensors[h];
+    const item = document.createElement("button");
+    item.className = "head-target-menu-item";
+    item.disabled = busy;
+    item.textContent = busy ? `→ ${tName(h)} (busy)` : `→ ${tName(h)}`;
+    item.addEventListener("click", async () => {
+      menu.remove();
+      if (!busy) {
+        await sendScript(`ACE_LOAD_HEAD HEAD=${h} ACE=${ace} SLOT=${slot}`);
+      }
+    });
+    menu.appendChild(item);
+  }
+  // Position relative to anchor (chevron button)
+  const r = anchor.getBoundingClientRect();
+  menu.style.position = "fixed";
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.left = `${r.left}px`;
+  menu.style.zIndex = "1000";
+  document.body.appendChild(menu);
+  // Dismiss on outside click
+  setTimeout(() => {
+    function onDocClick(ev) {
+      if (!menu.contains(ev.target)) {
+        menu.remove();
+        document.removeEventListener("click", onDocClick);
+      }
+    }
+    document.addEventListener("click", onDocClick);
+  }, 0);
+}
+
 function renderSlotCard(ace, slotIdx) {
   // Reuses the existing slot-card markup. For inactive ACEs, gate_status is
   // unknown — show "?" pill. For active ACE, use the existing logic.
@@ -1308,19 +1398,67 @@ function renderSlotCard(ace, slotIdx) {
   metaRow(meta, "Material", hcfg.type || "—");
   metaRow(meta, "Vendor", hcfg.vendor || "—");
 
-  // Actions — keep existing simple Load/Unload buttons. Task 10 replaces with split-button.
+  // Spool binding from spool_cache (Task 8 broadcast)
+  const cacheForAce = (state.spool_cache && state.spool_cache[String(ace)]) || {};
+  const spool = cacheForAce[String(slotIdx)] || null;
+
+  // Actions: 📖 picker, Load split-button + chevron, Unload (when applicable)
   const actions = setEl(card, "div"); actions.className = "actions";
-  const loadBtn = setEl(actions, "button", { textContent: `Load → ${tName(slotIdx)}` });
-  loadBtn.dataset.cmd = `ACEC__Load_T${slotIdx}`;
+
+  const pickerBtn = setEl(actions, "button", { textContent: "📖" });
+  pickerBtn.className = "btn-icon";
+  const fhUrl = buildFilamentHubPickerUrl(ace, slotIdx);
+  if (fhUrl) {
+    pickerBtn.title = "Pick spool from FilamentHub";
+    pickerBtn.addEventListener("click", () => {
+      window.open(fhUrl, "_blank", "noopener,noreferrer");
+    });
+  } else {
+    pickerBtn.disabled = true;
+    pickerBtn.title = "Set FILAMENTHUB_URL to enable";
+  }
+
+  const split = setEl(actions, "span"); split.className = "slot-load-split";
+  const loadBtn = setEl(split, "button", { textContent: "Load" });
   loadBtn.classList.add("primary");
-  // Disable if active+empty, or if swap in progress; for inactive ACE keep enabled
-  // (firmware will switch + check gate_status itself).
   loadBtn.disabled = (filled === false) || state.swap_in_progress;
-  const unloadBtn = setEl(actions, "button", { textContent: `Unload ${tName(slotIdx)}` });
-  unloadBtn.dataset.cmd = `ACEC__Unload_T${slotIdx}`;
-  unloadBtn.dataset.confirm = `Unload ${tName(slotIdx)}?`;
-  unloadBtn.classList.add("danger");
-  unloadBtn.disabled = !loadedToEntry || state.swap_in_progress;
+  loadBtn.addEventListener("click", async () => {
+    const head = lowestFreeHead();
+    if (head === null) {
+      openHeadTargetMenu(loadBtn, ace, slotIdx);
+      return;
+    }
+    await sendScript(`ACE_LOAD_HEAD HEAD=${head} ACE=${ace} SLOT=${slotIdx}`);
+  });
+  const chevron = setEl(split, "button", { textContent: "▾" });
+  chevron.classList.add("primary");
+  chevron.title = "Load to a specific head";
+  chevron.disabled = (filled === false) || state.swap_in_progress;
+  chevron.addEventListener("click", () => openHeadTargetMenu(chevron, ace, slotIdx));
+
+  if (loadedToEntry) {
+    const unloadBtn = setEl(actions, "button", { textContent: `Unload ${tName(loadedToHead)}` });
+    unloadBtn.dataset.cmd = `ACEC__Unload_T${loadedToHead}`;
+    unloadBtn.dataset.confirm = `Unload ${tName(loadedToHead)}?`;
+    unloadBtn.classList.add("danger");
+    unloadBtn.disabled = state.swap_in_progress;
+  }
+
+  if (spool) {
+    const spoolRow = setEl(card, "div"); spoolRow.className = "slot-spool";
+    if (spool.color) {
+      const sw = setEl(spoolRow, "span"); sw.className = "spool-swatch";
+      sw.style.background = `#${spool.color}`;
+    }
+    setEl(spoolRow, "span", { className: "spool-name", textContent: spool.name || `#${spool.spool_id}` });
+    if (spool.material) {
+      setEl(spoolRow, "span", { className: "muted", textContent: ` · ${spool.material}` });
+    }
+    if (spool.weight_remaining_g != null) {
+      setEl(spoolRow, "span", { className: "muted", textContent: ` · ${Math.round(spool.weight_remaining_g)}g` });
+    }
+  }
+
   return card;
 }
 
@@ -1837,6 +1975,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (viewAll) {
     viewAll.addEventListener("click", (ev) => { ev.preventDefault(); setView("activity"); });
   }
+  loadWebConfig();
   connectWS();
   startPrintPolling();
   startAutodryPolling();
