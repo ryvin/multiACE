@@ -78,6 +78,38 @@ def main(url: str, out_dir: Path) -> int:
                 page.screenshot(path=str(shot), full_page=True)
                 print(f"  {shot}")
 
+                # Per-tab interaction captures (read-only — no actions issued):
+                if tab == "activity":
+                    # Click ACE A chip if multi-ACE
+                    aceA = page.query_selector(
+                        "#activity-chips button.activity-ace-chip:nth-of-type(2)"
+                    )
+                    if aceA:
+                        aceA.click()
+                        page.wait_for_timeout(400)
+                        shot2 = out_dir / f"{timestamp}-{label}-activity-aceA.png"
+                        page.screenshot(path=str(shot2), full_page=True)
+                        print(f"  {shot2}")
+                        # Reset to All for downstream cleanliness
+                        allChip = page.query_selector(
+                            "#activity-chips button.activity-ace-chip:nth-of-type(1)"
+                        )
+                        if allChip:
+                            allChip.click()
+                            page.wait_for_timeout(200)
+
+                if tab == "diag":
+                    # Switch the ACE dropdown to ACE B (index 1) if multi-ACE
+                    sel = page.query_selector("#diag-ace")
+                    if sel:
+                        opts = page.query_selector_all("#diag-ace option")
+                        if len(opts) >= 2:
+                            page.select_option("#diag-ace", "1")
+                            page.wait_for_timeout(800)
+                            shot2 = out_dir / f"{timestamp}-{label}-diag-aceB.png"
+                            page.screenshot(path=str(shot2), full_page=True)
+                            print(f"  {shot2}")
+
             errors_by_view[label] = list(errors)
             ctx.close()
 
