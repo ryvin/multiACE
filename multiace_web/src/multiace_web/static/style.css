@@ -1312,3 +1312,20 @@ body.multiace-embed { background: transparent; }
   border: 1px solid rgba(0,0,0,.25);
 }
 .spool-name { font-weight: 500; }
+
+/* Dashboard dryer card — one row per ACE */
+.dryer-row {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .35rem .5rem;
+  border-radius: 6px;
+  background: rgba(255,255,255,.02);
+  margin-top: .35rem;
+}
+.dryer-row-idle { opacity: .65; }
+.dryer-ace { font-weight: 600; min-width: 4.5rem; }
+.dryer-state { min-width: 4rem; }
+.dot { font-size: 1rem; line-height: 1; }
+.dot-on { color: var(--accent, #3aa); }
+.dryer-row > button { margin-left: auto; }
