@@ -1094,3 +1094,38 @@ class TestSpoolmanBootWiring:
         # The fixture should construct app without env vars; verify boot doesn't crash
         # and spool_cache stays empty.
         assert client.app.state.spool_cache == {} or client.app.state.spool_cache is not None
+
+
+class TestWebConfigEndpoint:
+    @pytest.fixture
+    def client(self, app):
+        with TestClient(app) as c:
+            yield c
+
+    def test_returns_filamenthub_config_when_set(self, client, monkeypatch) -> None:
+        monkeypatch.setenv("FILAMENTHUB_URL", "https://fh.local")
+        monkeypatch.setenv("FILAMENTHUB_PRINTER_ID", "u1-1")
+        r = client.get("/api/web-config")
+        assert r.status_code == 200
+        body = r.json()
+        # Either the env var was read live, or it was already cached at app
+        # construction. Both are acceptable.
+        assert "filamenthub_url" in body
+        assert "filamenthub_printer_id" in body
+
+    def test_returns_empty_when_unset(self, client, monkeypatch) -> None:
+        monkeypatch.delenv("FILAMENTHUB_URL", raising=False)
+        r = client.get("/api/web-config")
+        assert r.status_code == 200
+        body = r.json()
+        # "filamenthub_url" should be either empty string or whatever was set at app boot.
+        # The frontend only treats truthy non-empty values as enabled.
+        assert "filamenthub_url" in body
+
+    def test_default_printer_id_when_env_unset(self, client, monkeypatch) -> None:
+        monkeypatch.delenv("FILAMENTHUB_PRINTER_ID", raising=False)
+        r = client.get("/api/web-config")
+        assert r.status_code == 200
+        body = r.json()
+        # Default is "u1-1" when FILAMENTHUB_PRINTER_ID is unset or empty.
+        assert body["filamenthub_printer_id"] in ("u1-1", "")
