@@ -736,3 +736,43 @@ class TestAutodryManager:
         mgr_two = AutodryManager.deserialize(d, device_count=2)
         assert mgr_two.get(0).config.enabled is True
         assert mgr_two.get(1).config.enabled is False
+
+    def test_migrate_from_legacy_single_fsm(self) -> None:
+        """Legacy schema (single FSM with target_ace) migrates to new
+        per-ACE list, preserving config on the targeted ACE only."""
+        from multiace_web.autodryer import AutodryManager, FSMState
+        legacy = {
+            "mode": "active",
+            "target_ace": 1,
+            "target_pct": 12,
+            "hysteresis_pp": 4,
+            "default_filament_type": "PETG",
+            "fsm": {
+                "state": "WATCHING",
+                "since_ts": 1234.0,
+                "cooldown_until_ts": 0.0,
+            },
+        }
+        mgr = AutodryManager.migrate_from_legacy(legacy, device_count=2)
+        assert mgr.get(0).config.enabled is False
+        assert mgr.get(1).config.enabled is True
+        assert mgr.get(1).config.target_pct == 12
+        assert mgr.get(1).config.hysteresis_pp == 4
+        assert mgr.get(1).config.default_filament_type == "PETG"
+        assert mgr.get(1).snapshot.state == FSMState.WATCHING
+        assert mgr.get(0).snapshot.state == FSMState.IDLE  # untargeted FSM is fresh
+
+    def test_migrate_from_legacy_off_mode_disables_all(self) -> None:
+        from multiace_web.autodryer import AutodryManager
+        legacy = {"mode": "off", "target_ace": 0, "target_pct": 15, "hysteresis_pp": 5}
+        mgr = AutodryManager.migrate_from_legacy(legacy, device_count=2)
+        assert all(not f.config.enabled for f in mgr.fsms)
+
+    def test_deserialize_routes_legacy_shape_through_migration(self) -> None:
+        """Loading a v1 (legacy) blob via deserialize() should yield the
+        migrated v2 shape, so existing on-disk files Just Work."""
+        from multiace_web.autodryer import AutodryManager
+        legacy = {"mode": "active", "target_ace": 0, "target_pct": 15, "hysteresis_pp": 5}
+        mgr = AutodryManager.deserialize(legacy, device_count=2)
+        assert mgr.get(0).config.enabled is True
+        assert len(mgr.fsms) == 2

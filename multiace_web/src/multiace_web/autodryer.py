@@ -965,7 +965,34 @@ class AutodryManager:
         }
 
     @classmethod
+    def migrate_from_legacy(cls, legacy: dict[str, Any], device_count: int) -> "AutodryManager":
+        """Convert a legacy single-FSM persisted blob (v1) to the new v2
+        per-ACE shape. Only the FSM at `target_ace` keeps the legacy config;
+        all others are constructed with defaults and `enabled = False`."""
+        target_ace = int(legacy.get("target_ace", 0))
+        enabled = legacy.get("mode") == "active"
+        cfg = PerAceConfig(
+            enabled=enabled,
+            target_pct=int(legacy.get("target_pct", 15)),
+            hysteresis_pp=int(legacy.get("hysteresis_pp", 5)),
+            default_filament_type=legacy.get("default_filament_type"),
+        )
+        fsm_d = legacy.get("fsm") or {}
+        snap = _snapshot_from_dict(fsm_d) if fsm_d else FSMSnapshot()
+
+        fsms: list[PerAceFSM] = []
+        for i in range(device_count):
+            if i == target_ace and 0 <= i < device_count:
+                fsms.append(PerAceFSM(ace=i, config=cfg, snapshot=snap))
+            else:
+                fsms.append(PerAceFSM(ace=i))
+        return cls(fsms=fsms)
+
+    @classmethod
     def deserialize(cls, d: dict[str, Any], device_count: int) -> "AutodryManager":
+        # Schema v1 (legacy) had top-level "mode" + "target_ace"; v2 has "fsms"
+        if "fsms" not in d and "target_ace" in d:
+            return cls.migrate_from_legacy(d, device_count)
         raw_fsms = {int(f["ace"]): f for f in (d.get("fsms") or []) if "ace" in f}
         fsms: list[PerAceFSM] = []
         for i in range(device_count):
