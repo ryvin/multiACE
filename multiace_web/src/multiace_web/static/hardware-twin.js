@@ -258,6 +258,30 @@ window.HardwareTwin = (function () {
     });
     for (let i = 0; i < 4; i++) {
       const cell = htmlEl("div", { className: "htw-cell" });
+
+      // 📖 FilamentHub picker — always visible, disabled when
+      // FILAMENTHUB_URL is unset. Click opens the FilamentHub spool picker
+      // in a new tab with ?picker=ace&printer=&ace=&slot= so the user can
+      // pick or scan an NFC tag for what's in this physical slot.
+      const pickerBtn = htmlEl("button", {
+        className: "btn-icon", textContent: "📖",
+        "aria-label": `Pick spool for ACE ${String.fromCharCode(65 + deviceIdx)} slot ${i + 1}`,
+        dataset: { htw: "slot-picker",
+                   device: String(deviceIdx), slot: String(i) },
+      });
+      const fhBase = window.MULTIACE_FH_URL || "";
+      if (fhBase) {
+        pickerBtn.title = "Pick spool from FilamentHub";
+        pickerBtn.addEventListener("click", () => {
+          const pid = encodeURIComponent(window.MULTIACE_FH_PRINTER_ID || "u1-1");
+          const url = `${fhBase.replace(/\/$/, "")}/?picker=ace&printer=${pid}&ace=${deviceIdx}&slot=${i}`;
+          window.open(url, "_blank", "noopener,noreferrer");
+        });
+      } else {
+        pickerBtn.disabled = true;
+        pickerBtn.title = "Set FILAMENTHUB_URL to enable";
+      }
+
       const loadBtn = htmlEl("button", {
         className: "primary htw-hidden", textContent: "Load",
         "aria-label": `Load slot ${i + 1}`,
@@ -269,6 +293,7 @@ window.HardwareTwin = (function () {
         "aria-label": `Unload slot ${i + 1}`,
         dataset: { htw: "slot-unload", device: String(deviceIdx), slot: String(i) },
       });
+      cell.appendChild(pickerBtn);
       cell.appendChild(loadBtn);
       cell.appendChild(unloadBtn);
       slotBtns.appendChild(cell);
