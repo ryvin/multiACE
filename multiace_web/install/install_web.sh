@@ -86,9 +86,29 @@ log "nginx snippet installed at $NGINX_SNIPPET; reloaded"
 "$INIT_SCRIPT" start
 sleep 1
 log "Service status: $("$INIT_SCRIPT" status)"
-"$WATCHDOG_SCRIPT" start
-sleep 1
-log "Watchdog status: $("$WATCHDOG_SCRIPT" status)"
+
+# Wire the watchdog into /etc/inittab as a respawn entry so PID 1 keeps it
+# alive across crashes and restarts it automatically on every boot. Without
+# this, if the watchdog itself dies (or the printer reboots in a way that
+# skips the rcS sweep) nothing brings the multiace-web service back. With
+# this, init re-execs the watchdog any time it exits.
+INITTAB=/etc/inittab
+INITTAB_LINE="::respawn:$WATCHDOG_SCRIPT _supervise"
+if [ -f "$INITTAB" ] && ! grep -qF "$INITTAB_LINE" "$INITTAB" 2>/dev/null; then
+  echo "$INITTAB_LINE" >> "$INITTAB"
+  log "inittab respawn entry added — init now keeps the watchdog alive"
+  kill -HUP 1 2>/dev/null || true
+  log "init signalled (SIGHUP) to re-read inittab"
+  # When init picks up the new entry it'll spawn the foreground watchdog.
+  # Don't start the watchdog manually below — that would race the inittab
+  # respawn and create a duplicate process.
+else
+  # Fallback for systems without /etc/inittab (or already-installed line):
+  # use the existing detached `start` path so the watchdog still runs.
+  "$WATCHDOG_SCRIPT" start
+  sleep 1
+  log "Watchdog status: $("$WATCHDOG_SCRIPT" status)"
+fi
 
 log ""
 log "=== Install complete ==="

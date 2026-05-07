@@ -116,7 +116,8 @@ def _make_autodry_mock(device_count: int) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_multi_ace_poller_idle_alternates_between_aces() -> None:
+async def test_multi_ace_poller_idle_alternates_between_aces(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIACE_AUTODRY_ROUND_ROBIN", "1")
     fake_mr = _FakeMoonraker()
     autodry = _make_autodry_mock(2)
     poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2, period_s=0.0)
@@ -147,7 +148,8 @@ async def test_multi_ace_poller_printing_pins_active_ace_and_locks_others() -> N
 
 
 @pytest.mark.asyncio
-async def test_multi_ace_poller_two_consecutive_switch_failures_mark_unreachable() -> None:
+async def test_multi_ace_poller_two_consecutive_switch_failures_mark_unreachable(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIACE_AUTODRY_ROUND_ROBIN", "1")
     fake_mr = _FakeMoonraker()
     fake_mr.switch_should_fail = True
     autodry = _make_autodry_mock(2)
@@ -161,7 +163,8 @@ async def test_multi_ace_poller_two_consecutive_switch_failures_mark_unreachable
 
 
 @pytest.mark.asyncio
-async def test_multi_ace_poller_idle_skips_switch_when_already_active() -> None:
+async def test_multi_ace_poller_idle_skips_switch_when_already_active(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIACE_AUTODRY_ROUND_ROBIN", "1")
     """If round-robin target equals current active ACE, no ACE_SWITCH is issued."""
     fake_mr = _FakeMoonraker()
     fake_mr.active_idx = 1
@@ -178,7 +181,8 @@ async def test_multi_ace_poller_idle_skips_switch_when_already_active() -> None:
 
 
 @pytest.mark.asyncio
-async def test_multi_ace_poller_successful_switch_resets_unreachable_flag() -> None:
+async def test_multi_ace_poller_successful_switch_resets_unreachable_flag(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIACE_AUTODRY_ROUND_ROBIN", "1")
     fake_mr = _FakeMoonraker()
     autodry = _make_autodry_mock(2)
     autodry._fsms[1].unreachable = True   # pretend earlier failures marked it
@@ -188,7 +192,8 @@ async def test_multi_ace_poller_successful_switch_resets_unreachable_flag() -> N
 
 
 @pytest.mark.asyncio
-async def test_multi_ace_poller_writes_last_ace_data_on_tick() -> None:
+async def test_multi_ace_poller_writes_last_ace_data_on_tick(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIACE_AUTODRY_ROUND_ROBIN", "1")
     fake_mr = _FakeMoonraker()
     autodry = _make_autodry_mock(2)
     cache: dict[int, dict] = {}
@@ -225,3 +230,24 @@ async def test_multi_ace_poller_no_last_ace_data_kwarg_is_noop() -> None:
     # Should complete without raising
     await poller.tick()
     assert poller._last_ace_data is None
+
+
+@pytest.mark.asyncio
+async def test_idle_round_robin_disabled_by_default(monkeypatch) -> None:
+    """Without MULTIACE_AUTODRY_ROUND_ROBIN=1, _tick_idle is a no-op:
+    no ACE_SWITCH issued, no FSM ticked, no cache write. This is the default
+    because each idle-time switch wedges swap_in_progress=True in the audit
+    log without a clear-event, jamming the UI."""
+    monkeypatch.delenv("MULTIACE_AUTODRY_ROUND_ROBIN", raising=False)
+    fake_mr = _FakeMoonraker()
+    autodry = _make_autodry_mock(2)
+    cache: dict[int, dict] = {}
+    poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2,
+                              period_s=0.0, last_ace_data=cache)
+    await poller.tick()
+    # No ACE_SWITCH ever issued
+    assert not any(s.startswith("ACE_SWITCH") for s in fake_mr.gcodes_run)
+    # tick_one_ace not called
+    autodry.tick_one_ace.assert_not_called()
+    # cache untouched
+    assert cache == {}
