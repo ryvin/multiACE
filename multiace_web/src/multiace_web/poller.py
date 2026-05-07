@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -166,6 +167,16 @@ class MultiAcePoller:
             self._last_ace_data[active_idx] = {**ace_obj, "last_seen_ts": time.time()}
 
     async def _tick_idle(self) -> None:
+        # Round-robin OFF by default. Each idle-time ACE_SWITCH writes
+        # swap_in_progress=True to multiace_state.log; the firmware does NOT
+        # emit a clear-event for autodry-driven switches, so the web's
+        # CurrentState.swap_in_progress sticks True between switches and
+        # disables every Load button in the UI. Re-enable via env var once
+        # either the firmware emits SWITCH_DONE or state.py learns to ignore
+        # swap_in_progress for autodry swaps.
+        if os.environ.get("MULTIACE_AUTODRY_ROUND_ROBIN", "").lower() not in ("1", "true", "yes"):
+            return
+
         for i in range(self._n):
             self._autodry.manager.get(i).locked = False
 

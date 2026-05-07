@@ -81,6 +81,28 @@ case "$1" in
 	# Internal entry point — invoked via setsid in the start case.
 	watchdog_loop
 	;;
+  _supervise)
+	# Foreground entry point — invoked by init via the inittab respawn line
+	# installed by install_web.sh. Init holds this process and respawns it
+	# if it exits, so the watchdog itself becomes crash-resistant. No setsid
+	# / no daemonization: init owns lifecycle.
+	#
+	# Defensive: if a stale pidfile points at a still-running watchdog
+	# (possibly the previous setsid-detached `start` invocation from a
+	# legacy install), reap it before claiming the pidfile ourselves.
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		OLD_PID=$(cat "$PIDFILE")
+		if [ "$OLD_PID" != "$$" ]; then
+			kill "$OLD_PID" 2>/dev/null || true
+			# Wait briefly for it to exit so the pidfile-write below isn't racy.
+			for i in 1 2 3 4 5; do
+				kill -0 "$OLD_PID" 2>/dev/null || break
+				sleep 0.2
+			done
+		fi
+	fi
+	watchdog_loop
+	;;
   *)
 	echo "Usage: $0 {start|stop|restart|status}"
 	exit 1

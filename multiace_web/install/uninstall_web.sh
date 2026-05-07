@@ -12,6 +12,17 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE-web] $1"; }
 
 log "=== multiACE Web Console uninstall ==="
 
+# Drop the inittab respawn entry first so init doesn't immediately re-spawn
+# the watchdog after we stop it. Match the line install_web.sh added.
+INITTAB=/etc/inittab
+INITTAB_LINE="::respawn:$WATCHDOG_SCRIPT _supervise"
+if [ -f "$INITTAB" ] && grep -qF "$INITTAB_LINE" "$INITTAB"; then
+  grep -vF "$INITTAB_LINE" "$INITTAB" > "$INITTAB.new"
+  mv "$INITTAB.new" "$INITTAB"
+  kill -HUP 1 2>/dev/null || true
+  log "inittab respawn entry removed; init signalled to re-read"
+fi
+
 # Stop watchdog before daemon so it can't resurrect it.
 [ -x "$WATCHDOG_SCRIPT" ] && "$WATCHDOG_SCRIPT" stop || true
 rm -f "$WATCHDOG_SCRIPT"
