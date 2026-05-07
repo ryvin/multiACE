@@ -1744,15 +1744,15 @@ class BunnyAce:
                 '[multiACE] Head %d already has bookkeeping (%s). '
                 'Unload first.' % (head, self._head_source[head]))
 
-        # Source slot metadata — same direct access the normal load path uses
-        # (line 1683). Slot is already validated 0-3 so the index is safe.
+        # Source slot metadata — matches the cmd_ACE_LOAD_HEAD success path
+        # (lines 1687-1693). Slot is already validated 0-3 so the index is safe.
         slot_info = self._info['slots'][slot]
         self._head_source[head] = {
             'ace_index': ace_index,
             'slot': slot,
-            'type': slot_info.get('type', 'PLA') or 'PLA',
+            'type': slot_info.get('type', 'PLA'),
             'color': self.rgb2hex(*slot_info.get('color', (0, 0, 0))),
-            'brand': slot_info.get('brand', 'Generic') or 'Generic',
+            'brand': slot_info.get('brand', 'Generic'),
         }
         self._save_head_source()
 
