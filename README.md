@@ -384,6 +384,9 @@ dryer_duration: 240     # Default drying duration (minutes)
 - **Display Attach Toolhead** - Attaching a toolhead via the Snapmaker display triggers auto-feed. This is stock Snapmaker behavior and cannot be suppressed.
 - **Unload All clears display** - After **ACEC__Unload_All**, manually set filament types and colors are cleared. This is by design - reload and set filament info again after unload.
 - **load / feed_length per toolhead only** - Will be adressed in next version, set settings to longest path length, sensors check shoukd stop it.
+- **Wheel-encoder phase3 timeouts (mitigated)** - The Anycubic ACE Pro drive-wheel encoder occasionally fails to register filament motion during the FEED_AUTO phase3 retry loop, even when filament is physically reaching the head. Symptoms: `feed_auto_error` / `move_extrude` exception from FEED_AUTO; klippy.log shows `cnt_a_1 == cnt_a_2` for many consecutive retries while `coil_freq_delta` actively changes. As of v0.82+:
+  - **Tier 2 (automatic):** if FEED_AUTO times out but `e<head>_filament` reads True, the firmware trusts the sensor and records the load with audit reason `feed_auto_error_sensor_fallback`. No user intervention needed; `LOAD_HEAD` still fires for downstream consumers.
+  - **Tier 1 (manual):** for already-failed loads (where the sensor was True but bookkeeping wasn't recorded — pre-Tier-2 history), use `ACE_MARK_HEAD_LOADED HEAD=N ACE=M SLOT=S` to write `head_source[N]` manually. Refuses if `e<head>_filament=False` (won't fabricate empty-head loads) or if `head_source[N]` is already populated (unload first to overwrite). Convenience macros: `ACEC__Mark_Loaded_T0` through `_T3` (group H).
 
 ## Troubleshooting
 
