@@ -1654,8 +1654,34 @@ class BunnyAce:
                 "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d LOAD=1"
                 % (module, channel, head))
         except Exception as e:
-            self._audit_state('LOAD_HEAD_FAILED', {'head': head, 'ace': ace_index, 'slot': slot, 'reason': 'feed_auto_error', 'error': str(e)})
-            raise
+            # FEED_AUTO timed out (wheel-encoder phase3 didn't observe enough
+            # motion). On this rig that recurringly happens when filament
+            # *did* reach the head — the encoder is the only thing that didn't
+            # see it. If the head's filament-motion sensor reads True now,
+            # trust it: emit LOAD_HEAD_SUSPICIOUS + fall through to the
+            # normal success path (wheel_delta sanity, head_source set,
+            # SET_PRINT_FILAMENT_CONFIG, LOAD_HEAD audit). If sensor reads
+            # False, fail as before.
+            sensor = self.printer.lookup_object(
+                'filament_motion_sensor e%d_filament' % head, None)
+            sensor_ok = (sensor
+                         and sensor.get_status(0)['filament_detected'])
+            if not sensor_ok:
+                self._audit_state('LOAD_HEAD_FAILED', {
+                    'head': head, 'ace': ace_index, 'slot': slot,
+                    'reason': 'feed_auto_error', 'error': str(e),
+                })
+                raise
+            self._audit_state('LOAD_HEAD_SUSPICIOUS', {
+                'head': head, 'ace': ace_index, 'slot': slot,
+                'reason': 'feed_auto_error_sensor_fallback',
+                'error': str(e),
+            })
+            self.log_always(
+                '[multiACE] FEED_AUTO timed out for head %d but '
+                'e%d_filament=True; trusting sensor and recording load.'
+                % (head, head))
+            # Fall through to the existing success path.
 
         wheel_after = self._read_wheel_counts(module, channel)
         wheel_delta = self._wheel_delta(wheel_before, wheel_after)
