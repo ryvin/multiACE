@@ -249,6 +249,9 @@ class BunnyAce:
             'ACE_LOAD_HEAD', self.cmd_ACE_LOAD_HEAD,
             desc=self.cmd_ACE_LOAD_HEAD_help)
         self.gcode.register_command(
+            'ACE_MARK_HEAD_LOADED', self.cmd_ACE_MARK_HEAD_LOADED,
+            desc=self.cmd_ACE_MARK_HEAD_LOADED_help)
+        self.gcode.register_command(
             'ACE_UNLOAD_HEAD', self.cmd_ACE_UNLOAD_HEAD,
             desc=self.cmd_ACE_UNLOAD_HEAD_help)
         self.gcode.register_command(
@@ -1705,6 +1708,80 @@ class BunnyAce:
         self.log_always('[multiACE] Head %d loaded from ACE %d / Slot %d' % (
             head, ace_index, slot))
         self._audit_state('LOAD_HEAD', {'head': head, 'ace': ace_index, 'slot': slot})
+
+    cmd_ACE_MARK_HEAD_LOADED_help = (
+        "[multiACE] Manually record a head as loaded when filament physically "
+        "reached it but firmware bookkeeping wasn't set (e.g., after wheel-"
+        "encoder phase3 timeout). Pre-flight: e<head>_filament must read True. "
+        "Usage: ACE_MARK_HEAD_LOADED HEAD=N ACE=M SLOT=S"
+    )
+
+    def cmd_ACE_MARK_HEAD_LOADED(self, gcmd):
+        head = gcmd.get_int('HEAD')
+        ace_index = gcmd.get_int('ACE')
+        slot = gcmd.get_int('SLOT')
+        if head < 0 or head > 3:
+            raise gcmd.error('[multiACE] HEAD must be 0-3')
+        if ace_index < 0 or ace_index >= len(self._ace_devices):
+            raise gcmd.error(
+                '[multiACE] ACE %d not configured (have %d devices)'
+                % (ace_index, len(self._ace_devices)))
+        if slot < 0 or slot > 3:
+            raise gcmd.error('[multiACE] SLOT must be 0-3')
+
+        # Honesty gate: refuse if the head sensor disagrees with the assertion.
+        sensor = self.printer.lookup_object(
+            'filament_motion_sensor e%d_filament' % head, None)
+        if not (sensor and sensor.get_status(0)['filament_detected']):
+            raise gcmd.error(
+                '[multiACE] Refusing: e%d_filament reads False — head is empty.'
+                % head)
+
+        # Idempotency / collision check: if bookkeeping already set, the user
+        # should unload first so they don't lose track of what's actually there.
+        if self._head_source[head]:
+            raise gcmd.error(
+                '[multiACE] Head %d already has bookkeeping (%s). '
+                'Unload first.' % (head, self._head_source[head]))
+
+        # Source slot metadata — same direct access the normal load path uses
+        # (line 1683). Slot is already validated 0-3 so the index is safe.
+        slot_info = self._info['slots'][slot]
+        self._head_source[head] = {
+            'ace_index': ace_index,
+            'slot': slot,
+            'type': slot_info.get('type', 'PLA') or 'PLA',
+            'color': self.rgb2hex(*slot_info.get('color', (0, 0, 0))),
+            'brand': slot_info.get('brand', 'Generic') or 'Generic',
+        }
+        self._save_head_source()
+
+        # Same SET_PRINT_FILAMENT_CONFIG call the normal path makes, so the
+        # slicer / autodry / web all see consistent type metadata.
+        self.gcode.run_script_from_command(
+            'SET_PRINT_FILAMENT_CONFIG '
+            'CONFIG_EXTRUDER=%d '
+            'FILAMENT_TYPE="%s" '
+            'FILAMENT_COLOR_RGBA=%s '
+            'VENDOR="%s" '
+            'FILAMENT_SUBTYPE=""' % (
+                head,
+                self._head_source[head]['type'],
+                self._head_source[head]['color'],
+                self._head_source[head]['brand']))
+
+        # Two-line audit per spec: SUSPICIOUS first (with reason), then LOAD_HEAD.
+        # multiace web's tailer treats LOAD_HEAD as the "head bound" event.
+        self._audit_state('LOAD_HEAD_SUSPICIOUS', {
+            'head': head, 'ace': ace_index, 'slot': slot,
+            'reason': 'manual_override',
+        })
+        self._audit_state('LOAD_HEAD', {
+            'head': head, 'ace': ace_index, 'slot': slot,
+        })
+        self.log_always(
+            '[multiACE] head_source[%d] manually marked as ACE %d / slot %d '
+            '(via ACE_MARK_HEAD_LOADED)' % (head, ace_index, slot))
 
     cmd_ACE_UNLOAD_HEAD_help = '[multiACE] Unload a toolhead back to its ACE. Usage: ACE_UNLOAD_HEAD HEAD=0'
     def cmd_ACE_UNLOAD_HEAD(self, gcmd):
