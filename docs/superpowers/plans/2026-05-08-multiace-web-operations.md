@@ -140,56 +140,11 @@ Add two new fields immediately after `last_error: null`:
   smartSwapPending: null,     // {head, leg, startedAt} | null — cross-leg UI lock
 ```
 
-- [ ] **Step 2: Add `detectSwapParkAvailable()` and call it at DOMContentLoaded**
+- [ ] **Step 2: Add `swap_park_available` to `poller.py` and `state.py`**
 
-Add this function after the `sendCommand` function (around line 218), before `confirmDialog`:
+The probe lives in `poller.py` because Moonraker calls already happen there, and `state.py` is the natural home for the cached result. The frontend has no direct Moonraker proxy (it can only reach Moonraker via `/api/command`), so a backend probe is the only clean path.
 
-```js
-/**
- * Probe Moonraker for the ACEC__Park_T0 macro, which is the convenience macro
- * added by the swap-park firmware.  Preferred over probing ACE_PARK_HEAD via
- * /printer/gcode/help because some Klipper builds only enumerate macros there,
- * not core commands.
- *
- * Returns true if the macro object exists, false otherwise (including on any
- * network error — fail closed so Phase 1 fallback always runs).
- */
-async function detectSwapParkAvailable() {
-  try {
-    const r = await fetch(api("api/command"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeader() },
-      body: JSON.stringify({ script: "RESPOND MSG=multiace_probe" }),
-    });
-    // We don't actually care about the script response — we're probing via
-    // the object list instead.
-    void r;
-  } catch (_) {}
-  // Real probe: check if the gcode_macro ACEC__Park_T0 object exists.
-  try {
-    const r = await fetch(api("api/print"), { headers: authHeader() });
-    // /api/print doesn't list macros.  Use Moonraker directly via the nginx
-    // proxy path.  The web console is served at /multiace/ so Moonraker is at
-    // the same origin root — but we don't have a direct Moonraker proxy here.
-    // Fall back: query /printer/objects/list through the poller endpoint.
-    // If that's not available, return false (Phase 1 fallback).
-    void r;
-    return false;  // placeholder replaced in next step
-  } catch (_) {
-    return false;
-  }
-}
-```
-
-Wait — the web console has NO direct Moonraker proxy available to the browser (it goes through `/api/command`). The spec's probe uses `fetch('/printer/${printerId}/printer/gcode/help')` which assumes a printer-id-keyed proxy that does not exist. The correct approach: probe via the existing `/api/command` endpoint by attempting a `RESPOND TYPE=command MSG=probe` and checking the response, or — simpler — fetch the multiACE state and check if `state.device_count > 0` combined with a one-time `GET /api/state` that now includes a `swap_park_available` field injected by the backend `poller.py`.
-
-**Actually**, the simplest probe that matches the existing architecture: add one line to `poller.py`'s Moonraker call for `/printer/objects/list` and expose `swap_park_available: bool` in `/api/state`. The frontend then just reads `state.swapParkAvailable` from the WS payload.
-
-Revise Step 2 — implement the probe on the backend:
-
-- [ ] **Step 2 (revised): Add `swap_park_available` to `poller.py` and `state.py`**
-
-In `multiace_web/src/multiace_web/poller.py`, locate the `ACEHeadStatusPoller` (or equivalent class that calls `/printer/objects/query?ace`) and add a companion call that checks for `gcode_macro ACEC__Park_T0` in the objects list. Add to the poller's poll loop (find the `async def _poll` or equivalent method):
+In `multiace_web/src/multiace_web/poller.py`, locate the `StatusPoller` (or equivalent class that calls `/printer/objects/query?ace`) and add a companion call that checks for `gcode_macro ACEC__Park_T0` in the objects list. Add to the poller's poll loop (find the `async def _poll` or equivalent method):
 
 ```python
 # In poller.py — inside the async poll method, after the head-status query:
@@ -233,14 +188,14 @@ And include it in `as_dict()` (or wherever the WS payload is built — look for 
 
 @pytest.mark.asyncio
 async def test_probe_swap_park_true_when_macro_present(respx_mock):
-    from multiace_web.poller import ACEHeadStatusPoller  # or actual class name
+    from multiace_web.poller import StatusPoller  # or actual class name
     # Adjust import to match the actual class that has _probe_swap_park.
     respx_mock.get("http://moonraker:7125/printer/objects/list").mock(
         return_value=httpx.Response(200, json={
             "result": {"objects": ["gcode_macro ACEC__Park_T0", "gcode_macro ACEC__Unload_T0"]}
         })
     )
-    poller = ACEHeadStatusPoller("http://moonraker:7125", state=None)
+    poller = StatusPoller("http://moonraker:7125", state=None)
     async with httpx.AsyncClient() as c:
         result = await poller._probe_swap_park(c)
     assert result is True
@@ -248,13 +203,13 @@ async def test_probe_swap_park_true_when_macro_present(respx_mock):
 
 @pytest.mark.asyncio
 async def test_probe_swap_park_false_when_macro_absent(respx_mock):
-    from multiace_web.poller import ACEHeadStatusPoller
+    from multiace_web.poller import StatusPoller
     respx_mock.get("http://moonraker:7125/printer/objects/list").mock(
         return_value=httpx.Response(200, json={
             "result": {"objects": ["gcode_macro ACEC__Unload_T0"]}
         })
     )
-    poller = ACEHeadStatusPoller("http://moonraker:7125", state=None)
+    poller = StatusPoller("http://moonraker:7125", state=None)
     async with httpx.AsyncClient() as c:
         result = await poller._probe_swap_park(c)
     assert result is False
@@ -262,11 +217,11 @@ async def test_probe_swap_park_false_when_macro_absent(respx_mock):
 
 @pytest.mark.asyncio
 async def test_probe_swap_park_false_on_network_error(respx_mock):
-    from multiace_web.poller import ACEHeadStatusPoller
+    from multiace_web.poller import StatusPoller
     respx_mock.get("http://moonraker:7125/printer/objects/list").mock(
         side_effect=httpx.ConnectError("refused")
     )
-    poller = ACEHeadStatusPoller("http://moonraker:7125", state=None)
+    poller = StatusPoller("http://moonraker:7125", state=None)
     async with httpx.AsyncClient() as c:
         result = await poller._probe_swap_park(c)
     assert result is False
@@ -1351,7 +1306,7 @@ Confirm no JS pageerrors in the output.
 
 ### Placeholder scan
 
-- Task 2 Step 2 contains a multi-step revision of the probe design with an intermediate dead-end block that was immediately superseded. The final design (backend probe in `poller.py`) is unambiguous. The dead-end block is preceded by a "Wait —" callout and is clearly overridden by "Revise Step 2". Implementers should follow the "revised" instructions and ignore the dead-end draft.
+- Task 2 Step 2 uses the backend probe approach (`poller.py` + `state.py`). The frontend has no direct Moonraker proxy, so the probe runs server-side and is exposed as `swap_park_available` in the WS payload.
 - Task 7 Step 1 uses `ctx.route("**/api/command", ...)` to prevent real gcode from being issued. This only works if the test server's Moonraker is unreachable or the route mock fires. In a live-server run, `sendScript` POST will still reach the server but Moonraker will reject it — non-destructive. For a purely isolated test, run against a local dev server with no real Moonraker configured.
 
 ### Type / name consistency
@@ -1368,4 +1323,4 @@ Confirm no JS pageerrors in the output.
 
 ### `head_source` field note for poller test (Task 2 Step 3)
 
-Before writing the poller probe tests, read `multiace_web/src/multiace_web/poller.py` to find the actual class name. The test uses `ACEHeadStatusPoller` as a placeholder — replace with the real class if different. The constructor may also need a `state` argument of a different type; adjust accordingly. The test logic itself (mock HTTP → assert boolean return) is correct regardless of the class name.
+Before writing the poller probe tests, read `multiace_web/src/multiace_web/poller.py` to find the actual class name. The test uses `StatusPoller` as a placeholder — replace with the real class if different. The constructor may also need a `state` argument of a different type; adjust accordingly. The test logic itself (mock HTTP → assert boolean return) is correct regardless of the class name.
