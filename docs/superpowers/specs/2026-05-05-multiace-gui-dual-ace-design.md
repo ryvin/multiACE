@@ -35,7 +35,7 @@ leaving the printer console for more than a tab.
 ## Hardware / firmware contract verified live
 
 Empirically checked on 2026-05-05 against the live printer
-(`192.168.1.171:7125`) and `multiace/klipper/extras/ace.py`:
+(`$DAVINCI_U1_HOST:7125`) and `multiace/klipper/extras/ace.py`:
 
 - `ACE_LOAD_HEAD HEAD=N ACE=M SLOT=S` already supports any source → any
   destination. Verified by issuing `HEAD=0 ACE=1 SLOT=0` from a clean state:

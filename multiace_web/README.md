@@ -102,7 +102,11 @@ python -m venv .venv
 . .venv/bin/activate              # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest                            # 121 tests, ~13s
-MOONRAKER_URL=http://192.168.1.171:7125 \
+
+# Set the printer host once per shell. See CLAUDE.md for the convention.
+export DAVINCI_U1_HOST=192.168.1.136
+
+MOONRAKER_URL=http://$DAVINCI_U1_HOST:7125 \
   MULTIACE_LOG_DIR=/path/to/synthetic/logs \
   uvicorn multiace_web.server:app --port 7126 --reload
 ```
@@ -121,7 +125,7 @@ A headless Chromium can drive the live UI for end-to-end smoke testing:
 ```bash
 pip install playwright
 playwright install chromium
-python tools/visual_regression.py http://192.168.1.171/multiace/
+python tools/visual_regression.py http://$DAVINCI_U1_HOST/multiace/
 ```
 
 The script captures Dashboard / Activity / Dryer / Config / Diag at 1280×900 and

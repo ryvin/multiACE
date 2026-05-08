@@ -190,14 +190,14 @@ T+~5min  e1_filament=True confirmed in success path         e1_filament=True
 ### One-shot snapshot
 
 ```bash
-curl -s "http://192.168.1.171:7125/printer/objects/query?ace&filament_motion_sensor%20e0_filament&filament_motion_sensor%20e1_filament&filament_motion_sensor%20e2_filament&filament_motion_sensor%20e3_filament&extruder&print_stats&toolhead" \
+curl -s "http://$DAVINCI_U1_HOST:7125/printer/objects/query?ace&filament_motion_sensor%20e0_filament&filament_motion_sensor%20e1_filament&filament_motion_sensor%20e2_filament&filament_motion_sensor%20e3_filament&extruder&print_stats&toolhead" \
   | python3 -m json.tool
 ```
 
 ### Tail the audit stream
 
 ```bash
-curl -s "http://192.168.1.171:7125/server/files/logs/multiace_state.log" \
+curl -s "http://$DAVINCI_U1_HOST:7125/server/files/logs/multiace_state.log" \
   | tail -30 \
   | python3 -c "
 import sys, json
@@ -216,13 +216,13 @@ for line in sys.stdin:
 ### Watch klippy.log phase3 retries (the wheel-encoder pattern)
 
 ```bash
-curl -s "http://192.168.1.171:7125/server/files/logs/klippy.log" \
+curl -s "http://$DAVINCI_U1_HOST:7125/server/files/logs/klippy.log" \
   | grep "phase3" | tail -20
 ```
 
 ### Streaming view over WebSocket (multiace web)
 
-Open `http://192.168.1.171/multiace/` — Dashboard slot rows + Hardware Twin reflect `head_source`/sensor state in real-time via WS broadcasts. Diag tab shows raw JSON of the full state object.
+Open `http://$DAVINCI_U1_HOST/multiace/` — Dashboard slot rows + Hardware Twin reflect `head_source`/sensor state in real-time via WS broadcasts. Diag tab shows raw JSON of the full state object.
 
 ---
 

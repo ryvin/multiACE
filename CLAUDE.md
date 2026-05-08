@@ -113,6 +113,20 @@ The web console can be installed independently with `bash /tmp/multiace_web/inst
 
 The user's global CLAUDE.md spells out the Snapmaker U1 safety protocol — always check `print_stats.state` before any operation that could disturb a print, and never restart Klipper / Moonraker / multiace-web during `printing` or `paused` without explicit confirmation. That rule applies to every SSH or Moonraker call this repo's tooling drives. Read-only operations (log tail, status query, snapshot, file copy to non-active dirs) are always safe.
 
+### Printer host env var
+
+The multiACE rig (Davinci-U1) is identified by the `DAVINCI_U1_HOST` env var in this repo's docs and tools. Set it once per shell:
+
+```bash
+export DAVINCI_U1_HOST=192.168.1.136   # current wired NIC; was 192.168.1.171 on wifi
+```
+
+- All plan/spec/reference docs use `$DAVINCI_U1_HOST` in their curl/scp/ssh examples (export the var before running them).
+- All `multiace_web/tools/*.py` scripts read `DAVINCI_U1_HOST` with `192.168.1.136` as the fallback default.
+- The other U1 (Snapdragon-U1) is unrelated to multiACE; if it ever needs scripting, it gets its own parallel `SNAPDRAGON_U1_HOST` var rather than overloading this one.
+
+When local DNS is set up (e.g. `davinci-u1.local`), update the var and (optionally) the tools' default values; the env-var indirection means no doc/tool churn is needed for IP changes.
+
 ## License
 
 GPL-3.0 — all derivative works (firmware and web) must maintain GPL-3.0. License headers required in modified Python files.

@@ -5,14 +5,16 @@ workflow panel can be screenshotted at each phase without triggering a real
 multi-step ACE action.
 
 Usage:
-    python tools/workflow_demo.py http://192.168.1.171/multiace/
+    export DAVINCI_U1_HOST=192.168.1.136   # or whatever the printer's IP is
+    python tools/workflow_demo.py http://$DAVINCI_U1_HOST/multiace/
 """
 import os
 import sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-URL = sys.argv[1] if len(sys.argv) > 1 else "http://192.168.1.171/multiace/"
+_DEFAULT_HOST = os.environ.get("DAVINCI_U1_HOST", "192.168.1.136")
+URL = sys.argv[1] if len(sys.argv) > 1 else f"http://{_DEFAULT_HOST}/multiace/"
 OUT = Path(os.environ.get("MULTIACE_VR_OUT", "screenshots/workflow"))
 OUT.mkdir(parents=True, exist_ok=True)
 

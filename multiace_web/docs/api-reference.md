@@ -2,7 +2,7 @@
 
 All endpoints are under `/api/` (or `/ws` for the WebSocket). When the console
 is mounted at `/multiace/` behind nginx, the actual URL is e.g.
-`http://192.168.1.171/multiace/api/state`. Same-origin under nginx, so browser
+`http://$DAVINCI_U1_HOST/multiace/api/state`. Same-origin under nginx, so browser
 fetches work without CORS configuration.
 
 If `MULTIACE_TOKEN` is set in `.env`, every endpoint under `/api/*` and the

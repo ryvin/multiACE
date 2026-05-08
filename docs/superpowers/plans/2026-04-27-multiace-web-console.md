@@ -2997,7 +2997,7 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest                                    # all backend tests
-MOONRAKER_URL=http://192.168.1.171:7125 \
+MOONRAKER_URL=http://$DAVINCI_U1_HOST:7125 \
   MULTIACE_LOG_DIR=/path/to/synthetic/logs \
   uvicorn multiace_web.server:app --port 7126 --reload
 ```
@@ -3072,13 +3072,13 @@ git commit -m "docs(web): add README for web console + top-level mention"
 - [ ] **Step 1: Push the multiace_web folder to the printer**
 
 ```bash
-scp -r multiace_web/ root@192.168.1.171:/tmp/multiace_web/
+scp -r multiace_web/ root@$DAVINCI_U1_HOST:/tmp/multiace_web/
 ```
 
 - [ ] **Step 2: Run the install script**
 
 ```bash
-ssh root@192.168.1.171 "bash /tmp/multiace_web/install/install_web.sh"
+ssh root@$DAVINCI_U1_HOST "bash /tmp/multiace_web/install/install_web.sh"
 ```
 
 Expected output: install logs ending with `=== Install complete === Open http://<ip>/multiace/`.
@@ -3086,14 +3086,14 @@ Expected output: install logs ending with `=== Install complete === Open http://
 - [ ] **Step 3: Verify the service is running**
 
 ```bash
-ssh root@192.168.1.171 "systemctl status multiace-web --no-pager"
+ssh root@$DAVINCI_U1_HOST "systemctl status multiace-web --no-pager"
 ```
 
 Expected: `active (running)`.
 
 - [ ] **Step 4: Verify the page loads**
 
-In a browser, open `http://192.168.1.171/multiace/`. Expected: page renders, status dot turns green, all 4 toolheads visible (currently loaded from prior session — T0/T1/T2/T3 all showing filament).
+In a browser, open `http://$DAVINCI_U1_HOST/multiace/`. Expected: page renders, status dot turns green, all 4 toolheads visible (currently loaded from prior session — T0/T1/T2/T3 all showing filament).
 
 - [ ] **Step 5: Run the regression checklist from the spec**
 

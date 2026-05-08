@@ -13,7 +13,7 @@ stuck-but-filament-actually-reached-the-head.
 ## Background
 
 Observed reproducibly during multiACE GUI dual-ACE testing on
-`192.168.1.171` (ACE A & B, slots 0–3):
+`$DAVINCI_U1_HOST` (ACE A & B, slots 0–3):
 
 ```
 [feed_loading] phase3: extrude[1] retry:18, retry_extrude:0,
@@ -379,12 +379,12 @@ is manual on hardware.
 ```bash
 # Local edits committed to feat/wheel-encoder-fallback branch.
 # SCP changed file to printer:
-scp multiace/klipper/extras/ace.py lava@192.168.1.171:/home/lava/klipper/klippy/extras/ace.py
+scp multiace/klipper/extras/ace.py lava@$DAVINCI_U1_HOST:/home/lava/klipper/klippy/extras/ace.py
 # Verify printer is in safe state first:
-curl -s http://192.168.1.171:7125/printer/objects/query?print_stats \
+curl -s http://$DAVINCI_U1_HOST:7125/printer/objects/query?print_stats \
   | jq -r '.result.status.print_stats.state'
 # Only restart Klipper if state is standby/complete/cancelled/error:
-ssh lava@192.168.1.171 'systemctl restart klipper'
+ssh lava@$DAVINCI_U1_HOST 'systemctl restart klipper'
 # Watch klippy.log + multiace_state.log for first load to confirm new
 # audit entries shape correctly.
 ```

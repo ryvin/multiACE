@@ -1545,7 +1545,7 @@ Append to `multiace_web/src/multiace_web/static/style.css`:
 Restart `multiace-web` (or run dev server) and load Dashboard. Both ACE blocks should appear side-by-side on a wide screen and stack on a narrow viewport.
 
 ```bash
-MOONRAKER_URL=http://192.168.1.171:7125 \
+MOONRAKER_URL=http://$DAVINCI_U1_HOST:7125 \
   uvicorn multiace_web.server:app --port 7126 --reload
 ```
 
@@ -2105,7 +2105,7 @@ The existing helper for tab navigation should accept a click-after-load hook; us
 
 ```bash
 cd multiace_web
-python tools/visual_regression.py http://192.168.1.171/multiace/
+python tools/visual_regression.py http://$DAVINCI_U1_HOST/multiace/
 ```
 
 Inspect the output PNGs. Verify the layouts render as designed.
@@ -2137,7 +2137,7 @@ EOF
 
 Run:
 ```bash
-curl -s http://192.168.1.171:7125/printer/objects/query?print_stats | jq -r '.result.status.print_stats.state'
+curl -s http://$DAVINCI_U1_HOST:7125/printer/objects/query?print_stats | jq -r '.result.status.print_stats.state'
 ```
 Must be one of `standby`, `complete`, `cancelled`, `error`. If `printing` or `paused`, **stop** — this script issues real load gcode.
 
@@ -2148,13 +2148,13 @@ Must be one of `standby`, `complete`, `cancelled`, `error`. If `printing` or `pa
 """Manual Playwright golden-path for the dual-ACE GUI. Run only when no
 print is in progress. Issues real ACE_LOAD_HEAD gcode against the printer.
 Usage:
-    python tools/e2e_dual_ace.py http://192.168.1.171/multiace/
+    python tools/e2e_dual_ace.py http://$DAVINCI_U1_HOST/multiace/
 """
 import sys, time, asyncio
 import httpx
 from playwright.async_api import async_playwright
 
-PRINTER_HTTP = "http://192.168.1.171:7125"
+PRINTER_HTTP = "http://$DAVINCI_U1_HOST:7125"
 
 async def assert_safe():
     async with httpx.AsyncClient(timeout=4) as c:
@@ -2204,7 +2204,7 @@ async def main(url: str) -> None:
         await browser.close()
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "http://192.168.1.171/multiace/"))
+    asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "http://$DAVINCI_U1_HOST/multiace/"))
 ```
 
 - [ ] **Step 3: Run it**
@@ -2212,7 +2212,7 @@ if __name__ == "__main__":
 ```bash
 cd multiace_web
 pip install playwright && playwright install chromium
-python tools/e2e_dual_ace.py http://192.168.1.171/multiace/
+python tools/e2e_dual_ace.py http://$DAVINCI_U1_HOST/multiace/
 ```
 
 Watch the browser execute the flow. The script asserts:

@@ -76,13 +76,13 @@ Avoid intricate color mixing — we want visual proof of which color came from w
 
 1. **Verify safe state**:
    ```bash
-   curl -s http://192.168.1.171:7125/printer/objects/query?print_stats | jq -r '.result.status.print_stats.state'
+   curl -s http://$DAVINCI_U1_HOST:7125/printer/objects/query?print_stats | jq -r '.result.status.print_stats.state'
    ```
    Must return `standby` / `complete` / `cancelled` / `error`.
 
 2. **Clean head_source bookkeeping**: confirm all 4 heads have correct `head_source[h]`:
    ```bash
-   curl -s "http://192.168.1.171:7125/printer/objects/query?ace" \
+   curl -s "http://$DAVINCI_U1_HOST:7125/printer/objects/query?ace" \
      | python3 -c "
    import sys, json
    hs = json.load(sys.stdin)['result']['status']['ace']['head_source']
@@ -92,7 +92,7 @@ Avoid intricate color mixing — we want visual proof of which color came from w
 
 3. **Verify all 4 heads have filament physically**:
    ```bash
-   curl -s "http://192.168.1.171:7125/printer/objects/query?filament_motion_sensor%20e0_filament&filament_motion_sensor%20e1_filament&filament_motion_sensor%20e2_filament&filament_motion_sensor%20e3_filament" \
+   curl -s "http://$DAVINCI_U1_HOST:7125/printer/objects/query?filament_motion_sensor%20e0_filament&filament_motion_sensor%20e1_filament&filament_motion_sensor%20e2_filament&filament_motion_sensor%20e3_filament" \
      | python3 -c "
    import sys, json
    d = json.load(sys.stdin)['result']['status']
@@ -104,7 +104,7 @@ Avoid intricate color mixing — we want visual proof of which color came from w
 
 4. **Confirm dual-ACE detected**:
    ```bash
-   curl -s "http://192.168.1.171:7125/printer/objects/query?ace" \
+   curl -s "http://$DAVINCI_U1_HOST:7125/printer/objects/query?ace" \
      | python3 -c "import sys, json; print('device_count:', json.load(sys.stdin)['result']['status']['ace']['device_count'])"
    ```
    Must equal `2`.
@@ -112,7 +112,7 @@ Avoid intricate color mixing — we want visual proof of which color came from w
 5. **Set autodry per ACE** (so humidity is maintained during the print):
    ```bash
    for ace in 0 1; do
-     curl -s -X POST "http://192.168.1.171/multiace/api/autodry?ace=$ace" \
+     curl -s -X POST "http://$DAVINCI_U1_HOST/multiace/api/autodry?ace=$ace" \
        -H "Content-Type: application/json" \
        --data '{"enabled": true, "target_pct": 15, "hysteresis_pp": 5, "default_filament_type": "PLA", "keep_ready": true}'
    done
@@ -166,7 +166,7 @@ A simple watcher script:
 while true; do
   clear
   date
-  curl -s --max-time 4 "http://192.168.1.171:7125/printer/objects/query?ace&print_stats&toolhead&extruder&filament_motion_sensor%20e0_filament&filament_motion_sensor%20e1_filament&filament_motion_sensor%20e2_filament&filament_motion_sensor%20e3_filament" \
+  curl -s --max-time 4 "http://$DAVINCI_U1_HOST:7125/printer/objects/query?ace&print_stats&toolhead&extruder&filament_motion_sensor%20e0_filament&filament_motion_sensor%20e1_filament&filament_motion_sensor%20e2_filament&filament_motion_sensor%20e3_filament" \
     | python3 -c "
 import sys, json
 d = json.load(sys.stdin)['result']['status']

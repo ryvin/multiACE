@@ -8,7 +8,8 @@ button, never submits the Config form.
 Usage:
     pip install playwright
     playwright install chromium
-    python tools/visual_regression.py http://192.168.1.171/multiace/
+    export DAVINCI_U1_HOST=192.168.1.136   # or whatever the printer's IP is
+    python tools/visual_regression.py http://$DAVINCI_U1_HOST/multiace/
     # or against a local dev server:
     python tools/visual_regression.py http://localhost:7126/
 
