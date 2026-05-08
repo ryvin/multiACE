@@ -15,7 +15,13 @@ Asserts:
 
 Usage:
     pip install playwright && playwright install chromium
-    python tools/e2e_dual_ace.py http://192.168.1.171/multiace/
+    export DAVINCI_U1_HOST=192.168.1.136   # or whatever the printer's IP is
+    python tools/e2e_dual_ace.py http://$DAVINCI_U1_HOST/multiace/
+
+Env vars:
+    DAVINCI_U1_HOST       Printer host/IP (default 192.168.1.136).
+    MULTIACE_E2E_PRINTER  Full Moonraker URL override; takes precedence
+                          over DAVINCI_U1_HOST when set.
 """
 from __future__ import annotations
 
@@ -27,7 +33,9 @@ import time
 import httpx
 
 
-PRINTER_HTTP = os.environ.get("MULTIACE_E2E_PRINTER", "http://192.168.1.171:7125")
+_DEFAULT_HOST = os.environ.get("DAVINCI_U1_HOST", "192.168.1.136")
+PRINTER_HTTP = os.environ.get(
+    "MULTIACE_E2E_PRINTER", f"http://{_DEFAULT_HOST}:7125")
 SAFE_STATES = {"standby", "complete", "cancelled", "error"}
 
 

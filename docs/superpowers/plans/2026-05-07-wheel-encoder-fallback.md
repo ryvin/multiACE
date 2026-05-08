@@ -23,7 +23,7 @@
 | `multiace/README.md` | modify | Document the new `ACE_MARK_HEAD_LOADED` command + the silent-fallback behavior |
 | `CLAUDE.md` (repo root) | modify | Add the two new audit-log actions and reasons under firmware section |
 
-No new tests files. Per `CLAUDE.md`: "There are no automated tests, CI, linters, or build steps for `multiace/`. Validation is manual on hardware." Each task that adds code has a manual smoke step on the live printer at `192.168.1.171`, gated on the existing safety check (`print_stats.state` must be `standby` / `complete` / `cancelled` / `error`).
+No new tests files. Per `CLAUDE.md`: "There are no automated tests, CI, linters, or build steps for `multiace/`. Validation is manual on hardware." Each task that adds code has a manual smoke step on the live printer at `$DAVINCI_U1_HOST`, gated on the existing safety check (`print_stats.state` must be `standby` / `complete` / `cancelled` / `error`).
 
 ---
 
@@ -152,7 +152,7 @@ Spec: docs/superpowers/specs/2026-05-07-wheel-encoder-fallback-design.md
 Pre-flight: confirm safe state.
 
 ```bash
-curl -s http://192.168.1.171:7125/printer/objects/query?print_stats \
+curl -s http://$DAVINCI_U1_HOST:7125/printer/objects/query?print_stats \
   | jq -r '.result.status.print_stats.state'
 ```
 
@@ -161,17 +161,17 @@ Expected: one of `standby`, `complete`, `cancelled`, `error`. If not, abort.
 Deploy via the existing pexpect-based path that's been used in this project (see prior conversation; `MULTIACE_DEPLOY_PASS=snapmaker`):
 
 ```bash
-scp multiace/klipper/extras/ace.py root@192.168.1.171:/home/lava/klipper/klippy/extras/ace.py
-ssh root@192.168.1.171 'systemctl restart klipper'
+scp multiace/klipper/extras/ace.py root@$DAVINCI_U1_HOST:/home/lava/klipper/klippy/extras/ace.py
+ssh root@$DAVINCI_U1_HOST 'systemctl restart klipper'
 # Wait for Klipper to come back up:
-until curl -s --max-time 4 "http://192.168.1.171:7125/printer/info" | grep -q '"state":"ready"'; do sleep 2; done && echo "klipper ready"
+until curl -s --max-time 4 "http://$DAVINCI_U1_HOST:7125/printer/info" | grep -q '"state":"ready"'; do sleep 2; done && echo "klipper ready"
 ```
 
 Find a head where `e<head>_filament=True` but `head_source[head]=null` (the recurring T1 case in this conversation). Then:
 
 ```bash
 # Replace HEAD/ACE/SLOT with the actual values you want to assert.
-curl -s -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" \
   --data '{"script":"ACE_MARK_HEAD_LOADED HEAD=1 ACE=0 SLOT=1"}' \
   | python3 -m json.tool
@@ -180,7 +180,7 @@ curl -s -X POST "http://192.168.1.171:7125/printer/gcode/script" \
 Expected response: `{"result": "ok"}`. Then verify state:
 
 ```bash
-curl -s "http://192.168.1.171:7125/printer/objects/query?ace" \
+curl -s "http://$DAVINCI_U1_HOST:7125/printer/objects/query?ace" \
   | python3 -c "
 import sys, json
 hs = json.load(sys.stdin)['result']['status']['ace']['head_source']
@@ -192,7 +192,7 @@ Expected: `T1: {'ace_index': 0, 'slot': 1, 'type': ..., 'color': ..., 'brand': .
 Verify the audit log entries landed:
 
 ```bash
-curl -s "http://192.168.1.171:7125/server/files/logs/multiace_state.log" \
+curl -s "http://$DAVINCI_U1_HOST:7125/server/files/logs/multiace_state.log" \
   | tail -2
 ```
 
@@ -203,7 +203,7 @@ Expected last two entries: `LOAD_HEAD_SUSPICIOUS` with `"reason": "manual_overri
 Find a head where `e<head>_filament=False` (head physically empty). Then:
 
 ```bash
-curl -s -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" \
   --data '{"script":"ACE_MARK_HEAD_LOADED HEAD=2 ACE=0 SLOT=2"}'
 ```
@@ -215,7 +215,7 @@ Expected: HTTP 400 from Moonraker with the `Refusing: e2_filament reads False �
 Pick a head with `head_source` already set (e.g., T0=ACE A slot 0). Then:
 
 ```bash
-curl -s -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" \
   --data '{"script":"ACE_MARK_HEAD_LOADED HEAD=0 ACE=1 SLOT=0"}'
 ```
@@ -324,12 +324,12 @@ Spec: docs/superpowers/specs/2026-05-07-wheel-encoder-fallback-design.md
 Per the same flow as Task 1 step 4:
 
 ```bash
-scp multiace/klipper/extras/ace.py root@192.168.1.171:/home/lava/klipper/klippy/extras/ace.py
+scp multiace/klipper/extras/ace.py root@$DAVINCI_U1_HOST:/home/lava/klipper/klippy/extras/ace.py
 # Pre-flight safe state check first:
-curl -s http://192.168.1.171:7125/printer/objects/query?print_stats \
+curl -s http://$DAVINCI_U1_HOST:7125/printer/objects/query?print_stats \
   | jq -r '.result.status.print_stats.state'
-ssh root@192.168.1.171 'systemctl restart klipper'
-until curl -s --max-time 4 "http://192.168.1.171:7125/printer/info" | grep -q '"state":"ready"'; do sleep 2; done && echo "klipper ready"
+ssh root@$DAVINCI_U1_HOST 'systemctl restart klipper'
+until curl -s --max-time 4 "http://$DAVINCI_U1_HOST:7125/printer/info" | grep -q '"state":"ready"'; do sleep 2; done && echo "klipper ready"
 ```
 
 - [ ] **Step 5: Live smoke — fallback fires on a phase3-timeout-prone slot**
@@ -337,7 +337,7 @@ until curl -s --max-time 4 "http://192.168.1.171:7125/printer/info" | grep -q '"
 This is the test that proves the fix. T1 has been hitting `feed_auto_error` reliably during this conversation. Pick a slot known to exhibit the pattern (T1 with ACE A or B slot 1 has been the testbed). First unload anything currently on T1:
 
 ```bash
-curl -s --max-time 600 -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s --max-time 600 -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" \
   --data '{"script":"ACEC__Unload_T1"}'
 ```
@@ -345,7 +345,7 @@ curl -s --max-time 600 -X POST "http://192.168.1.171:7125/printer/gcode/script" 
 Wait for completion (poll `/api/state` until `head_source[1]=null` and `e1_filament=false`), then attempt the load that has historically failed:
 
 ```bash
-curl -s --max-time 1200 -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s --max-time 1200 -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" \
   --data '{"script":"ACE_LOAD_HEAD HEAD=1 ACE=0 SLOT=1"}' \
   -w "\nhttp_code=%{http_code}\n"
@@ -358,8 +358,8 @@ Two acceptable outcomes:
 Verify with:
 
 ```bash
-curl -s "http://192.168.1.171:7125/server/files/logs/multiace_state.log" | tail -10
-curl -s "http://192.168.1.171:7125/printer/objects/query?ace" | python3 -c "
+curl -s "http://$DAVINCI_U1_HOST:7125/server/files/logs/multiace_state.log" | tail -10
+curl -s "http://$DAVINCI_U1_HOST:7125/printer/objects/query?ace" | python3 -c "
 import sys, json
 hs = json.load(sys.stdin)['result']['status']['ace']['head_source']
 print(f\"T1: {hs.get('1')}\")"
@@ -375,7 +375,7 @@ To prove the safety net: simulate an empty-head load. With T1 unloaded (`e1_fila
 # Pick a slot known to be empty in firmware state. If all slots are filled,
 # this step is impractical to reproduce on a working rig — skip with a note.
 # Otherwise, attempt a load and confirm LOAD_HEAD_FAILED still fires.
-curl -s --max-time 600 -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s --max-time 600 -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" \
   --data '{"script":"ACE_LOAD_HEAD HEAD=1 ACE=0 SLOT=2"}' \
   -w "\nhttp_code=%{http_code}\n"
@@ -431,21 +431,21 @@ The defaults match each head's natural slot index, so a typical call looks like 
 - [ ] **Step 2: Deploy + verify**
 
 ```bash
-scp multiace/config/extended/ace.cfg lava@192.168.1.171:/home/lava/printer_data/config/extended/ace.cfg
+scp multiace/config/extended/ace.cfg lava@$DAVINCI_U1_HOST:/home/lava/printer_data/config/extended/ace.cfg
 # Pre-flight safe state check:
-curl -s http://192.168.1.171:7125/printer/objects/query?print_stats \
+curl -s http://$DAVINCI_U1_HOST:7125/printer/objects/query?print_stats \
   | jq -r '.result.status.print_stats.state'
 # Klipper config-only changes need a soft restart, not a service restart:
-curl -s -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" --data '{"script":"RESTART"}'
 # Wait for ready:
-until curl -s --max-time 4 "http://192.168.1.171:7125/printer/info" | grep -q '"state":"ready"'; do sleep 2; done
+until curl -s --max-time 4 "http://$DAVINCI_U1_HOST:7125/printer/info" | grep -q '"state":"ready"'; do sleep 2; done
 ```
 
 Verify the macros are registered:
 
 ```bash
-curl -s -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" --data '{"script":"HELP ACEC__Mark_Loaded_T0"}'
 ```
 
@@ -557,10 +557,10 @@ The current rig has T1's bookkeeping empty + sensor=True from earlier in the con
 
 ```bash
 # Tier 1 — recover T1's bookkeeping
-curl -s -X POST "http://192.168.1.171:7125/printer/gcode/script" \
+curl -s -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
   -H "Content-Type: application/json" \
   --data '{"script":"ACEC__Mark_Loaded_T1 ACE=0"}'
-curl -s "http://192.168.1.171:7125/printer/objects/query?ace" \
+curl -s "http://$DAVINCI_U1_HOST:7125/printer/objects/query?ace" \
   | python3 -c "
 import sys, json
 hs = json.load(sys.stdin)['result']['status']['ace']['head_source']
@@ -572,7 +572,7 @@ Expected: T1 populated as ACE A slot 1.
 - [ ] **Step 2: Tail audit log to confirm event shapes**
 
 ```bash
-curl -s "http://192.168.1.171:7125/server/files/logs/multiace_state.log" | tail -20
+curl -s "http://$DAVINCI_U1_HOST:7125/server/files/logs/multiace_state.log" | tail -20
 ```
 
 Confirm the new `feed_auto_error_sensor_fallback` and `manual_override` reasons appear correctly with the documented payload shape (head, ace, slot present; reason string exact).

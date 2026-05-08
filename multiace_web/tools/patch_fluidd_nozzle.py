@@ -6,6 +6,7 @@ fluidd.cfg so the macro doesn't crash with UndefinedError on filament unload.
 ASCII-only output (Windows PowerShell defaults to CP1252).
 """
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -13,11 +14,11 @@ from datetime import datetime
 
 import paramiko
 
-HOST = "192.168.1.171"
+HOST = os.environ.get("DAVINCI_U1_HOST", "192.168.1.136")
 USER = "lava"
 PASSWORD = "snapmaker"
 CFG = "/home/lava/printer_data/config/fluidd.cfg"
-WEB_BASE = "http://192.168.1.171/multiace"
+WEB_BASE = f"http://{HOST}/multiace"
 
 
 def http_get_json(path):
