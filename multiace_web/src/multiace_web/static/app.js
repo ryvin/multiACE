@@ -360,6 +360,7 @@ function showSwapFailure(head, leg, retryFn, consecutiveFails = 1) {
   dismissBtn.addEventListener("click", () => {
     el.remove();
     state.smartSwapPending = null;
+    renderStatusBanner();
     if (consecutiveFails >= 2) {
       openHelp();
     }
@@ -1354,9 +1355,13 @@ function renderStatusBanner() {
     msg.textContent = " " + (exc.message || `code ${exc.code}`);
     return;
   }
-  if (state.swap_in_progress || (workflow.active && !workflow.ended_at)) {
+  if (state.swap_in_progress || state.smartSwapPending || (workflow.active && !workflow.ended_at)) {
     banner.classList.remove("hidden"); banner.classList.add("warn");
-    if (workflow.active) {
+    if (state.smartSwapPending) {
+      const p = state.smartSwapPending;
+      setEl(banner, "strong", { textContent: `Smart-swap ${tName(p.head)} in progress` });
+      setEl(banner, "span", { textContent: ` — leg ${p.leg} of 2. All chevron menus locked.` });
+    } else if (workflow.active) {
       const cur = workflow.current_idx != null ? workflow.steps[workflow.current_idx] : null;
       const total = workflow.steps.length;
       const done = workflow.steps.filter(s => s.status === "done").length;
@@ -1655,6 +1660,7 @@ async function initiateSmartSwap(targetHead, targetAce, targetSlot, headState) {
 
 async function _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark, failCount) {
   state.smartSwapPending = { head: targetHead, leg: 1, startedAt: _now() };
+  renderStatusBanner();
 
   let leg1Ok;
   if (usePark) {
@@ -1684,6 +1690,7 @@ async function _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark,
 
 async function _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, failCount) {
   state.smartSwapPending = { head: targetHead, leg: 2, startedAt: _now() };
+  renderStatusBanner();
   seedSingleHeadWorkflow("load_single", targetHead, `Load → ${tName(targetHead)}`);
   const leg2Ok = await sendScript(`ACE_LOAD_HEAD HEAD=${targetHead} ACE=${targetAce} SLOT=${targetSlot}`);
 
@@ -1701,6 +1708,7 @@ async function _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, failCoun
   }
 
   state.smartSwapPending = null;
+  renderStatusBanner();
 }
 
 function openHeadTargetMenu(anchor, ace, slotIdx) {
