@@ -15,6 +15,9 @@ const state = {
   print_task_config: {},
   spool_cache: {},
   last_error: null,
+  // --- Operations (smart-swap) ---
+  swapParkAvailable: false,   // cached: ACE_PARK_HEAD firmware verb detected
+  smartSwapPending: null,     // {head, leg, startedAt} | null — cross-leg UI lock
 };
 const events = []; // last 200 activity entries
 const ws = { sock: null, retry: 0, alive: false };
@@ -46,6 +49,10 @@ async function fetchState() {
     if (!resp.ok) throw new Error(`status ${resp.status}`);
     const body = await resp.json();
     Object.assign(state, body);
+    // Map snake_case capability flag to camelCase JS field.
+    if (typeof body.swap_park_available === "boolean") {
+      state.swapParkAvailable = body.swap_park_available;
+    }
     renderAll();
   } catch (e) {
     console.error("fetchState", e);
@@ -92,6 +99,10 @@ function connectWS() {
     try { msg = JSON.parse(ev.data); } catch (_) { return; }
     if (msg.type === "state") {
       Object.assign(state, msg.payload);
+      // Map snake_case capability flag to camelCase JS field.
+      if (typeof msg.payload.swap_park_available === "boolean") {
+        state.swapParkAvailable = msg.payload.swap_park_available;
+      }
       renderAll();
     } else if (msg.type === "event") {
       const ev = { id: msg.id, ts: msg.ts, ...msg.payload };
@@ -232,6 +243,77 @@ function confirmDialog(text) {
     document.getElementById("confirm-ok").addEventListener("click", ok);
     document.getElementById("confirm-cancel").addEventListener("click", cancel);
   });
+}
+
+function showSwapConfirm({ text, onConfirm, onCancel }) {
+  const el = document.createElement("div");
+  el.className = "toast swap-confirm-toast";
+  const msgSpan = document.createElement("span");
+  msgSpan.className = "swap-confirm-msg";
+  el.appendChild(msgSpan);
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "swap-confirm-cancel";
+  cancelBtn.textContent = "Cancel";
+  el.appendChild(cancelBtn);
+  document.getElementById("toast-container").appendChild(el);
+
+  let remaining = 3;
+  let done = false;
+  let intervalId = null;
+  let hiddenTimer = null;
+
+  function updateLabel() {
+    msgSpan.textContent = `${text} — Cancel (${remaining}…)`;
+  }
+  updateLabel();
+
+  function teardown() {
+    if (intervalId) { clearInterval(intervalId); intervalId = null; }
+    if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+    document.removeEventListener("visibilitychange", onVis);
+    window.removeEventListener("beforeunload", onUnload);
+    el.remove();
+  }
+
+  function doCancel() {
+    if (done) return;
+    done = true;
+    teardown();
+    onCancel();
+  }
+
+  function doConfirm() {
+    if (done) return;
+    done = true;
+    teardown();
+    toast(`${text} — swap in progress`, "info");
+    onConfirm();
+  }
+
+  cancelBtn.addEventListener("click", doCancel);
+
+  const onUnload = () => doCancel();
+  window.addEventListener("beforeunload", onUnload, { once: true });
+
+  const onVis = () => {
+    if (document.hidden) {
+      hiddenTimer = setTimeout(doCancel, 2000);
+    } else {
+      if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+    }
+  };
+  document.addEventListener("visibilitychange", onVis);
+
+  intervalId = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      doConfirm();
+    } else {
+      updateLabel();
+    }
+  }, 1000);
+
+  return { cancel: doCancel };
 }
 
 // ---- Help content & modal ----

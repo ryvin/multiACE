@@ -332,7 +332,7 @@ async def lifespan(app: FastAPI):
     _bootstrap_state_from_log(state, state_log)
 
     state_tailer = LogTailer(state_log, on_line=on_state_line)
-    poller = StatusPoller(moonraker, interval=5.0)
+    poller = StatusPoller(moonraker, interval=5.0, state=state)
     print_poller = PrintStatePoller(
         fetcher=lambda: _compute_print_payload(moonraker),
         app_state=app.state,

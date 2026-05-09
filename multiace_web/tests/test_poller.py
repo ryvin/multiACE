@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from multiace_web.poller import StatusPoller
@@ -251,3 +252,51 @@ async def test_idle_round_robin_disabled_by_default(monkeypatch) -> None:
     autodry.tick_one_ace.assert_not_called()
     # cache untouched
     assert cache == {}
+
+
+# ---- StatusPoller._probe_swap_park tests ----
+
+class _FakeMoonrakerClient:
+    """Minimal stand-in for MoonrakerClient with _base_url and run_gcode."""
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url
+
+    async def run_gcode(self, script: str) -> str:
+        return "ok"
+
+
+@pytest.mark.asyncio
+async def test_probe_swap_park_true_when_macro_present(respx_mock):
+    respx_mock.get("http://moonraker:7125/printer/objects/list").mock(
+        return_value=httpx.Response(200, json={
+            "result": {"objects": ["gcode_macro ACEC__Park_T0", "gcode_macro ACEC__Unload_T0"]}
+        })
+    )
+    poller = StatusPoller(_FakeMoonrakerClient("http://moonraker:7125"), state=None)
+    async with httpx.AsyncClient() as c:
+        result = await poller._probe_swap_park(c)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_probe_swap_park_false_when_macro_absent(respx_mock):
+    respx_mock.get("http://moonraker:7125/printer/objects/list").mock(
+        return_value=httpx.Response(200, json={
+            "result": {"objects": ["gcode_macro ACEC__Unload_T0"]}
+        })
+    )
+    poller = StatusPoller(_FakeMoonrakerClient("http://moonraker:7125"), state=None)
+    async with httpx.AsyncClient() as c:
+        result = await poller._probe_swap_park(c)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_probe_swap_park_false_on_network_error(respx_mock):
+    respx_mock.get("http://moonraker:7125/printer/objects/list").mock(
+        side_effect=httpx.ConnectError("refused")
+    )
+    poller = StatusPoller(_FakeMoonrakerClient("http://moonraker:7125"), state=None)
+    async with httpx.AsyncClient() as c:
+        result = await poller._probe_swap_park(c)
+    assert result is False
