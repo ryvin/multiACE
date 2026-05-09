@@ -1258,9 +1258,99 @@ let _pqData = null;       // last fetched print queue response
 let _pqPollTimer = null;
 
 function openFixLoadoutWizard(item) {
-  // T7 stub: Fix loadout wizard lands in T8.
-  toast("Fix loadout wizard coming in T8", "info");
-  console.warn("openFixLoadoutWizard not yet implemented", item);
+  const modal = document.getElementById("fix-loadout-modal");
+  const body = document.getElementById("fix-loadout-body");
+  if (!modal || !body) return;
+
+  const tools = item.tools || {};
+  const unresolved = Object.entries(tools).filter(([, t]) =>
+    t.match_quality !== "exact" || !t.resolved
+  );
+
+  if (unresolved.length === 0) {
+    toast("All tools already resolved — nothing to fix.", "info");
+    return;
+  }
+
+  body.innerHTML = unresolved.map(([idx, t]) => {
+    const hasSmartSwap = typeof window.initiateSmartSwap === "function";
+    const fhUrl = window.MULTIACE_FH_URL || "";
+    const fhPrinter = window.MULTIACE_FH_PRINTER_ID || "u1-1";
+    const pickerHref = fhUrl
+      ? `${fhUrl}?picker=ace&printer=${encodeURIComponent(fhPrinter)}&ace=&slot=`
+      : null;
+
+    return `<div class="fix-row" data-tool="${idx}">
+      <div class="fix-row-header">
+        <strong>Tool ${idx}</strong>
+        ${_colorSwatch(t.color)} ${t.type}
+        ${_matchIcon(t.match_quality)}
+        ${t.match_quality === "ambiguous"
+          ? `<span class="fix-hint">${t.candidates.length} candidates — pick one below</span>`
+          : `<span class="fix-hint">No matching spool found</span>`}
+      </div>
+      ${t.match_quality === "ambiguous" && t.candidates.length > 0
+        ? `<div class="fix-candidates">
+            ${t.candidates.map(c =>
+              `<button class="fix-candidate-btn ghost-btn"
+                 data-tool="${idx}" data-ace="${c.ace}" data-slot="${c.slot}"
+                 data-spool="${c.spool_id}">
+                 ACE ${String.fromCharCode(65 + c.ace)} / Slot ${c.slot + 1}
+                 ${c.spool_name ? "— " + c.spool_name : ""}
+               </button>`
+            ).join("")}
+          </div>`
+        : ""}
+      <div class="fix-actions">
+        ${hasSmartSwap
+          ? `<button class="fix-smartswap-btn ghost-btn" data-tool="${idx}"
+               title="Use smart-swap to load a matching spool">
+               Load matching spool…
+             </button>`
+          : `<span class="fix-hint">Smart-swap not available — load via
+               ${pickerHref
+                 ? `<a href="${pickerHref}" target="_blank">FilamentHub picker</a>`
+                 : "FilamentHub picker (FILAMENTHUB_URL not configured)"}
+             </span>`}
+        ${pickerHref
+          ? `<a class="ghost-btn" href="${pickerHref}" target="_blank">
+               Bind a new spool…
+             </a>`
+          : ""}
+      </div>
+    </div>`;
+  }).join("<hr>");
+
+  modal.classList.remove("hidden");
+
+  body.querySelectorAll(".fix-candidate-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const filename = item.filename;
+      toast(`Accepting ACE ${String.fromCharCode(65 + parseInt(btn.dataset.ace))} / Slot ${parseInt(btn.dataset.slot)+1} for tool ${btn.dataset.tool}`, "info");
+      await fetch(api("api/print_queue/" + encodeURIComponent(filename) + "/revalidate"),
+        { method: "POST", headers: authHeader() });
+      await fetchPrintQueue();
+      closeFixLoadoutWizard();
+    });
+  });
+
+  body.querySelectorAll(".fix-smartswap-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const toolIdx = parseInt(btn.dataset.tool, 10);
+      const toolMeta = tools[String(toolIdx)] || {};
+      if (typeof window.initiateSmartSwap === "function") {
+        const head = toolMeta.physical_head ?? toolIdx;
+        window.initiateSmartSwap(head, null, null);
+        closeFixLoadoutWizard();
+      } else {
+        toast("Smart-swap not available. Load the spool manually via FilamentHub picker.", "error");
+      }
+    });
+  });
+}
+
+function closeFixLoadoutWizard() {
+  document.getElementById("fix-loadout-modal")?.classList.add("hidden");
 }
 
 async function fetchPrintQueue() {
@@ -2393,6 +2483,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("pq-refresh-btn")?.addEventListener("click", fetchPrintQueue);
+  document.getElementById("fix-loadout-close")?.addEventListener("click", closeFixLoadoutWizard);
 
   // Eagerly fetch per-ACE autodry state so the Diag tab has data on first
   // open even if the user hasn't touched the dropdown yet.

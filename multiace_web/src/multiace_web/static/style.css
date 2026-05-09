@@ -1451,9 +1451,17 @@ body.multiace-embed { background: transparent; }
 .chip-gray { background: #e2e3e5; color: #383d41; }
 .empty-state { padding: 32px 16px; text-align: center; color: var(--fg-muted, #888);
   font-size: 0.95em; }
-/* Fix loadout modal (T8 will fill in body content) */
+/* Fix loadout modal */
 .modal-content { background: var(--bg, #fff); border-radius: 8px; padding: 20px;
   max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
 .modal-header { display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 16px; }
 .modal-header h3 { margin: 0; }
+/* Fix loadout wizard rows (T8) */
+.fix-row { margin-bottom: 12px; }
+.fix-row-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fix-candidates { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; padding-left: 16px; }
+.fix-candidate-btn { text-align: left; padding: 4px 8px; }
+.fix-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.fix-hint { font-size: 0.85em; color: var(--fg-muted, #888); }
+.fix-smartswap-btn { padding: 4px 12px; }
