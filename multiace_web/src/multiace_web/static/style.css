@@ -1424,3 +1424,36 @@ body.multiace-embed { background: transparent; }
   font-size: .8rem;
   margin: 0;
 }
+
+/* ---- Print queue tab ---- */
+.pq-item { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+.pq-item-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.pq-filename { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pq-ts { font-size: 0.82em; color: var(--fg-muted, #888); }
+.pq-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.pq-error-banner { margin-top: 6px; padding: 6px 10px; background: var(--error-bg, #ffe0e0);
+  color: var(--error-fg, #900); border-radius: 4px; font-size: 0.88em; }
+.pq-details summary { cursor: pointer; font-size: 0.9em; color: var(--fg-muted, #666); }
+.resolution-table { width: 100%; border-collapse: collapse; font-size: 0.88em; margin-top: 6px; }
+.resolution-table th, .resolution-table td { padding: 4px 8px; text-align: left;
+  border-bottom: 1px solid var(--border); }
+.resolution-table th { font-weight: 600; background: var(--surface, #f5f5f5); }
+.color-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px;
+  vertical-align: middle; border: 1px solid #ccc; }
+.match-ok { color: #2a8; font-weight: bold; }
+.match-warn { color: #a80; font-weight: bold; }
+.match-err { color: #c00; font-weight: bold; }
+.status-chip { padding: 2px 8px; border-radius: 10px; font-size: 0.82em; font-weight: 600; }
+.chip-green { background: #d4edda; color: #155724; }
+.chip-yellow { background: #fff3cd; color: #856404; }
+.chip-orange { background: #fdebd0; color: #784212; }
+.chip-red { background: #f8d7da; color: #721c24; }
+.chip-gray { background: #e2e3e5; color: #383d41; }
+.empty-state { padding: 32px 16px; text-align: center; color: var(--fg-muted, #888);
+  font-size: 0.95em; }
+/* Fix loadout modal (T8 will fill in body content) */
+.modal-content { background: var(--bg, #fff); border-radius: 8px; padding: 20px;
+  max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+.modal-header { display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 16px; }
+.modal-header h3 { margin: 0; }

@@ -1252,6 +1252,173 @@ function renderStatusBanner() {
   }
 }
 
+// ---- Print queue tab ----
+
+let _pqData = null;       // last fetched print queue response
+let _pqPollTimer = null;
+
+function openFixLoadoutWizard(item) {
+  // T7 stub: Fix loadout wizard lands in T8.
+  toast("Fix loadout wizard coming in T8", "info");
+  console.warn("openFixLoadoutWizard not yet implemented", item);
+}
+
+async function fetchPrintQueue() {
+  try {
+    const resp = await fetch(api("api/print_queue"), { headers: authHeader() });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    _pqData = await resp.json();
+    renderPrintQueue();
+  } catch (e) {
+    console.error("fetchPrintQueue", e);
+  }
+}
+
+function _statusChip(status) {
+  const map = {
+    ready: { label: "Ready", cls: "chip-green" },
+    pending: { label: "Pending", cls: "chip-yellow" },
+    needs_loadout: { label: "Needs loadout", cls: "chip-orange" },
+    error: { label: "Error", cls: "chip-red" },
+  };
+  const info = map[status] || { label: status, cls: "chip-gray" };
+  return `<span class="status-chip ${info.cls}">${info.label}</span>`;
+}
+
+function _matchIcon(quality) {
+  if (quality === "exact") return '<span class="match-ok" title="Matched">&#10003;</span>';
+  if (quality === "ambiguous") return '<span class="match-warn" title="Ambiguous">?</span>';
+  return '<span class="match-err" title="No match">!</span>';
+}
+
+function _colorSwatch(hex) {
+  const clean = (hex || "").replace("#", "");
+  return `<span class="color-swatch" style="background:#${clean}" title="#${clean}"></span>`;
+}
+
+function _renderResolutionTable(tools) {
+  const rows = Object.entries(tools).map(([idx, t]) => {
+    const resolved = t.resolved;
+    const aceLabel = resolved
+      ? `ACE ${String.fromCharCode(65 + resolved.ace)} / Slot ${resolved.slot + 1}`
+      : "—";
+    const spool = t.candidates && t.candidates.length === 1
+      ? (t.candidates[0].spool_name || "—")
+      : (resolved ? (t.candidates.find(c => c.spool_id === resolved.spool_id) || {}).spool_name || "—" : "—");
+    return `<tr>
+      <td>${idx}</td>
+      <td>${_colorSwatch(t.color)} ${t.type}</td>
+      <td>${aceLabel}</td>
+      <td>${spool}</td>
+      <td>${_matchIcon(t.match_quality)}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="resolution-table">
+    <thead><tr><th>Tool</th><th>Filament</th><th>Slot</th><th>Spool</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderPrintQueue() {
+  const listEl = document.getElementById("print-queue-list");
+  const emptyEl = document.getElementById("print-queue-empty");
+  if (!listEl) return;
+  if (!_pqData || !_pqData.items || _pqData.items.length === 0) {
+    listEl.innerHTML = "";
+    emptyEl && emptyEl.classList.remove("hidden");
+    return;
+  }
+  emptyEl && emptyEl.classList.add("hidden");
+
+  listEl.innerHTML = _pqData.items.map((item, i) => {
+    const ts = item.generated_at
+      ? new Date(item.generated_at).toLocaleString()
+      : "unknown";
+    const isReady = item.status === "ready";
+    return `<div class="pq-item" data-index="${i}">
+      <div class="pq-item-header">
+        <span class="pq-filename">${item.filename}</span>
+        <span class="pq-ts">${ts}</span>
+        ${_statusChip(item.status)}
+      </div>
+      <details class="pq-details">
+        <summary>Resolution table (${Object.keys(item.tools || {}).length} tools,
+          ${(item.swaps || []).length} swap(s))</summary>
+        ${_renderResolutionTable(item.tools || {})}
+      </details>
+      <div class="pq-actions">
+        <button class="primary pq-print-btn" data-filename="${item.filename}"
+          ${isReady ? "" : "disabled"} title="${isReady ? "Start print" : "Resolve all tools first"}">
+          Print
+        </button>
+        <button class="pq-fix-btn" data-index="${i}"
+          ${item.status === "ready" ? "disabled" : ""}>
+          Fix loadout
+        </button>
+        <button class="pq-revalidate-btn" data-filename="${item.filename}">
+          Re&#8209;validate
+        </button>
+      </div>
+      ${item.status === "error" ? `<div class="pq-error-banner">
+        Error: ${item.reason || "unknown"}
+        ${item.errors && item.errors.length ? " — " + item.errors[0] : ""}
+      </div>` : ""}
+    </div>`;
+  }).join("");
+
+  // Wire Print buttons
+  // NOTE: /api/print_queue/<filename>/print endpoint is not yet implemented (T5 gap).
+  // The fetch will 404; the toast error handler catches it gracefully.
+  listEl.querySelectorAll(".pq-print-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const filename = btn.dataset.filename;
+      try {
+        await fetch(api("api/print_queue/" + encodeURIComponent(filename) + "/print"),
+          { method: "POST", headers: authHeader() });
+        toast(`Print started: ${filename}`, "success");
+      } catch (e) {
+        toast(`Print failed: ${e.message}`, "error");
+      }
+    });
+  });
+
+  // Wire Re-validate buttons
+  listEl.querySelectorAll(".pq-revalidate-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const filename = btn.dataset.filename;
+      btn.disabled = true;
+      btn.textContent = "Validating…";
+      try {
+        const resp = await fetch(
+          api("api/print_queue/" + encodeURIComponent(filename) + "/revalidate"),
+          { method: "POST", headers: authHeader() }
+        );
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => ({}));
+          toast(`Re-validate failed: ${body.detail || resp.statusText}`, "error");
+        } else {
+          toast("Re-validated — refreshing…", "success");
+          await fetchPrintQueue();
+        }
+      } catch (e) {
+        toast(`Re-validate error: ${e.message}`, "error");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Re‑validate";
+      }
+    });
+  });
+
+  // Wire Fix loadout buttons
+  listEl.querySelectorAll(".pq-fix-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.dataset.index, 10);
+      const item = _pqData.items[idx];
+      openFixLoadoutWizard(item);
+    });
+  });
+}
+
 // Render functions are declared in subsequent tasks; placeholder for now
 function renderAll() {
   renderTopbar();
@@ -2212,6 +2379,21 @@ document.addEventListener("DOMContentLoaded", () => {
   connectWS();
   startPrintPolling();
   startAutodryPolling();
+
+  // Print queue tab — start poll when tab is active
+  document.querySelectorAll(".tab").forEach(btn => {
+    if (btn.dataset.view === "print-queue") {
+      btn.addEventListener("click", () => {
+        fetchPrintQueue();
+        if (!_pqPollTimer) {
+          _pqPollTimer = setInterval(fetchPrintQueue, 10000);
+        }
+      });
+    }
+  });
+
+  document.getElementById("pq-refresh-btn")?.addEventListener("click", fetchPrintQueue);
+
   // Eagerly fetch per-ACE autodry state so the Diag tab has data on first
   // open even if the user hasn't touched the dropdown yet.
   fetchDiagAceState(window._diagAce ?? 0).then(() => renderDiag());
