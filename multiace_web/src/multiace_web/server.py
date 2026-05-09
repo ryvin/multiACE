@@ -933,6 +933,105 @@ def create_app(
             "filamenthub_printer_id": os.environ.get("FILAMENTHUB_PRINTER_ID", "").strip() or "u1-1",
         }
 
+    # Store the module-level revalidate function on app.state so tests can
+    # monkeypatch it via app.state._revalidate_impl without breaking the
+    # module-level monkeypatch path used by test_revalidate_returns_updated_sidecar.
+    if not hasattr(app.state, "_revalidate_impl"):
+        app.state._revalidate_impl = _revalidate_gcode
+
+    @app.get("/api/print_queue")
+    async def get_print_queue(request: Request) -> dict:
+        """List gcode files that have multiace sidecars, sorted by generated_at desc."""
+        gcode_dir: Path = getattr(
+            request.app.state, "gcode_dir",
+            Path(_env("MULTIACE_GCODE_DIR", "/home/lava/printer_data/gcodes")),
+        )
+        try:
+            moonraker_client: MoonrakerClient = request.app.state.moonraker
+            file_list = await moonraker_client.list_gcode_files()
+        except MoonrakerError as e:
+            raise HTTPException(502, str(e))
+
+        sidecar_names = {f["filename"] for f in file_list
+                         if f["filename"].endswith(".multiace.json")}
+        items = []
+        for f in file_list:
+            sidecar_name = f["filename"] + ".multiace.json"
+            if sidecar_name not in sidecar_names:
+                continue
+            sidecar_path = gcode_dir / sidecar_name
+            if not sidecar_path.exists():
+                continue
+            try:
+                sidecar = json.loads(sidecar_path.read_text())
+            except Exception:
+                continue
+            items.append({
+                "filename": f["filename"],
+                "status": sidecar.get("status"),
+                "reason": sidecar.get("reason"),
+                "generated_at": sidecar.get("generated_at"),
+                "tools": sidecar.get("tools", {}),
+                "swaps": sidecar.get("swaps", []),
+                "errors": sidecar.get("errors", []),
+            })
+
+        items.sort(key=lambda x: x.get("generated_at") or "", reverse=True)
+        return {"items": items}
+
+    @app.post("/api/print_queue/{gcode_filename:path}/revalidate")
+    async def revalidate_gcode(request: Request, gcode_filename: str) -> dict:
+        """Re-run match+plan against current slot bindings for an existing gcode+sidecar."""
+        # Safety check: refuse if a swap is in progress
+        s = request.app.state.state
+        if getattr(s, "swap_in_progress", False):
+            raise HTTPException(409, "swap in progress — wait for it to finish before re-validating")
+
+        gcode_dir: Path = getattr(
+            request.app.state, "gcode_dir",
+            Path(_env("MULTIACE_GCODE_DIR", "/home/lava/printer_data/gcodes")),
+        )
+        gcode_path = gcode_dir / gcode_filename
+        sidecar_path = Path(str(gcode_path) + ".multiace.json")
+        if not sidecar_path.exists():
+            raise HTTPException(404, f"no sidecar for {gcode_filename}")
+
+        # Build slots_resp from current in-process state (mirrors /api/slots logic)
+        state_obj = request.app.state.state
+        spool_cache = getattr(request.app.state, "spool_cache", {}) or {}
+        gate_status = list(getattr(state_obj, "gate_status", []) or [])
+        active = int(getattr(state_obj, "active_device", 0) or 0)
+        device_count = int(getattr(state_obj, "device_count", 1) or 1)
+        aces = []
+        for ace_idx in range(max(device_count, 1)):
+            slots = []
+            for slot in range(4):
+                binding = (spool_cache.get(ace_idx) or {}).get(slot)
+                slots.append({
+                    "slot": slot,
+                    "gate_status": (
+                        gate_status[slot]
+                        if ace_idx == active and slot < len(gate_status)
+                        else None
+                    ),
+                    "spool": (
+                        {
+                            "spool_id": binding.spool_id,
+                            "name": binding.name,
+                            "material": binding.material,
+                            "color": binding.color,
+                            "weight_remaining_g": binding.weight_remaining_g,
+                        }
+                        if binding else None
+                    ),
+                })
+            aces.append({"index": ace_idx, "is_active": ace_idx == active, "slots": slots})
+        slots_resp = {"aces": aces}
+
+        impl = getattr(request.app.state, "_revalidate_impl", _revalidate_gcode)
+        result = await impl(gcode_path, slots_resp)
+        return result
+
     @app.get("/api/logs/{kind}")
     async def get_logs(request: Request, kind: str, lines: int = 200) -> dict:
         if kind not in ("klippy",):
@@ -982,6 +1081,55 @@ def create_app(
             return FileResponse(static_dir / "index.html")
 
     return app
+
+
+async def _revalidate_gcode(gcode_path: Path, slots_resp: dict) -> dict:
+    """Re-run match + plan against current slot bindings and rewrite the sidecar.
+
+    Imports the postprocessor at call time to avoid circular imports and to
+    allow tools/ to remain a standalone script.
+    """
+    import sys as _sys
+    import importlib
+    tools_dir = Path(__file__).resolve().parents[2] / "tools"
+    if str(tools_dir) not in _sys.path:
+        _sys.path.insert(0, str(tools_dir))
+    pp = importlib.import_module("multiace_postprocess")
+
+    lines = gcode_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    tools = pp.parse_header(lines)
+    if tools is None:
+        return {"status": "error", "reason": "no_8_tool_header", "tools": {}, "swaps": []}
+    resolutions = pp.match_tools(tools, slots_resp)
+    swaps = pp.plan_swaps(resolutions, lines)
+    new_lines = pp.rewrite_gcode(lines, resolutions, swaps)
+
+    unresolved = [r for r in resolutions if r.match_quality != "exact" and r.resolved is None]
+    ambiguous = [r for r in resolutions if r.match_quality == "ambiguous"]
+    if ambiguous:
+        status, reason = "pending", "ambiguous_match"
+    elif unresolved:
+        status, reason = "pending", "missing_bindings"
+    else:
+        status, reason = "ready", None
+
+    gcode_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    pp.write_sidecar(gcode_path, resolutions, swaps, status, reason)
+    return {
+        "status": status,
+        "reason": reason,
+        "tools": {str(r.tool.index): {
+            "type": r.tool.type,
+            "color": f"#{r.tool.color}",
+            "match_quality": r.match_quality,
+            "resolved": (
+                {"ace": r.resolved.ace, "slot": r.resolved.slot, "spool_id": r.resolved.spool_id}
+                if r.resolved else None
+            ),
+            "physical_head": r.physical_head,
+        } for r in resolutions},
+        "swaps": [{"line": s.line, "layer": s.layer, "head": s.head} for s in swaps],
+    }
 
 
 def _autodry_to_dict(p: PersistedState) -> dict:
