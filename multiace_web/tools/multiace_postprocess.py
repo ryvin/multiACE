@@ -26,6 +26,8 @@ Only stdlib is used — no pip dependencies — so the script runs in any Python
 # Copyright (C) 2026 Raul (raul@leadingbit.com)
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -85,6 +87,18 @@ class ToolResolution:
     match_quality: str  # "exact" | "ambiguous" | "none"
     candidates: list[Candidate] = field(default_factory=list)
     resolved: Optional[Candidate] = None
+    physical_head: Optional[int] = None   # set by plan_swaps
+
+
+@dataclass
+class SwapEvent:
+    line: int       # 0-based line number in gcode
+    layer: int      # current layer number (or 0 if unknown)
+    head: int       # physical head index 0-3 to evict
+    from_ace: int   # source slot of evicted filament
+    from_slot: int
+    to_ace: int     # source slot of new filament
+    to_slot: int
 
 
 # ---------------------------------------------------------------------------
@@ -228,3 +242,111 @@ def match_tools(tools: list[dict], slots_response: dict) -> list[ToolResolution]
             resolved=resolved,
         ))
     return resolutions
+
+
+# ---------------------------------------------------------------------------
+# Swap planner
+# ---------------------------------------------------------------------------
+
+_LAYER_RE = re.compile(r"^\s*;\s*-+\s*layer\s+(\d+)\s*-+", re.IGNORECASE)
+_TOOL_RE = re.compile(r"^\s*T(\d+)\s*(?:;.*)?$")
+
+
+def plan_swaps(resolutions: list[ToolResolution], gcode_lines: list[str]) -> list[SwapEvent]:
+    """Greedy swap planner: minimize number of physical-head reassignments.
+
+    Algorithm:
+      1. Assign the first 4 distinct resolved tools (in order of first use in
+         gcode) to physical heads 0-3.
+      2. Walk gcode line-by-line; when a Tn is encountered:
+         - If the tool's filament is already on a head → use that head (no swap).
+         - Else find the "best" head to evict (greedy: first head whose tool
+           won't appear again in the remaining gcode). Assign new tool to that
+           head → one swap event.
+      3. Unresolved tools (match_quality != "exact" and no resolved) are skipped.
+    """
+    resolved: dict[int, Candidate] = {}
+    for r in resolutions:
+        if r.resolved is not None:
+            resolved[r.tool.index] = r.resolved
+
+    appearance_order: list[int] = []
+    seen: set[int] = set()
+    future_uses: dict[int, list[int]] = {}
+    for lineno, line in enumerate(gcode_lines):
+        m = _TOOL_RE.match(line)
+        if m:
+            t = int(m.group(1))
+            if t not in seen:
+                seen.add(t)
+                if t in resolved:
+                    appearance_order.append(t)
+            future_uses.setdefault(t, []).append(lineno)
+
+    head_to_tool: dict[int, Optional[int]] = {0: None, 1: None, 2: None, 3: None}
+    tool_to_head: dict[int, int] = {}
+    next_head = 0
+    for t in appearance_order[:4]:
+        if t not in tool_to_head:
+            head_to_tool[next_head] = t
+            tool_to_head[t] = next_head
+            next_head += 1
+
+    swaps: list[SwapEvent] = []
+    current_layer = 0
+
+    for lineno, line in enumerate(gcode_lines):
+        lm = _LAYER_RE.match(line)
+        if lm:
+            current_layer = int(lm.group(1))
+            continue
+
+        tm = _TOOL_RE.match(line)
+        if not tm:
+            continue
+        t = int(tm.group(1))
+        if t not in resolved:
+            continue
+
+        if t in tool_to_head:
+            resolutions[t].physical_head = tool_to_head[t]
+            continue
+
+        remaining_uses: dict[int, int] = {}
+        for h, ht in head_to_tool.items():
+            if ht is None:
+                remaining_uses[h] = -1
+                continue
+            uses = [u for u in future_uses.get(ht, []) if u > lineno]
+            remaining_uses[h] = min(uses) if uses else -1
+
+        evict_head = min(
+            remaining_uses,
+            key=lambda h: (remaining_uses[h] != -1, remaining_uses[h], h)
+        )
+
+        old_tool = head_to_tool[evict_head]
+        old_cand = resolved[old_tool] if old_tool is not None and old_tool in resolved else None
+        new_cand = resolved[t]
+
+        swaps.append(SwapEvent(
+            line=lineno,
+            layer=current_layer,
+            head=evict_head,
+            from_ace=old_cand.ace if old_cand else 0,
+            from_slot=old_cand.slot if old_cand else 0,
+            to_ace=new_cand.ace,
+            to_slot=new_cand.slot,
+        ))
+
+        if old_tool is not None and old_tool in tool_to_head:
+            del tool_to_head[old_tool]
+        head_to_tool[evict_head] = t
+        tool_to_head[t] = evict_head
+        resolutions[t].physical_head = evict_head
+
+    for h, t in head_to_tool.items():
+        if t is not None and t < len(resolutions) and resolutions[t].physical_head is None:
+            resolutions[t].physical_head = h
+
+    return swaps
