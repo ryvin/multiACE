@@ -1,0 +1,16 @@
+{
+  "name": "Snapmaker U1 + multiACE 8-color",
+  "version": "1.0.0",
+  "description": "8-extruder virtual profile for multiACE post-processor. Based on stock Snapmaker U1 profile. Use only with multiace_postprocess.py post-script.",
+  "inherits": "Snapmaker U1",
+  "extruders_count": 8,
+  "machine_custom_gcodes_toolchange_start_gcode": "",
+  "machine_custom_gcodes_toolchange_end_gcode": "",
+  "printable_area": [[0,0],[350,0],[350,350],[0,350]],
+  "extruder_colour": [
+    "#FF0000","#FFFFFF","#0080FF","#FFFF00",
+    "#000000","#00FFFF","#FF00FF","#80FF00"
+  ],
+  "post_process": "python3 /path/to/multiace_postprocess.py",
+  "_note": "Replace /path/to/multiace_postprocess.py with the absolute path on your machine. Set DAVINCI_U1_HOST env var to your printer IP before slicing."
+}

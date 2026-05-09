@@ -82,3 +82,16 @@ class MoonrakerClient:
             raise MoonrakerError(f"get_logs {kind} failed: {e}") from e
         text = resp.text
         return text.splitlines()[-lines:]
+
+    async def list_gcode_files(self) -> list[dict]:
+        """GET /server/files/list?root=gcodes → list of file metadata dicts.
+
+        Each dict has at minimum: filename (str), modified (float), size (int).
+        Returns empty list on error.
+        """
+        try:
+            resp = await self._client.get("/server/files/list?root=gcodes")
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            raise MoonrakerError(f"list_gcode_files failed: {e}") from e
+        return resp.json().get("result", [])

@@ -44,6 +44,7 @@
     <button data-view="config" class="tab">Config</button>
     <button data-view="diag" class="tab">Diag</button>
     <button data-view="hardware" class="tab">Hardware</button>
+    <button data-view="print-queue" class="tab">Print queue</button>
     <button id="help-btn" class="tab help-btn" type="button" aria-label="Help" title="What does each control do?">?</button>
   </nav>
 
@@ -169,6 +170,30 @@
     <section data-view="hardware" class="view">
       <div id="htw-banner" class="htw-banner hidden"></div>
       <div id="htw-root" class="htw-root"></div>
+    </section>
+
+    <section data-view="print-queue" class="view">
+      <div id="print-queue-toolbar" class="section-header">
+        <span class="section-title">Print queue</span>
+        <button id="pq-refresh-btn" class="ghost-btn" title="Refresh list">&#8635;</button>
+      </div>
+      <div id="print-queue-empty" class="empty-state hidden">
+        No gcode files with multiACE sidecars found.<br>
+        Slice a print with the multiACE 8-color profile to get started.
+      </div>
+      <div id="print-queue-list"></div>
+
+      <!-- Fix loadout wizard modal -->
+      <div id="fix-loadout-modal" class="modal hidden" role="dialog" aria-modal="true"
+           aria-labelledby="fix-loadout-title">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3 id="fix-loadout-title">Fix loadout</h3>
+            <button id="fix-loadout-close" class="ghost-btn" aria-label="Close">&#xd7;</button>
+          </div>
+          <div id="fix-loadout-body"></div>
+        </div>
+      </div>
     </section>
   </main>
 
