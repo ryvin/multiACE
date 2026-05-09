@@ -1598,14 +1598,109 @@ function buildFilamentHubPickerUrl(ace, slot) {
 }
 
 /**
- * initiateSmartSwap (T4 stub — full implementation in T5).
- * For now: directly issue ACE_LOAD_HEAD without any unload/park dispatch.
- * Spec calls for: empty → direct, loaded_same_ace → unload-then-load, etc.
+ * initiateSmartSwap — execute a load to targetHead from (targetAce, targetSlot),
+ * branching per the head-state matrix.
+ *
+ * Head-state matrix:
+ *   empty            → direct ACE_LOAD_HEAD, no toast
+ *   loaded_same_ace  → toast + ACEC__Unload_T<n> → ACE_LOAD_HEAD
+ *   loaded_cross_ace → if swapParkAvailable: toast + ACE_PARK_HEAD → ACE_LOAD_HEAD
+ *                      else: same as loaded_same_ace (fallback)
+ *   parked           → conservative v1: same as loaded_same_ace branch
+ *   bookkeeping_empty→ treated as loaded
  */
-async function initiateSmartSwap(head, ace, slotIdx, headClass) {
-  // T4 stub: ignore headClass; just issue the load.
-  // T5 will: dispatch via head-state matrix, show swap-confirm toast, manage smartSwapPending lock.
-  await sendCommand(`ACE_LOAD_HEAD HEAD=${head} ACE=${ace} SLOT=${slotIdx}`);
+async function initiateSmartSwap(targetHead, targetAce, targetSlot, headState) {
+  const gate = chevronGateReason();
+  if (gate) { toast(gate, "error"); return; }
+
+  // Empty head: direct load, no toast
+  if (headState === "empty") {
+    seedSingleHeadWorkflow("load_single", targetHead, `Load → ${tName(targetHead)}`);
+    const ok = await sendScript(`ACE_LOAD_HEAD HEAD=${targetHead} ACE=${targetAce} SLOT=${targetSlot}`);
+    if (!ok) {
+      for (const s of workflow.steps) {
+        if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+      }
+      renderWorkflow();
+    }
+    return;
+  }
+
+  // Build toast text for displacement swap
+  const src = state.head_source[targetHead];
+  const srcAceLetter = String.fromCharCode(65 + src.ace);
+  const srcSlotLabel = String(src.slot + 1);
+  const dstAceLetter = String.fromCharCode(65 + targetAce);
+  const dstSlotLabel = String(targetSlot + 1);
+  const swapLabel = `${srcAceLetter}${srcSlotLabel} → ${dstAceLetter}${dstSlotLabel}`;
+
+  const usePark = state.swapParkAvailable && headState === "loaded_cross_ace";
+  const timeEst = usePark ? "~4 min" : "~6 min";
+  const toastText = headState === "parked"
+    ? `Swap (parked ${srcAceLetter}${srcSlotLabel}) → ${dstAceLetter}${dstSlotLabel} (${timeEst})`
+    : `Swap ${swapLabel} (${timeEst})`;
+
+  _pendingSwapConfirm = showSwapConfirm({
+    text: toastText,
+    onConfirm: () => {
+      _pendingSwapConfirm = null;
+      _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark, 0);
+    },
+    onCancel: () => {
+      _pendingSwapConfirm = null;
+      toast(`Swap ${swapLabel} cancelled`, "info");
+    },
+  });
+}
+
+async function _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark, failCount) {
+  state.smartSwapPending = { head: targetHead, leg: 1, startedAt: _now() };
+
+  let leg1Ok;
+  if (usePark) {
+    leg1Ok = await sendScript(`ACE_PARK_HEAD HEAD=${targetHead}`);
+  } else {
+    seedSingleHeadWorkflow("unload_single", targetHead, `Unload ${tName(targetHead)}`);
+    leg1Ok = await sendCommand(`ACEC__Unload_T${targetHead}`);
+    if (!leg1Ok) {
+      for (const s of workflow.steps) {
+        if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+      }
+      renderWorkflow();
+    }
+  }
+
+  if (!leg1Ok) {
+    const newFailCount = failCount + 1;
+    showSwapFailure(targetHead, 1,
+      () => _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark, newFailCount),
+      newFailCount
+    );
+    return;
+  }
+
+  _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, 0);
+}
+
+async function _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, failCount) {
+  state.smartSwapPending = { head: targetHead, leg: 2, startedAt: _now() };
+  seedSingleHeadWorkflow("load_single", targetHead, `Load → ${tName(targetHead)}`);
+  const leg2Ok = await sendScript(`ACE_LOAD_HEAD HEAD=${targetHead} ACE=${targetAce} SLOT=${targetSlot}`);
+
+  if (!leg2Ok) {
+    for (const s of workflow.steps) {
+      if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+    }
+    renderWorkflow();
+    const newFailCount = failCount + 1;
+    showSwapFailure(targetHead, 2,
+      () => _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, newFailCount),
+      newFailCount
+    );
+    return;
+  }
+
+  state.smartSwapPending = null;
 }
 
 function openHeadTargetMenu(anchor, ace, slotIdx) {
