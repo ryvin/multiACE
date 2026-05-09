@@ -51,7 +51,7 @@ class StatusPoller:
         self._stop.set()
 
     async def _probe_swap_park(self, client: httpx.AsyncClient) -> bool:
-        """Return True if ACE_PARK_HEAD convenience macro is registered in Klipper."""
+        """Return True if ACEC__Park_T0 gcode_macro is registered in Klipper."""
         try:
             r = await client.get(
                 f"{self._moonraker._base_url}/printer/objects/list",

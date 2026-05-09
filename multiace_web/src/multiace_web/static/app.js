@@ -22,6 +22,8 @@ const state = {
 const events = []; // last 200 activity entries
 const ws = { sock: null, retry: 0, alive: false };
 
+let _pendingSwapConfirm = null;  // { cancel() } handle from showSwapConfirm, or null
+
 const TOKEN = localStorage.getItem("multiace_token") || null;
 const authHeader = () => (TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {});
 
@@ -314,6 +316,54 @@ function showSwapConfirm({ text, onConfirm, onCancel }) {
   }, 1000);
 
   return { cancel: doCancel };
+}
+
+/**
+ * Show a failure toast for a smart-swap leg.
+ *
+ * Presents two actions to the user:
+ *   Retry   — removes the toast and re-invokes retryFn.
+ *   Dismiss — clears state.smartSwapPending; on the second+ consecutive
+ *             failure also opens the Help modal so the user sees hints.
+ *
+ * @param {number} head             — 0-based head index
+ * @param {number} leg              — swap leg number (1 or 2)
+ * @param {Function} retryFn        — zero-arg function to retry the operation
+ * @param {number} consecutiveFails — how many failures in a row (default 1)
+ */
+function showSwapFailure(head, leg, retryFn, consecutiveFails = 1) {
+  const el = document.createElement("div");
+  el.className = "toast error swap-failure-toast";
+
+  const msg = document.createElement("span");
+  msg.className = "swap-failure-msg";
+  msg.textContent = `Swap ${tName(head)} leg ${leg} failed.`;
+  el.appendChild(msg);
+
+  const retryBtn = document.createElement("button");
+  retryBtn.className = "swap-confirm-cancel";
+  retryBtn.textContent = "Retry";
+  el.appendChild(retryBtn);
+
+  const dismissBtn = document.createElement("button");
+  dismissBtn.className = "swap-confirm-cancel";
+  dismissBtn.textContent = consecutiveFails >= 2 ? "Dismiss + hints" : "Dismiss";
+  el.appendChild(dismissBtn);
+
+  document.getElementById("toast-container").appendChild(el);
+
+  retryBtn.addEventListener("click", () => {
+    el.remove();
+    retryFn();
+  });
+
+  dismissBtn.addEventListener("click", () => {
+    el.remove();
+    state.smartSwapPending = null;
+    if (consecutiveFails >= 2) {
+      openHelp();
+    }
+  });
 }
 
 // ---- Help content & modal ----
@@ -1481,6 +1531,65 @@ function lowestFreeHead() {
   return null;
 }
 
+/**
+ * Classify a toolhead's current state relative to an optional target ACE.
+ *
+ * Returns one of:
+ *   "empty"            — no head_source entry (head is unregistered)
+ *   "parked"           — source.parked === true (filament retracted to ACE)
+ *   "bookkeeping_empty" — source present but no physical filament sensor signal
+ *   "loaded_cross_ace" — filament is from a different ACE than targetAce
+ *   "loaded_same_ace"  — filament is from targetAce (or no targetAce specified)
+ *
+ * @param {number} headIdx  — 0-based head index
+ * @param {number|null} targetAce — 0-based ACE index to compare against, or null
+ * @returns {string} classification string
+ */
+function classifyHeadState(headIdx, targetAce = null) {
+  const src = state.head_source[headIdx];
+  const sensor = !!state.sensors[headIdx];
+
+  if (!src) {
+    return "empty";
+  }
+  if (src.parked === true) {
+    return "parked";
+  }
+  if (!sensor) {
+    return "bookkeeping_empty";
+  }
+  if (targetAce !== null && src.ace !== targetAce) {
+    return "loaded_cross_ace";
+  }
+  return "loaded_same_ace";
+}
+
+/**
+ * Return a human-readable reason why chevron actions should be disabled,
+ * or null if actions are permitted.
+ *
+ * Priority order:
+ *   1. Print in progress or paused — no operations allowed.
+ *   2. A swap is already in progress (firmware is working).
+ *   3. A smart-swap leg is pending in the UI state machine.
+ *
+ * @returns {string|null}
+ */
+function chevronGateReason() {
+  const ps = printState.state;
+  if (ps === "printing" || ps === "paused") {
+    return `Print ${ps} — actions disabled`;
+  }
+  if (state.swap_in_progress) {
+    return "Swap in progress — wait for completion";
+  }
+  if (state.smartSwapPending !== null) {
+    const p = state.smartSwapPending;
+    return `Smart-swap pending on ${tName(p.head)} leg ${p.leg} — wait for completion`;
+  }
+  return null;
+}
+
 function buildFilamentHubPickerUrl(ace, slot) {
   const base = window.MULTIACE_FH_URL;
   if (!base) return null;
@@ -2213,6 +2322,11 @@ document.addEventListener("click", async (ev) => {
 
 // View switching (tabs)
 function setView(name) {
+  // Abort any pending swap-confirm toast when the user navigates away.
+  if (_pendingSwapConfirm) {
+    _pendingSwapConfirm.cancel();
+    _pendingSwapConfirm = null;
+  }
   for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.toggle("active", tab.dataset.view === name);
   }
