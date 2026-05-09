@@ -67,7 +67,10 @@ multiace_postprocess.py <gcode_path>
    ```
    Parse into `tools[i] = {type, color_hex_normalized}` (lowercase, leading `#` stripped if needed, normalized to 6-hex form).
 
-2. Query `http://<MULTIACE_HOST>/multiace/api/state` (web's existing `/api/state`) for `device_count` + per-slot bindings (the web's state model already merges Spoolman bindings into the slot data via SpoolmanClient — verify by reading current state schema).
+2. Query the multiACE web for slot bindings:
+   - `http://<MULTIACE_HOST>/multiace/api/state` for `device_count` + `head_source`
+   - `http://<MULTIACE_HOST>/multiace/api/slots` for the per-slot Spoolman binding metadata (spool name, type, color)
+   The state endpoint does NOT carry spool metadata — bindings live in the separate `/api/slots` endpoint backed by `app.state.spool_cache`. Both are needed for matching.
 
 3. **Auto-match each tool 0–7** against bindings:
    - Iterate over (ace, slot) pairs with bindings; collect candidates whose `(type, color_hex)` matches tool's metadata
