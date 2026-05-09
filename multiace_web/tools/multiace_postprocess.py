@@ -95,7 +95,7 @@ class SwapEvent:
     line: int       # 0-based line number in gcode
     layer: int      # current layer number (or 0 if unknown)
     head: int       # physical head index 0-3 to evict
-    from_ace: int   # source slot of evicted filament
+    from_ace: int   # ACE index of evicted filament
     from_slot: int
     to_ace: int     # source slot of new filament
     to_slot: int
@@ -309,7 +309,8 @@ def plan_swaps(resolutions: list[ToolResolution], gcode_lines: list[str]) -> lis
             continue
 
         if t in tool_to_head:
-            resolutions[t].physical_head = tool_to_head[t]
+            if t < len(resolutions):
+                resolutions[t].physical_head = tool_to_head[t]
             continue
 
         remaining_uses: dict[int, int] = {}
@@ -322,7 +323,11 @@ def plan_swaps(resolutions: list[ToolResolution], gcode_lines: list[str]) -> lis
 
         evict_head = min(
             remaining_uses,
-            key=lambda h: (remaining_uses[h] != -1, remaining_uses[h], h)
+            key=lambda h: (
+                remaining_uses[h] != -1,                               # free heads first
+                -remaining_uses[h] if remaining_uses[h] != -1 else 0,  # then largest next-use line wins (furthest future)
+                h,                                                      # tiebreak by head index
+            )
         )
 
         old_tool = head_to_tool[evict_head]
@@ -343,7 +348,8 @@ def plan_swaps(resolutions: list[ToolResolution], gcode_lines: list[str]) -> lis
             del tool_to_head[old_tool]
         head_to_tool[evict_head] = t
         tool_to_head[t] = evict_head
-        resolutions[t].physical_head = evict_head
+        if t < len(resolutions):
+            resolutions[t].physical_head = evict_head
 
     for h, t in head_to_tool.items():
         if t is not None and t < len(resolutions) and resolutions[t].physical_head is None:
