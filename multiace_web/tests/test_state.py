@@ -118,3 +118,25 @@ def test_load_head_clears_matching_last_error():
         "sensors": {"0": False, "1": True, "2": False, "3": False},
     })
     assert state.last_error is None
+
+
+def test_head_source_parked_field_round_trips():
+    """parked:True on head_source must survive apply_event → serialise."""
+    state = CurrentState()
+    state.apply_event({
+        "action": "PARK_HEAD",
+        "params": {"head": 0, "ace": 0, "slot": 0},
+        "active_device": 0,
+        "connected": True,
+        "swap_in_progress": False,
+        "gate_status": [1, 1, 1, 1],
+        "head_source": {
+            "0": {"ace": 0, "slot": 0, "type": "PLA", "color": "ff0000", "parked": True},
+            "1": None, "2": None, "3": None,
+        },
+        "sensors": {"0": False, "1": False, "2": False, "3": False},
+    })
+    assert state.head_source[0] is not None
+    assert state.head_source[0].get("parked") is True
+    payload = state.to_dict()
+    assert payload["head_source"][0]["parked"] is True

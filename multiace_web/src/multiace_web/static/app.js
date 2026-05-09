@@ -15,9 +15,14 @@ const state = {
   print_task_config: {},
   spool_cache: {},
   last_error: null,
+  // --- Operations (smart-swap) ---
+  swapParkAvailable: false,   // cached: ACE_PARK_HEAD firmware verb detected
+  smartSwapPending: null,     // {head, leg, startedAt} | null — cross-leg UI lock
 };
 const events = []; // last 200 activity entries
 const ws = { sock: null, retry: 0, alive: false };
+
+let _pendingSwapConfirm = null;  // { cancel() } handle from showSwapConfirm, or null
 
 const TOKEN = localStorage.getItem("multiace_token") || null;
 const authHeader = () => (TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {});
@@ -46,6 +51,10 @@ async function fetchState() {
     if (!resp.ok) throw new Error(`status ${resp.status}`);
     const body = await resp.json();
     Object.assign(state, body);
+    // Map snake_case capability flag to camelCase JS field.
+    if (typeof body.swap_park_available === "boolean") {
+      state.swapParkAvailable = body.swap_park_available;
+    }
     renderAll();
   } catch (e) {
     console.error("fetchState", e);
@@ -92,6 +101,10 @@ function connectWS() {
     try { msg = JSON.parse(ev.data); } catch (_) { return; }
     if (msg.type === "state") {
       Object.assign(state, msg.payload);
+      // Map snake_case capability flag to camelCase JS field.
+      if (typeof msg.payload.swap_park_available === "boolean") {
+        state.swapParkAvailable = msg.payload.swap_park_available;
+      }
       renderAll();
     } else if (msg.type === "event") {
       const ev = { id: msg.id, ts: msg.ts, ...msg.payload };
@@ -231,6 +244,126 @@ function confirmDialog(text) {
     }
     document.getElementById("confirm-ok").addEventListener("click", ok);
     document.getElementById("confirm-cancel").addEventListener("click", cancel);
+  });
+}
+
+function showSwapConfirm({ text, onConfirm, onCancel }) {
+  const el = document.createElement("div");
+  el.className = "toast swap-confirm-toast";
+  const msgSpan = document.createElement("span");
+  msgSpan.className = "swap-confirm-msg";
+  el.appendChild(msgSpan);
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "swap-confirm-cancel";
+  cancelBtn.textContent = "Cancel";
+  el.appendChild(cancelBtn);
+  document.getElementById("toast-container").appendChild(el);
+
+  let remaining = 3;
+  let done = false;
+  let intervalId = null;
+  let hiddenTimer = null;
+
+  function updateLabel() {
+    msgSpan.textContent = `${text} — Cancel (${remaining}…)`;
+  }
+  updateLabel();
+
+  function teardown() {
+    if (intervalId) { clearInterval(intervalId); intervalId = null; }
+    if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+    document.removeEventListener("visibilitychange", onVis);
+    window.removeEventListener("beforeunload", onUnload);
+    el.remove();
+  }
+
+  function doCancel() {
+    if (done) return;
+    done = true;
+    teardown();
+    onCancel();
+  }
+
+  function doConfirm() {
+    if (done) return;
+    done = true;
+    teardown();
+    toast(`${text} — swap in progress`, "info");
+    onConfirm();
+  }
+
+  cancelBtn.addEventListener("click", doCancel);
+
+  const onUnload = () => doCancel();
+  window.addEventListener("beforeunload", onUnload, { once: true });
+
+  const onVis = () => {
+    if (document.hidden) {
+      hiddenTimer = setTimeout(doCancel, 2000);
+    } else {
+      if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+    }
+  };
+  document.addEventListener("visibilitychange", onVis);
+
+  intervalId = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      doConfirm();
+    } else {
+      updateLabel();
+    }
+  }, 1000);
+
+  return { cancel: doCancel };
+}
+
+/**
+ * Show a failure toast for a smart-swap leg.
+ *
+ * Presents two actions to the user:
+ *   Retry   — removes the toast and re-invokes retryFn.
+ *   Dismiss — clears state.smartSwapPending; on the second+ consecutive
+ *             failure also opens the Help modal so the user sees hints.
+ *
+ * @param {number} head             — 0-based head index
+ * @param {number} leg              — swap leg number (1 or 2)
+ * @param {Function} retryFn        — zero-arg function to retry the operation
+ * @param {number} consecutiveFails — how many failures in a row (default 1)
+ */
+function showSwapFailure(head, leg, retryFn, consecutiveFails = 1) {
+  const el = document.createElement("div");
+  el.className = "toast error swap-failure-toast";
+
+  const msg = document.createElement("span");
+  msg.className = "swap-failure-msg";
+  msg.textContent = `Swap ${tName(head)} leg ${leg} failed.`;
+  el.appendChild(msg);
+
+  const retryBtn = document.createElement("button");
+  retryBtn.className = "swap-confirm-cancel";
+  retryBtn.textContent = "Retry";
+  el.appendChild(retryBtn);
+
+  const dismissBtn = document.createElement("button");
+  dismissBtn.className = "swap-confirm-cancel";
+  dismissBtn.textContent = consecutiveFails >= 2 ? "Dismiss + hints" : "Dismiss";
+  el.appendChild(dismissBtn);
+
+  document.getElementById("toast-container").appendChild(el);
+
+  retryBtn.addEventListener("click", () => {
+    el.remove();
+    retryFn();
+  });
+
+  dismissBtn.addEventListener("click", () => {
+    el.remove();
+    state.smartSwapPending = null;
+    renderStatusBanner();
+    if (consecutiveFails >= 2) {
+      openHelp();
+    }
   });
 }
 
@@ -1222,9 +1355,13 @@ function renderStatusBanner() {
     msg.textContent = " " + (exc.message || `code ${exc.code}`);
     return;
   }
-  if (state.swap_in_progress || (workflow.active && !workflow.ended_at)) {
+  if (state.swap_in_progress || state.smartSwapPending || (workflow.active && !workflow.ended_at)) {
     banner.classList.remove("hidden"); banner.classList.add("warn");
-    if (workflow.active) {
+    if (state.smartSwapPending) {
+      const p = state.smartSwapPending;
+      setEl(banner, "strong", { textContent: `Smart-swap ${tName(p.head)} in progress` });
+      setEl(banner, "span", { textContent: ` — leg ${p.leg} of 2. All chevron menus locked.` });
+    } else if (workflow.active) {
       const cur = workflow.current_idx != null ? workflow.steps[workflow.current_idx] : null;
       const total = workflow.steps.length;
       const done = workflow.steps.filter(s => s.status === "done").length;
@@ -1399,6 +1536,65 @@ function lowestFreeHead() {
   return null;
 }
 
+/**
+ * Classify a toolhead's current state relative to an optional target ACE.
+ *
+ * Returns one of:
+ *   "empty"            — no head_source entry (head is unregistered)
+ *   "parked"           — source.parked === true (filament retracted to ACE)
+ *   "bookkeeping_empty" — source present but no physical filament sensor signal
+ *   "loaded_cross_ace" — filament is from a different ACE than targetAce
+ *   "loaded_same_ace"  — filament is from targetAce (or no targetAce specified)
+ *
+ * @param {number} headIdx  — 0-based head index
+ * @param {number|null} targetAce — 0-based ACE index to compare against, or null
+ * @returns {string} classification string
+ */
+function classifyHeadState(headIdx, targetAce = null) {
+  const src = state.head_source[headIdx];
+  const sensor = !!state.sensors[headIdx];
+
+  if (!src) {
+    return "empty";
+  }
+  if (src.parked === true) {
+    return "parked";
+  }
+  if (!sensor) {
+    return "bookkeeping_empty";
+  }
+  if (targetAce !== null && src.ace !== targetAce) {
+    return "loaded_cross_ace";
+  }
+  return "loaded_same_ace";
+}
+
+/**
+ * Return a human-readable reason why chevron actions should be disabled,
+ * or null if actions are permitted.
+ *
+ * Priority order:
+ *   1. Print in progress or paused — no operations allowed.
+ *   2. A swap is already in progress (firmware is working).
+ *   3. A smart-swap leg is pending in the UI state machine.
+ *
+ * @returns {string|null}
+ */
+function chevronGateReason() {
+  const ps = printState.state;
+  if (ps === "printing" || ps === "paused") {
+    return `Print ${ps} — actions disabled`;
+  }
+  if (state.swap_in_progress) {
+    return "Swap in progress — wait for completion";
+  }
+  if (state.smartSwapPending !== null) {
+    const p = state.smartSwapPending;
+    return `Smart-swap pending on ${tName(p.head)} leg ${p.leg} — wait for completion`;
+  }
+  return null;
+}
+
 function buildFilamentHubPickerUrl(ace, slot) {
   const base = window.MULTIACE_FH_URL;
   if (!base) return null;
@@ -1406,33 +1602,200 @@ function buildFilamentHubPickerUrl(ace, slot) {
   return `${base.replace(/\/$/, '')}/?picker=ace&printer=${pid}&ace=${ace}&slot=${slot}`;
 }
 
-function openHeadTargetMenu(anchor, ace, slot) {
-  // Remove any existing menu first
+/**
+ * initiateSmartSwap — execute a load to targetHead from (targetAce, targetSlot),
+ * branching per the head-state matrix.
+ *
+ * Head-state matrix:
+ *   empty            → direct ACE_LOAD_HEAD, no toast
+ *   loaded_same_ace  → toast + ACEC__Unload_T<n> → ACE_LOAD_HEAD
+ *   loaded_cross_ace → if swapParkAvailable: toast + ACE_PARK_HEAD → ACE_LOAD_HEAD
+ *                      else: same as loaded_same_ace (fallback)
+ *   parked           → conservative v1: same as loaded_same_ace branch
+ *   bookkeeping_empty→ treated as loaded
+ */
+async function initiateSmartSwap(targetHead, targetAce, targetSlot, headState) {
+  const gate = chevronGateReason();
+  if (gate) { toast(gate, "error"); return; }
+
+  // Empty head: direct load, no toast
+  if (headState === "empty") {
+    seedSingleHeadWorkflow("load_single", targetHead, `Load → ${tName(targetHead)}`);
+    const ok = await sendScript(`ACE_LOAD_HEAD HEAD=${targetHead} ACE=${targetAce} SLOT=${targetSlot}`);
+    if (!ok) {
+      for (const s of workflow.steps) {
+        if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+      }
+      renderWorkflow();
+    }
+    return;
+  }
+
+  // Build toast text for displacement swap
+  const src = state.head_source[targetHead];
+  const srcAceLetter = String.fromCharCode(65 + src.ace);
+  const srcSlotLabel = String(src.slot + 1);
+  const dstAceLetter = String.fromCharCode(65 + targetAce);
+  const dstSlotLabel = String(targetSlot + 1);
+  const swapLabel = `${srcAceLetter}${srcSlotLabel} → ${dstAceLetter}${dstSlotLabel}`;
+
+  const usePark = state.swapParkAvailable && headState === "loaded_cross_ace";
+  const timeEst = usePark ? "~4 min" : "~6 min";
+  const toastText = headState === "parked"
+    ? `Swap (parked ${srcAceLetter}${srcSlotLabel}) → ${dstAceLetter}${dstSlotLabel} (${timeEst})`
+    : `Swap ${swapLabel} (${timeEst})`;
+
+  _pendingSwapConfirm = showSwapConfirm({
+    text: toastText,
+    onConfirm: () => {
+      _pendingSwapConfirm = null;
+      _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark, 0);
+    },
+    onCancel: () => {
+      _pendingSwapConfirm = null;
+      toast(`Swap ${swapLabel} cancelled`, "info");
+    },
+  });
+}
+
+async function _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark, failCount) {
+  state.smartSwapPending = { head: targetHead, leg: 1, startedAt: _now() };
+  renderStatusBanner();
+
+  let leg1Ok;
+  if (usePark) {
+    leg1Ok = await sendScript(`ACE_PARK_HEAD HEAD=${targetHead}`);
+  } else {
+    seedSingleHeadWorkflow("unload_single", targetHead, `Unload ${tName(targetHead)}`);
+    leg1Ok = await sendCommand(`ACEC__Unload_T${targetHead}`);
+    if (!leg1Ok) {
+      for (const s of workflow.steps) {
+        if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+      }
+      renderWorkflow();
+    }
+  }
+
+  if (!leg1Ok) {
+    const newFailCount = failCount + 1;
+    showSwapFailure(targetHead, 1,
+      () => _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark, newFailCount),
+      newFailCount
+    );
+    return;
+  }
+
+  _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, 0);
+}
+
+async function _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, failCount) {
+  state.smartSwapPending = { head: targetHead, leg: 2, startedAt: _now() };
+  renderStatusBanner();
+  seedSingleHeadWorkflow("load_single", targetHead, `Load → ${tName(targetHead)}`);
+  const leg2Ok = await sendScript(`ACE_LOAD_HEAD HEAD=${targetHead} ACE=${targetAce} SLOT=${targetSlot}`);
+
+  if (!leg2Ok) {
+    for (const s of workflow.steps) {
+      if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+    }
+    renderWorkflow();
+    const newFailCount = failCount + 1;
+    showSwapFailure(targetHead, 2,
+      () => _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, newFailCount),
+      newFailCount
+    );
+    return;
+  }
+
+  state.smartSwapPending = null;
+  renderStatusBanner();
+}
+
+function openHeadTargetMenu(anchor, ace, slotIdx) {
   document.querySelectorAll(".head-target-menu").forEach(el => el.remove());
   const menu = document.createElement("div");
   menu.className = "head-target-menu";
+
+  const gateReason = chevronGateReason();
+
+  // ---- Unload items: one per head that sources from this (ace, slot) ----
   for (let h = 0; h < 4; h++) {
-    const busy = !!state.head_source[h] || !!state.sensors[h];
+    const src = state.head_source[h];
+    if (!src || src.ace !== ace || src.slot !== slotIdx) continue;
+
+    const hc = classifyHeadState(h);
+    if (hc === "empty") continue;
+
     const item = document.createElement("button");
     item.className = "head-target-menu-item";
-    item.disabled = busy;
-    item.textContent = busy ? `→ ${tName(h)} (busy)` : `→ ${tName(h)}`;
-    item.addEventListener("click", async () => {
-      menu.remove();
-      if (!busy) {
-        await sendScript(`ACE_LOAD_HEAD HEAD=${h} ACE=${ace} SLOT=${slot}`);
+
+    if (gateReason) {
+      item.disabled = true;
+      item.title = gateReason;
+      item.textContent = `↗ Unload ${tName(h)} (gated)`;
+    } else {
+      item.textContent = `↗ Unload ${tName(h)}`;
+      if (hc === "bookkeeping_empty") {
+        item.title = `⚠ Sensor disagrees with bookkeeping. Unload may fail; recovery: ACE_MARK_HEAD_UNLOADED HEAD=${h} from gcode console.`;
       }
-    });
+      item.addEventListener("click", async () => {
+        menu.remove();
+        seedSingleHeadWorkflow("unload_single", h, `Unload ${tName(h)}`);
+        const ok = await sendCommand(`ACEC__Unload_T${h}`);
+        if (!ok) {
+          for (const s of workflow.steps) {
+            if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+          }
+          renderWorkflow();
+        }
+      });
+    }
     menu.appendChild(item);
   }
-  // Position relative to anchor (chevron button)
+
+  // ---- Separator (only if at least one Unload item was added) ----
+  if (menu.children.length > 0) {
+    const sep = document.createElement("hr");
+    sep.className = "head-target-menu-sep";
+    menu.appendChild(sep);
+  }
+
+  // ---- Load items: one per head ----
+  for (let h = 0; h < 4; h++) {
+    const hc = classifyHeadState(h, ace);
+    const item = document.createElement("button");
+    item.className = "head-target-menu-item";
+
+    if (gateReason) {
+      item.disabled = true;
+      item.title = gateReason;
+      item.textContent = `→ ${tName(h)} (gated)`;
+    } else {
+      const label = hc === "empty"
+        ? `→ ${tName(h)}`
+        : `→ ${tName(h)} (swap)`;
+      item.textContent = label;
+      if (hc !== "empty") {
+        const src = state.head_source[h];
+        const srcAceLetter = String.fromCharCode(65 + src.ace);
+        item.title = `Will displace ${srcAceLetter}${src.slot + 1} currently loaded in ${tName(h)}`;
+      }
+      item.addEventListener("click", async () => {
+        menu.remove();
+        await initiateSmartSwap(h, ace, slotIdx, hc);
+      });
+    }
+    menu.appendChild(item);
+  }
+
+  // Position and dismiss logic (preserve from original)
   const r = anchor.getBoundingClientRect();
   menu.style.position = "fixed";
   menu.style.top = `${r.bottom + 4}px`;
   menu.style.left = `${r.left}px`;
   menu.style.zIndex = "1000";
   document.body.appendChild(menu);
-  // Dismiss on outside click
+
   setTimeout(() => {
     function onDocClick(ev) {
       if (!menu.contains(ev.target)) {
@@ -1468,6 +1831,15 @@ function renderSlotCard(ace, slotIdx) {
   if (filled === true) pill(head, "Filled", "ok");
   else if (filled === false) pill(head, "Empty");
   else pill(head, "?");  // unknown gate_status (inactive ACE)
+
+  // Parked badge — shown when this slot's filament is parked in the bowden
+  if (loadedToEntry) {
+    const loadedSrc = state.head_source[loadedToHead];
+    if (loadedSrc && loadedSrc.parked === true) {
+      card.classList.add("parked");
+      pill(head, "Parked", "parked-badge");
+    }
+  }
 
   const meta = setEl(card, "div"); meta.className = "card-meta";
   metaRow(meta, "Feeding", loadedToHead != null ? tName(loadedToHead) : "—");
@@ -2131,6 +2503,11 @@ document.addEventListener("click", async (ev) => {
 
 // View switching (tabs)
 function setView(name) {
+  // Abort any pending swap-confirm toast when the user navigates away.
+  if (_pendingSwapConfirm) {
+    _pendingSwapConfirm.cancel();
+    _pendingSwapConfirm = null;
+  }
   for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.toggle("active", tab.dataset.view === name);
   }

@@ -60,6 +60,7 @@ class CurrentState:
     )
     last_error: Optional[dict] = None
     last_action_at: Optional[str] = None
+    swap_park_available: bool = False
 
     def apply_event(self, event: dict[str, Any], *, ts: Optional[str] = None) -> None:
         """Update state from a multiace_state.log event payload."""
@@ -130,6 +131,7 @@ class CurrentState:
             "print_task_config": self.print_task_config,
             "last_error": self.last_error,
             "last_action_at": self.last_action_at,
+            "swap_park_available": self.swap_park_available,
         }
 
 

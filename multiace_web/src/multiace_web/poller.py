@@ -10,12 +10,15 @@ import asyncio
 import logging
 import os
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
+
+import httpx
 
 from .moonraker import MoonrakerClient, MoonrakerError
 
 if TYPE_CHECKING:
     from .autodryer import AutoDryer
+    from .state import CurrentState
 
 log = logging.getLogger(__name__)
 
@@ -31,29 +34,52 @@ class StatusPoller:
     every iteration regardless of success/failure, so the loop never busy-loops.
     """
 
-    def __init__(self, moonraker: MoonrakerClient, interval: float = 5.0) -> None:
+    def __init__(
+        self,
+        moonraker: MoonrakerClient,
+        interval: float = 5.0,
+        state: "Optional[CurrentState]" = None,
+    ) -> None:
         if interval <= 0:
             raise ValueError(f"interval must be positive, got {interval}")
         self._moonraker = moonraker
         self._interval = interval
+        self._state = state
         self._stop = asyncio.Event()
 
     def stop(self) -> None:
         self._stop.set()
 
+    async def _probe_swap_park(self, client: httpx.AsyncClient) -> bool:
+        """Return True if ACEC__Park_T0 gcode_macro is registered in Klipper."""
+        try:
+            r = await client.get(
+                f"{self._moonraker._base_url}/printer/objects/list",
+                timeout=4.0,
+            )
+            if not r.is_success:
+                return False
+            objects: list[str] = r.json().get("result", {}).get("objects", [])
+            return "gcode_macro ACEC__Park_T0" in objects
+        except Exception:
+            return False
+
     async def run(self) -> None:
-        while not self._stop.is_set():
-            try:
-                await self._moonraker.run_gcode("ACE_HEAD_STATUS")
-            except MoonrakerError as e:
-                log.debug("Poller: %s", e)
-            except Exception:
-                log.exception("Poller: unexpected error")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
-                return
-            except asyncio.TimeoutError:
-                pass
+        async with httpx.AsyncClient() as client:
+            while not self._stop.is_set():
+                try:
+                    await self._moonraker.run_gcode("ACE_HEAD_STATUS")
+                except MoonrakerError as e:
+                    log.debug("Poller: %s", e)
+                except Exception:
+                    log.exception("Poller: unexpected error")
+                if self._state is not None:
+                    self._state.swap_park_available = await self._probe_swap_park(client)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
+                    return
+                except asyncio.TimeoutError:
+                    pass
 
 
 class PrintStatePoller:
