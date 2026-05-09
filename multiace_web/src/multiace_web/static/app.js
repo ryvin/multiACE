@@ -1597,33 +1597,102 @@ function buildFilamentHubPickerUrl(ace, slot) {
   return `${base.replace(/\/$/, '')}/?picker=ace&printer=${pid}&ace=${ace}&slot=${slot}`;
 }
 
-function openHeadTargetMenu(anchor, ace, slot) {
-  // Remove any existing menu first
+/**
+ * initiateSmartSwap (T4 stub — full implementation in T5).
+ * For now: directly issue ACE_LOAD_HEAD without any unload/park dispatch.
+ * Spec calls for: empty → direct, loaded_same_ace → unload-then-load, etc.
+ */
+async function initiateSmartSwap(head, ace, slotIdx, headClass) {
+  // T4 stub: ignore headClass; just issue the load.
+  // T5 will: dispatch via head-state matrix, show swap-confirm toast, manage smartSwapPending lock.
+  await sendCommand(`ACE_LOAD_HEAD HEAD=${head} ACE=${ace} SLOT=${slotIdx}`);
+}
+
+function openHeadTargetMenu(anchor, ace, slotIdx) {
   document.querySelectorAll(".head-target-menu").forEach(el => el.remove());
   const menu = document.createElement("div");
   menu.className = "head-target-menu";
+
+  const gateReason = chevronGateReason();
+
+  // ---- Unload items: one per head that sources from this (ace, slot) ----
   for (let h = 0; h < 4; h++) {
-    const busy = !!state.head_source[h] || !!state.sensors[h];
+    const src = state.head_source[h];
+    if (!src || src.ace !== ace || src.slot !== slotIdx) continue;
+
+    const hc = classifyHeadState(h);
+    if (hc === "empty") continue;
+
     const item = document.createElement("button");
     item.className = "head-target-menu-item";
-    item.disabled = busy;
-    item.textContent = busy ? `→ ${tName(h)} (busy)` : `→ ${tName(h)}`;
-    item.addEventListener("click", async () => {
-      menu.remove();
-      if (!busy) {
-        await sendScript(`ACE_LOAD_HEAD HEAD=${h} ACE=${ace} SLOT=${slot}`);
+
+    if (gateReason) {
+      item.disabled = true;
+      item.title = gateReason;
+      item.textContent = `↗ Unload ${tName(h)} (gated)`;
+    } else {
+      item.textContent = `↗ Unload ${tName(h)}`;
+      if (hc === "bookkeeping_empty") {
+        item.title = `⚠ Sensor disagrees with bookkeeping. Unload may fail; recovery: ACE_MARK_HEAD_UNLOADED HEAD=${h} from gcode console.`;
       }
-    });
+      item.addEventListener("click", async () => {
+        menu.remove();
+        seedSingleHeadWorkflow("unload_single", h, `Unload ${tName(h)}`);
+        const ok = await sendCommand(`ACEC__Unload_T${h}`);
+        if (!ok) {
+          for (const s of workflow.steps) {
+            if (s.status !== "done") { s.status = "failed"; s.error = "command rejected"; s.ended_at = _now(); }
+          }
+          renderWorkflow();
+        }
+      });
+    }
     menu.appendChild(item);
   }
-  // Position relative to anchor (chevron button)
+
+  // ---- Separator (only if at least one Unload item was added) ----
+  if (menu.children.length > 0) {
+    const sep = document.createElement("hr");
+    sep.className = "head-target-menu-sep";
+    menu.appendChild(sep);
+  }
+
+  // ---- Load items: one per head ----
+  for (let h = 0; h < 4; h++) {
+    const hc = classifyHeadState(h, ace);
+    const item = document.createElement("button");
+    item.className = "head-target-menu-item";
+
+    if (gateReason) {
+      item.disabled = true;
+      item.title = gateReason;
+      item.textContent = `→ ${tName(h)} (gated)`;
+    } else {
+      const label = hc === "empty"
+        ? `→ ${tName(h)}`
+        : `→ ${tName(h)} (swap)`;
+      item.textContent = label;
+      if (hc !== "empty") {
+        const src = state.head_source[h];
+        const srcAceLetter = String.fromCharCode(65 + src.ace);
+        item.title = `Will displace ${srcAceLetter}${src.slot + 1} currently loaded in ${tName(h)}`;
+      }
+      item.addEventListener("click", async () => {
+        menu.remove();
+        await initiateSmartSwap(h, ace, slotIdx, hc);
+      });
+    }
+    menu.appendChild(item);
+  }
+
+  // Position and dismiss logic (preserve from original)
   const r = anchor.getBoundingClientRect();
   menu.style.position = "fixed";
   menu.style.top = `${r.bottom + 4}px`;
   menu.style.left = `${r.left}px`;
   menu.style.zIndex = "1000";
   document.body.appendChild(menu);
-  // Dismiss on outside click
+
   setTimeout(() => {
     function onDocClick(ev) {
       if (!menu.contains(ev.target)) {
@@ -1659,6 +1728,15 @@ function renderSlotCard(ace, slotIdx) {
   if (filled === true) pill(head, "Filled", "ok");
   else if (filled === false) pill(head, "Empty");
   else pill(head, "?");  // unknown gate_status (inactive ACE)
+
+  // Parked badge — shown when this slot's filament is parked in the bowden
+  if (loadedToEntry) {
+    const loadedSrc = state.head_source[loadedToHead];
+    if (loadedSrc && loadedSrc.parked === true) {
+      card.classList.add("parked");
+      pill(head, "Parked", "parked-badge");
+    }
+  }
 
   const meta = setEl(card, "div"); meta.className = "card-meta";
   metaRow(meta, "Feeding", loadedToHead != null ? tName(loadedToHead) : "—");

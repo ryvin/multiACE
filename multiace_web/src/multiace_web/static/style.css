@@ -1320,6 +1320,11 @@ body.multiace-embed { background: transparent; }
 }
 .head-target-menu-item:hover:not([disabled]) { background: rgba(255,255,255,.08); }
 .head-target-menu-item[disabled] { opacity: .4; cursor: not-allowed; }
+.head-target-menu-sep {
+  border: 0;
+  border-top: 1px solid var(--border, rgba(255,255,255,.12));
+  margin: .2rem .25rem;
+}
 
 /* ---- Parked-state slot card (filament is in ACE-side bowden, not at head) ---- */
 .card.parked {
