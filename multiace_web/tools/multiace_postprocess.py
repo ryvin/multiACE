@@ -61,6 +61,33 @@ def _warn(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ToolMeta:
+    index: int
+    type: str   # uppercase, e.g. "PLA"
+    color: str  # lowercase no-#, e.g. "ff0000"
+
+
+@dataclass
+class Candidate:
+    ace: int
+    slot: int
+    spool_id: int
+    spool_name: str = ""
+
+
+@dataclass
+class ToolResolution:
+    tool: ToolMeta
+    match_quality: str  # "exact" | "ambiguous" | "none"
+    candidates: list[Candidate] = field(default_factory=list)
+    resolved: Optional[Candidate] = None
+
+
+# ---------------------------------------------------------------------------
 # Header parser
 # ---------------------------------------------------------------------------
 
@@ -120,3 +147,84 @@ def parse_header(lines: list) -> Optional[list]:
 
     _dbg(f"parse_header: {len(tools)} tools parsed")
     return tools
+
+
+# ---------------------------------------------------------------------------
+# Slot query
+# ---------------------------------------------------------------------------
+
+def query_slots(printer_url: str) -> dict:
+    """GET /multiace/api/slots and return the parsed JSON dict.
+
+    Uses urllib.request (stdlib only). Raises on network error or non-200.
+    """
+    url = f"{printer_url.rstrip('/')}/multiace/api/slots"
+    _dbg(f"GET {url}")
+    try:
+        with urllib_request.urlopen(url, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib_error.HTTPError as e:
+        raise RuntimeError(f"GET {url} failed: HTTP {e.code}") from e
+    except Exception as e:
+        raise RuntimeError(f"GET {url} failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Tool matching
+# ---------------------------------------------------------------------------
+
+def match_tools(tools: list[dict], slots_response: dict) -> list[ToolResolution]:
+    """Match each slicer tool against bound spools using exact (type, color_hex).
+
+    slots_response is the JSON from GET /api/slots:
+      {"aces": [{"index": N, "slots": [{"slot": S, "spool": {...} | null}]}]}
+
+    Returns one ToolResolution per tool (same order as input).
+    """
+    all_bindings: list[tuple[int, int, str, str, int, str]] = []
+    for ace_block in (slots_response.get("aces") or []):
+        ace_idx = int(ace_block["index"])
+        for slot_block in (ace_block.get("slots") or []):
+            spool = slot_block.get("spool")
+            if not spool:
+                continue
+            mat = (spool.get("material") or "").strip().upper()
+            col = (spool.get("color") or "").strip().lower().lstrip("#")
+            all_bindings.append((
+                ace_idx,
+                int(slot_block["slot"]),
+                mat,
+                col,
+                int(spool["spool_id"]),
+                spool.get("name") or "",
+            ))
+
+    resolutions: list[ToolResolution] = []
+    for tool in tools:
+        tmeta = ToolMeta(
+            index=len(resolutions),
+            type=tool["type"].upper(),
+            color=tool["color"].lower().lstrip("#"),
+        )
+        candidates = [
+            Candidate(ace=ace, slot=slot, spool_id=sid, spool_name=name)
+            for ace, slot, mat, col, sid, name in all_bindings
+            if mat == tmeta.type and col == tmeta.color
+        ]
+        if len(candidates) == 1:
+            mq = "exact"
+            resolved = candidates[0]
+        elif len(candidates) > 1:
+            mq = "ambiguous"
+            resolved = None
+        else:
+            mq = "none"
+            resolved = None
+
+        resolutions.append(ToolResolution(
+            tool=tmeta,
+            match_quality=mq,
+            candidates=candidates,
+            resolved=resolved,
+        ))
+    return resolutions
