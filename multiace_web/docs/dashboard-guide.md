@@ -115,6 +115,21 @@ Compact row beneath toolheads. Four small cards, one per slot of the active
 ACE Pro. Each shows: gate state pill (`FILLED` / `EMPTY`), feeding-to-T number,
 material, vendor, color band. Load → T<n> and Unload T<n> buttons inline.
 
+The chevron (`▾`) next to each Load button opens a target menu listing valid
+operations for this `(ace, slot)`:
+
+- **`↗ Unload T<n>`** for every head currently sourced from this slot
+  (typically the mate-pair head on the U1; possibly more if firmware was
+  forced into a non-mate-pair load).
+- **`→ T<slot>`** *only* for the slot's mate-pair head (head index = slot
+  index — the U1's bowden geometry locks slot N to T<n>). Suppressed
+  entirely when this exact slot already actively feeds T<n> with no park
+  (the operation would be a no-op refresh and the Unload row above already
+  acts on it). Kept when `parked=true` so the user can re-engage from park.
+- **`(swap)` suffix** when the mate-pair head is currently fed by a
+  *different* `(ace, slot)` — clicking initiates a smart-swap that parks
+  or unloads the displaced source, then loads from this slot.
+
 ### Recent activity preview
 
 Last 5 events inline. Each row: timestamp, action name (bold, colored),
