@@ -1266,11 +1266,22 @@ body.multiace-embed { background: transparent; }
 .badge-stale  { background: rgba(255,255,255,.08); color: var(--muted, #888); }
 .ace-block-slots {
   display: grid;
+  /* Column-major fill on a 2x2 grid so slot 0/1 stack in the LEFT column and
+     slot 2/3 in the RIGHT column. Mirrors the toolhead grid layout where
+     T0/T1 are the left column and T2/T3 are the right column — making the
+     mate-pair geometry (T_n ↔ slot n) visually obvious: T0 over Slot 0,
+     T1 under T0 over Slot 1, T2 over Slot 2, T3 under T2 over Slot 3. */
   grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, auto);
+  grid-auto-flow: column;
   gap: .5rem;
 }
 @media (max-width: 480px) {
-  .ace-block-slots { grid-template-columns: 1fr; }
+  .ace-block-slots {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-flow: row;
+  }
 }
 
 /* Slot row controls: 📖 picker, Load split-button, head-target menu */
