@@ -1052,6 +1052,28 @@ class TestCommandPreflight409:
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
+    def test_load_into_parked_head_is_allowed(self, app) -> None:
+        """Swap-park leg 2: head_source[h].parked=True means the filament is
+        physically retracted; the bookkeeping just remembers the slot for
+        swap-back. The load preflight must NOT block leg 2 — that's the whole
+        point of the swap-park flow.
+
+        Caught on 2026-05-10: a real T0=A0→B0 cross-ACE swap stalled because
+        leg 1 successfully parked, but leg 2's preflight rejected the
+        ACE_LOAD_HEAD with 409 ("head busy"), since the parked head_source
+        was still populated."""
+        with TestClient(app) as client:
+            app.state.state.head_source = {
+                0: {"ace": 0, "slot": 0, "type": "PLA", "color": "000", "parked": True},
+                1: None, 2: None, 3: None,
+            }
+            app.state.state.gate_status = [1, 1, 1, 1]
+            app.state.state.active_device = 1
+            app.state.moonraker.run_gcode = AsyncMock(return_value="ok")
+            # Leg 2: load from B (different ACE) into a parked head — must pass.
+            r = client.post("/api/command", json={"script": "ACE_LOAD_HEAD HEAD=0 ACE=1 SLOT=0"})
+        assert r.status_code != 409, f"parked head should accept load, got {r.json()}"
+
 
 class TestSpoolCacheInWebSocket:
     @pytest.fixture
