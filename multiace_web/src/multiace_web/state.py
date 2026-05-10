@@ -10,6 +10,16 @@ from typing import Any, Optional
 
 STATE_MARKER = " STATE "
 
+# Audit actions that mark the end of a SWITCH-family operation. All firmware
+# emit sites for these are inside try blocks where _swap_in_progress is still
+# True; the finally that clears the flag emits no follow-up audit. See the
+# extended comment in CurrentState.apply_event below.
+_SWITCH_TERMINAL_ACTIONS = frozenset({
+    "SWITCH", "SWITCH_NOOP", "SWITCH_FAILED",
+    "SWITCH_AUTO", "SWITCH_AUTO_NOOP", "SWITCH_AUTO_FAILED", "SWITCH_AUTO_PASSIVE",
+    "SWITCH_TARGET", "SWITCH_TARGET_NOOP", "SWITCH_TARGET_FAILED",
+})
+
 
 def parse_state_log_line(line: str) -> Optional[tuple[str, dict[str, Any]]]:
     """Parse one line of multiace_state.log.
@@ -85,12 +95,15 @@ class CurrentState:
 
         action = event.get("action", "")
 
-        # SWITCH_NOOP fires inside cmd_ACE_SWITCH after _swap_in_progress was
-        # set True but before the finally that resets it. The audit captures
-        # swap=True even though no swap actually happened — leaving the
-        # dashboard banner stuck on "Tool change in progress" forever. A noop
-        # by definition isn't a swap; force the flag false.
-        if action == "SWITCH_NOOP":
+        # All SWITCH-family audits fire inside cmd_ACE_SWITCH (or its
+        # AUTO/TARGET cousins) from inside the try block — _swap_in_progress
+        # is still True when the audit serializes, and the firmware's
+        # `finally` clears the flag but emits no follow-up event. Every one
+        # of these actions is the *terminal* event for a switch operation
+        # (success, no-op, or failure), so by definition the swap is over.
+        # Without this, the dashboard banner sticks on "Tool change in
+        # progress" forever after any successful switch.
+        if action in _SWITCH_TERMINAL_ACTIONS:
             self.swap_in_progress = False
 
         # TODO(v1.x): When the frontend grows per-toolhead error display, switch to
