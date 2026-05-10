@@ -16,7 +16,7 @@ const state = {
   spool_cache: {},
   last_error: null,
   // --- Operations (smart-swap) ---
-  swapParkAvailable: false,   // cached: ACE_PARK_HEAD firmware verb detected
+  swapParkAvailable: false,   // cached: ACEC__Park_T0 macro present (firmware supports LENGTH= on ACE_UNLOAD_HEAD)
   smartSwapPending: null,     // {head, leg, startedAt} | null — cross-leg UI lock
 };
 const events = []; // last 200 activity entries
@@ -1866,7 +1866,7 @@ function buildFilamentHubPickerUrl(ace, slot) {
  * Head-state matrix:
  *   empty            → direct ACE_LOAD_HEAD, no toast
  *   loaded_same_ace  → toast + ACEC__Unload_T<n> → ACE_LOAD_HEAD
- *   loaded_cross_ace → if swapParkAvailable: toast + ACE_PARK_HEAD → ACE_LOAD_HEAD
+ *   loaded_cross_ace → if swapParkAvailable: toast + ACE_UNLOAD_HEAD LENGTH=600 → ACE_LOAD_HEAD
  *                      else: same as loaded_same_ace (fallback)
  *   parked           → conservative v1: same as loaded_same_ace branch
  *   bookkeeping_empty→ treated as loaded
@@ -1921,7 +1921,9 @@ async function _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark,
 
   let leg1Ok;
   if (usePark) {
-    leg1Ok = await sendScript(`ACE_PARK_HEAD HEAD=${targetHead}`);
+    // Park = parameterized full-retract: ACE_UNLOAD_HEAD with LENGTH=<park>.
+    // 600mm matches default_park_retract_length_mm in [ace] config.
+    leg1Ok = await sendScript(`ACE_UNLOAD_HEAD HEAD=${targetHead} LENGTH=600`);
   } else {
     seedSingleHeadWorkflow("unload_single", targetHead, `Unload ${tName(targetHead)}`);
     leg1Ok = await sendCommand(`ACEC__Unload_T${targetHead}`);
