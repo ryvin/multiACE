@@ -317,36 +317,44 @@ $ curl /multiace/api/state | jq .swap_in_progress       # true
 $ curl :7125/printer/objects/query?ace | jq '.result.status.ace.status'   # ready
 ```
 
-The most recent state log entries look like:
+The most recent state log entries look like one of:
 ```
 ... STATE action=SWITCH_AUTO_PASSIVE swap=False
 ... STATE action=SWITCH_NOOP swap=True
-... STATE action=SWITCH_NOOP swap=True
+... STATE action=SWITCH swap=True
+... STATE action=SWITCH_FAILED swap=True
 ```
 
 **Cause**
 
 `cmd_ACE_SWITCH` in `ace.py` sets `_swap_in_progress = True` before calling
-`_do_ace_switch`, then resets it in a `finally`. When the target ACE is
-already active, `_do_ace_switch` audits `SWITCH_NOOP` and returns — *while
-`_swap_in_progress` is still `True`*. That audit is the last STATE log entry
-the web console sees, so its cached state stays `swap_in_progress: True`
-forever. Subsequent g-code commands that emit STATE events (with the flag
-correctly `False`) eventually overwrite it, but if no such event fires for a
-while, the banner sticks.
+`_do_ace_switch`, then resets it in a `finally`. Every `_audit_state(...)`
+inside `_do_ace_switch` (success path emits `SWITCH`; early returns emit
+`SWITCH_NOOP` / `SWITCH_FAILED`) serializes the audit while
+`_swap_in_progress` is still `True`. The `finally` clears the flag but
+emits no follow-up audit, so the web console never observes the clear and
+its cached state stays `swap_in_progress: True` indefinitely.
 
-**Fix (web console, already deployed)**
+The same flow applies to `SWITCH_AUTO*` and `SWITCH_TARGET*` — every
+SWITCH-family audit is the *terminal* event for one switch operation, so
+by the time we apply it the swap is over.
 
-`state.py` defensively forces `swap_in_progress = False` whenever it ingests
-a `SWITCH_NOOP` event — a no-op by definition isn't a swap. Restart the
-service and the bootstrap replay clears the stuck flag.
+**Fix (web console, deployed 2026-05-10)**
+
+`state.py` forces `swap_in_progress = False` whenever it ingests any
+SWITCH-family terminal action: `SWITCH`, `SWITCH_NOOP`, `SWITCH_FAILED`,
+`SWITCH_AUTO`, `SWITCH_AUTO_NOOP`, `SWITCH_AUTO_FAILED`,
+`SWITCH_AUTO_PASSIVE`, `SWITCH_TARGET`, `SWITCH_TARGET_NOOP`,
+`SWITCH_TARGET_FAILED`. Restart the service and the bootstrap replay
+clears the stuck flag.
 
 **Fix (Klipper-side, not yet patched)**
 
-Move the `SWITCH_NOOP` audit *outside* the swap-flag scope, or capture the
-swap state explicitly in the audit payload rather than reading the (still
-True) flag at the time of audit. Until that ships, the web-side guard above
-is enough to keep the banner sane.
+Move the SWITCH-family audits *outside* the swap-flag scope (e.g. emit a
+final state snapshot from the `finally`), or capture the swap state
+explicitly in the audit payload rather than reading the (still True) flag
+at the time of audit. Until that ships, the web-side guard above keeps
+the banner sane.
 
 ## Web console returns 502 Bad Gateway after reboot
 

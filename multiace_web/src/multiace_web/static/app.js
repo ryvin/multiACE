@@ -2012,45 +2012,60 @@ function openHeadTargetMenu(anchor, ace, slotIdx) {
     menu.appendChild(item);
   }
 
-  // ---- Separator (only if at least one Unload item was added) ----
-  if (menu.children.length > 0) {
-    const sep = document.createElement("hr");
-    sep.className = "head-target-menu-sep";
-    menu.appendChild(sep);
-  }
-
   // ---- Load item: only the mate-pair head ----
   // The U1 has 4 toolheads, each with its own splitter Y-junction connecting
   // ACE A slot N and ACE B slot N (matching index). Slot N's filament can
   // ONLY physically reach toolhead N — the bowden geometry is fixed. Offering
   // → T<other> would be a non-physical operation (firmware allows it but the
   // result is unpredictable). Render only the single valid mate-pair head.
+  //
+  // Suppress entirely when this exact slot already actively feeds the
+  // mate-pair head (same ace+slot, not parked) — Load would be a no-op
+  // refresh and the Unload row above already lets the user act on it.
+  // Keep the Load row when parked=true (re-engage from park).
   {
     const h = slotIdx;
-    const hc = classifyHeadState(h, ace);
-    const item = document.createElement("button");
-    item.className = "head-target-menu-item";
+    const currentSrc = state.head_source[h];
+    const alreadyActiveHere =
+      currentSrc &&
+      currentSrc.ace === ace &&
+      currentSrc.slot === slotIdx &&
+      !currentSrc.parked;
 
-    if (gateReason) {
-      item.disabled = true;
-      item.title = gateReason;
-      item.textContent = `→ ${tName(h)} (gated)`;
-    } else {
-      const label = hc === "empty"
-        ? `→ ${tName(h)}`
-        : `→ ${tName(h)} (swap)`;
-      item.textContent = label;
-      if (hc !== "empty") {
-        const src = state.head_source[h];
-        const srcAceLetter = String.fromCharCode(65 + src.ace);
-        item.title = `Will displace ${srcAceLetter}${src.slot} currently loaded in ${tName(h)}`;
+    if (!alreadyActiveHere) {
+      // Separator before the Load row, but only if some Unload items were
+      // already added (otherwise it would lead the menu).
+      if (menu.children.length > 0) {
+        const sep = document.createElement("hr");
+        sep.className = "head-target-menu-sep";
+        menu.appendChild(sep);
       }
-      item.addEventListener("click", async () => {
-        menu.remove();
-        await initiateSmartSwap(h, ace, slotIdx, hc);
-      });
+
+      const hc = classifyHeadState(h, ace);
+      const item = document.createElement("button");
+      item.className = "head-target-menu-item";
+
+      if (gateReason) {
+        item.disabled = true;
+        item.title = gateReason;
+        item.textContent = `→ ${tName(h)} (gated)`;
+      } else {
+        const label = hc === "empty"
+          ? `→ ${tName(h)}`
+          : `→ ${tName(h)} (swap)`;
+        item.textContent = label;
+        if (hc !== "empty") {
+          const src = state.head_source[h];
+          const srcAceLetter = String.fromCharCode(65 + src.ace);
+          item.title = `Will displace ${srcAceLetter}${src.slot} currently loaded in ${tName(h)}`;
+        }
+        item.addEventListener("click", async () => {
+          menu.remove();
+          await initiateSmartSwap(h, ace, slotIdx, hc);
+        });
+      }
+      menu.appendChild(item);
     }
-    menu.appendChild(item);
   }
 
   // Position and dismiss logic (preserve from original)
