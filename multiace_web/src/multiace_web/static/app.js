@@ -1995,7 +1995,7 @@ function openHeadTargetMenu(anchor, ace, slotIdx) {
     } else {
       item.textContent = `↗ Unload ${tName(h)}`;
       if (hc === "bookkeeping_empty") {
-        item.title = `⚠ Sensor disagrees with bookkeeping. Unload may fail; recovery: ACE_MARK_HEAD_UNLOADED HEAD=${h} from gcode console.`;
+        item.title = `⚠ Sensor disagrees with bookkeeping. Unload may fail; recovery: ACE_CLEAR_HEADS HEAD=${h} from gcode console.`;
       }
       item.addEventListener("click", async () => {
         menu.remove();
@@ -2019,8 +2019,14 @@ function openHeadTargetMenu(anchor, ace, slotIdx) {
     menu.appendChild(sep);
   }
 
-  // ---- Load items: one per head ----
-  for (let h = 0; h < 4; h++) {
+  // ---- Load item: only the mate-pair head ----
+  // The U1 has 4 toolheads, each with its own splitter Y-junction connecting
+  // ACE A slot N and ACE B slot N (matching index). Slot N's filament can
+  // ONLY physically reach toolhead N — the bowden geometry is fixed. Offering
+  // → T<other> would be a non-physical operation (firmware allows it but the
+  // result is unpredictable). Render only the single valid mate-pair head.
+  {
+    const h = slotIdx;
     const hc = classifyHeadState(h, ace);
     const item = document.createElement("button");
     item.className = "head-target-menu-item";
