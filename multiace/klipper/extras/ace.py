@@ -100,6 +100,8 @@ class BunnyAce:
         self.tip_refresh_feed_speed = config.getint('tip_refresh_feed_speed', 30, minval=5, maxval=100)
         self.max_dryer_temperature = config.getint('max_dryer_temperature', 55)
         self.extra_purge_length = config.getfloat('extra_purge_length', 0, minval=0, maxval=200)
+        self.default_park_retract_length_mm = config.getint(
+            'default_park_retract_length_mm', 600, minval=100, maxval=2000)
         self.swap_default_temp = config.getint('swap_default_temp', 250, minval=180, maxval=300)
         self.dryer_temp = config.getint('dryer_temp', 55, minval=30, maxval=70)
         self.dryer_duration = config.getint('dryer_duration', 240, minval=10, maxval=480)
@@ -1426,12 +1428,22 @@ class BunnyAce:
                         head, saved[key]['ace_index'] + 1, saved[key]['slot']))
 
     def _save_head_source(self):
-        
+
         save_data = {}
         for head in range(4):
             save_data[str(head)] = self._head_source[head]
-        
-        value_str = json.dumps(save_data).replace('null', 'None')
+
+        # Klipper's SAVE_VARIABLE parses VALUE via ast.literal_eval which expects
+        # Python literals (None, True, False) — not the JSON forms (null, true,
+        # false). Replace the colon-prefixed JSON tokens; the prefix avoids
+        # matching inside string values (a brand named "true" stays unchanged
+        # since it would be quoted: '"true"' not ': true').
+        value_str = (
+            json.dumps(save_data)
+            .replace(': null', ': None')
+            .replace(': true', ': True')
+            .replace(': false', ': False')
+        )
         self.gcode.run_script_from_command(
             "SAVE_VARIABLE VARIABLE=%s VALUE='%s'"
             % (self.VARS_ACE_HEAD_SOURCE, value_str))
@@ -1809,13 +1821,25 @@ class BunnyAce:
             '[multiACE] head_source[%d] manually marked as ACE %d / slot %d '
             '(via ACE_MARK_HEAD_LOADED)' % (head, ace_index, slot))
 
-    cmd_ACE_UNLOAD_HEAD_help = '[multiACE] Unload a toolhead back to its ACE. Usage: ACE_UNLOAD_HEAD HEAD=0'
+    cmd_ACE_UNLOAD_HEAD_help = (
+        '[multiACE] Unload a toolhead back to its ACE slot. '
+        'Usage: ACE_UNLOAD_HEAD HEAD=0 [LENGTH=<mm>]. '
+        'Without LENGTH: full retract back to slot gate (current behavior). '
+        'With LENGTH (100-2000 mm): partial retract — parks filament in ACE-side '
+        'bowden just past the splitter. Sets head_source[N].parked=True; keeps '
+        'ace/slot for swap-back routing. Use default_park_retract_length_mm in '
+        '[ace] config (default 600) or ACEC__Park_T<n> convenience macros.'
+    )
     def cmd_ACE_UNLOAD_HEAD(self, gcmd):
         
         head = gcmd.get_int('HEAD')
 
         if head < 0 or head > 3:
             raise gcmd.error('[multiACE] HEAD must be 0-3')
+
+        park_length = gcmd.get_int('LENGTH', None)
+        if park_length is not None and (park_length < 100 or park_length > 2000):
+            raise gcmd.error('[multiACE] LENGTH must be 100-2000 mm (got %d).' % park_length)
 
         sensor = self.printer.lookup_object(
             'filament_motion_sensor e%d_filament' % head, None)
@@ -1846,17 +1870,45 @@ class BunnyAce:
             "SET_FILAMENT_SENSOR SENSOR=e%d_filament ENABLE=0" % head)
 
         module, channel = self.EXTRUDER_MAP[head]
+        slot = source['slot'] if source else self._active_device_index
         try:
+            # Phase 1: prepare (homing, extruder switch, move to discard, heat, tip push).
+            # Same for both full-unload and park paths.
             self.gcode.run_script_from_command(
                 "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d UNLOAD=1 STAGE=prepare"
                 % (module, channel, head))
-            self.gcode.run_script_from_command(
-                "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d UNLOAD=1 STAGE=doing"
-                % (module, channel, head))
+
+            if park_length is None:
+                # Full unload: let FEED_AUTO STAGE=doing drive the retract at retract_length.
+                self.gcode.run_script_from_command(
+                    "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d UNLOAD=1 STAGE=doing"
+                    % (module, channel, head))
+            else:
+                # Partial retract: STAGE=doing handles INNER_FILAMENT_UNLOAD
+                # (extruder-gear retract — pulls filament tip out of head sensor)
+                # AND retract_fil (ACE-side wheel) AND verification + retry. We
+                # need all of those for a working park; calling _retract alone
+                # leaves the filament tip wedged at the head. Temporarily
+                # override self.retract_length so retract_fil pulls back the
+                # requested park distance instead of the full length.
+                # filament_feed_ace.py also clears head_source[head] = None on
+                # success — the post-retract block below re-sets it with
+                # parked=True, restoring the source-slot bookkeeping.
+                saved_retract_length = self.retract_length
+                self.retract_length = park_length
+                try:
+                    self.gcode.run_script_from_command(
+                        "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d UNLOAD=1 STAGE=doing"
+                        % (module, channel, head))
+                finally:
+                    self.retract_length = saved_retract_length
+
         except Exception as e:
             self.gcode.run_script_from_command(
                 "SET_FILAMENT_SENSOR SENSOR=e%d_filament ENABLE=1" % head)
-            self._audit_state('UNLOAD_HEAD_FAILED', {'head': head, 'reason': 'feed_auto_error', 'error': str(e), 'active_device': self._active_device_index})
+            self._audit_state('UNLOAD_HEAD_FAILED', {
+                'head': head, 'reason': 'feed_auto_error',
+                'error': str(e), 'active_device': self._active_device_index})
             raise
 
         self.gcode.run_script_from_command(
@@ -1866,14 +1918,34 @@ class BunnyAce:
         if machine_state_manager is not None:
             self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=IDLE ACTION=IDLE")
 
-        self._head_source[head] = None
-        self._save_head_source()
-
-        if sensor and sensor.get_status(0)['filament_detected']:
-            self.log_error('[multiACE] Warning: Filament still detected in head %d after unload!' % head)
+        if park_length is not None and source is not None:
+            # Partial retract: mark parked, keep ace/slot for swap-back routing.
+            parked_source = dict(source)
+            parked_source['parked'] = True
+            self._head_source[head] = parked_source
+            self._save_head_source()
+            if sensor and sensor.get_status(0)['filament_detected']:
+                self._audit_state('UNLOAD_HEAD_FAILED', {
+                    'head': head, 'length': park_length, 'parked': False,
+                    'reason': 'sensor_still_detecting'})
+                raise gcmd.error(
+                    '[multiACE] Park retract completed but e%d_filament still reads True. '
+                    'park_retract_length_mm=%d may be too short. '
+                    'Increase LENGTH or fall back to ACE_UNLOAD_HEAD HEAD=%d (full unload).'
+                    % (head, park_length, head))
+            self.log_always('[multiACE] Head %d parked (ACE %d slot %d, retracted %d mm).'
+                            % (head, source['ace_index'], source['slot'], park_length))
+            self._audit_state('UNLOAD_HEAD', {
+                'head': head, 'length': park_length, 'parked': True})
         else:
-            self.log_always('[multiACE] Head %d unloaded successfully' % head)
-        self._audit_state('UNLOAD_HEAD', {'head': head})
+            # Full unload: clear head_source as before.
+            self._head_source[head] = None
+            self._save_head_source()
+            if sensor and sensor.get_status(0)['filament_detected']:
+                self.log_error('[multiACE] Warning: Filament still detected in head %d after unload!' % head)
+            else:
+                self.log_always('[multiACE] Head %d unloaded successfully' % head)
+            self._audit_state('UNLOAD_HEAD', {'head': head})
 
     def _switch_ace_for_head_target(self, ace_index):
         

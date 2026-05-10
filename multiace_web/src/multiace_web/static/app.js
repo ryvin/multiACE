@@ -16,7 +16,7 @@ const state = {
   spool_cache: {},
   last_error: null,
   // --- Operations (smart-swap) ---
-  swapParkAvailable: false,   // cached: ACE_PARK_HEAD firmware verb detected
+  swapParkAvailable: false,   // cached: ACEC__Park_T0 macro present (firmware supports LENGTH= on ACE_UNLOAD_HEAD)
   smartSwapPending: null,     // {head, leg, startedAt} | null — cross-leg UI lock
 };
 const events = []; // last 200 activity entries
@@ -1432,7 +1432,7 @@ function openFixLoadoutWizard(item) {
               `<button class="fix-candidate-btn ghost-btn"
                  data-tool="${idx}" data-ace="${c.ace}" data-slot="${c.slot}"
                  data-spool="${c.spool_id}">
-                 ACE ${String.fromCharCode(65 + c.ace)} / Slot ${c.slot + 1}
+                 ACE ${String.fromCharCode(65 + c.ace)} / Slot ${c.slot}
                  ${c.spool_name ? "— " + c.spool_name : ""}
                </button>`
             ).join("")}
@@ -1463,7 +1463,7 @@ function openFixLoadoutWizard(item) {
   body.querySelectorAll(".fix-candidate-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const filename = item.filename;
-      toast(`Accepting ACE ${String.fromCharCode(65 + parseInt(btn.dataset.ace))} / Slot ${parseInt(btn.dataset.slot)+1} for tool ${btn.dataset.tool}`, "info");
+      toast(`Accepting ACE ${String.fromCharCode(65 + parseInt(btn.dataset.ace))} / Slot ${parseInt(btn.dataset.slot)} for tool ${btn.dataset.tool}`, "info");
       await fetch(api("api/print_queue/" + encodeURIComponent(filename) + "/revalidate"),
         { method: "POST", headers: authHeader() });
       await fetchPrintQueue();
@@ -1527,7 +1527,7 @@ function _renderResolutionTable(tools) {
   const rows = Object.entries(tools).map(([idx, t]) => {
     const resolved = t.resolved;
     const aceLabel = resolved
-      ? `ACE ${String.fromCharCode(65 + resolved.ace)} / Slot ${resolved.slot + 1}`
+      ? `ACE ${String.fromCharCode(65 + resolved.ace)} / Slot ${resolved.slot}`
       : "—";
     const spool = t.candidates && t.candidates.length === 1
       ? (t.candidates[0].spool_name || "—")
@@ -1702,8 +1702,8 @@ function rgbFromUint(packed) {
 // UI labels are 1-based even though internal indices stay 0-based. Macros,
 // audit events, and Klipper g-code (T0..T3) keep using the raw index — only
 // human-visible text gets shifted.
-function tName(i)    { return `T${(+i) + 1}`; }
-function slotName(i) { return `Slot ${(+i) + 1}`; }
+function tName(i)    { return `T${+i}`; }
+function slotName(i) { return `Slot ${+i}`; }
 
 // Pick contrasting text color for a swatch background. Uses ITU-R BT.601
 // perceived brightness so white/light filament gets dark text and dark
@@ -1866,7 +1866,7 @@ function buildFilamentHubPickerUrl(ace, slot) {
  * Head-state matrix:
  *   empty            → direct ACE_LOAD_HEAD, no toast
  *   loaded_same_ace  → toast + ACEC__Unload_T<n> → ACE_LOAD_HEAD
- *   loaded_cross_ace → if swapParkAvailable: toast + ACE_PARK_HEAD → ACE_LOAD_HEAD
+ *   loaded_cross_ace → if swapParkAvailable: toast + ACE_UNLOAD_HEAD LENGTH=600 → ACE_LOAD_HEAD
  *                      else: same as loaded_same_ace (fallback)
  *   parked           → conservative v1: same as loaded_same_ace branch
  *   bookkeeping_empty→ treated as loaded
@@ -1891,7 +1891,7 @@ async function initiateSmartSwap(targetHead, targetAce, targetSlot, headState) {
   // Build toast text for displacement swap
   const src = state.head_source[targetHead];
   const srcAceLetter = String.fromCharCode(65 + src.ace);
-  const srcSlotLabel = String(src.slot + 1);
+  const srcSlotLabel = String(src.slot);
   const dstAceLetter = String.fromCharCode(65 + targetAce);
   const dstSlotLabel = String(targetSlot + 1);
   const swapLabel = `${srcAceLetter}${srcSlotLabel} → ${dstAceLetter}${dstSlotLabel}`;
@@ -1921,7 +1921,9 @@ async function _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark,
 
   let leg1Ok;
   if (usePark) {
-    leg1Ok = await sendScript(`ACE_PARK_HEAD HEAD=${targetHead}`);
+    // Park = parameterized full-retract: ACE_UNLOAD_HEAD with LENGTH=<park>.
+    // 600mm matches default_park_retract_length_mm in [ace] config.
+    leg1Ok = await sendScript(`ACE_UNLOAD_HEAD HEAD=${targetHead} LENGTH=600`);
   } else {
     seedSingleHeadWorkflow("unload_single", targetHead, `Unload ${tName(targetHead)}`);
     leg1Ok = await sendCommand(`ACEC__Unload_T${targetHead}`);
@@ -1993,7 +1995,7 @@ function openHeadTargetMenu(anchor, ace, slotIdx) {
     } else {
       item.textContent = `↗ Unload ${tName(h)}`;
       if (hc === "bookkeeping_empty") {
-        item.title = `⚠ Sensor disagrees with bookkeeping. Unload may fail; recovery: ACE_MARK_HEAD_UNLOADED HEAD=${h} from gcode console.`;
+        item.title = `⚠ Sensor disagrees with bookkeeping. Unload may fail; recovery: ACE_CLEAR_HEADS HEAD=${h} from gcode console.`;
       }
       item.addEventListener("click", async () => {
         menu.remove();
@@ -2017,8 +2019,14 @@ function openHeadTargetMenu(anchor, ace, slotIdx) {
     menu.appendChild(sep);
   }
 
-  // ---- Load items: one per head ----
-  for (let h = 0; h < 4; h++) {
+  // ---- Load item: only the mate-pair head ----
+  // The U1 has 4 toolheads, each with its own splitter Y-junction connecting
+  // ACE A slot N and ACE B slot N (matching index). Slot N's filament can
+  // ONLY physically reach toolhead N — the bowden geometry is fixed. Offering
+  // → T<other> would be a non-physical operation (firmware allows it but the
+  // result is unpredictable). Render only the single valid mate-pair head.
+  {
+    const h = slotIdx;
     const hc = classifyHeadState(h, ace);
     const item = document.createElement("button");
     item.className = "head-target-menu-item";
@@ -2035,7 +2043,7 @@ function openHeadTargetMenu(anchor, ace, slotIdx) {
       if (hc !== "empty") {
         const src = state.head_source[h];
         const srcAceLetter = String.fromCharCode(65 + src.ace);
-        item.title = `Will displace ${srcAceLetter}${src.slot + 1} currently loaded in ${tName(h)}`;
+        item.title = `Will displace ${srcAceLetter}${src.slot} currently loaded in ${tName(h)}`;
       }
       item.addEventListener("click", async () => {
         menu.remove();

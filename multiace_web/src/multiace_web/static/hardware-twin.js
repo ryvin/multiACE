@@ -207,7 +207,7 @@ window.HardwareTwin = (function () {
         "text-anchor": "middle", "font-size": 14, "font-weight": 700,
         fill: "var(--htw-stroke-empty)", class: "htw-slot-label",
       });
-      label.textContent = String(i + 1);
+      label.textContent = String(i);
       g.appendChild(label);
       svg.appendChild(g);
     }
@@ -265,7 +265,7 @@ window.HardwareTwin = (function () {
       // pick or scan an NFC tag for what's in this physical slot.
       const pickerBtn = htmlEl("button", {
         className: "btn-icon", textContent: "📖",
-        "aria-label": `Pick spool for ACE ${String.fromCharCode(65 + deviceIdx)} slot ${i + 1}`,
+        "aria-label": `Pick spool for ACE ${String.fromCharCode(65 + deviceIdx)} slot ${i}`,
         dataset: { htw: "slot-picker",
                    device: String(deviceIdx), slot: String(i) },
       });
@@ -284,13 +284,13 @@ window.HardwareTwin = (function () {
 
       const loadBtn = htmlEl("button", {
         className: "primary htw-hidden", textContent: "Load",
-        "aria-label": `Load slot ${i + 1}`,
+        "aria-label": `Load slot ${i}`,
         dataset: { cmd: `ACEC__Load_T${i}`, htw: "slot-load",
                    device: String(deviceIdx), slot: String(i) },
       });
       const unloadBtn = htmlEl("button", {
         className: "danger htw-hidden", textContent: "Unload",
-        "aria-label": `Unload slot ${i + 1}`,
+        "aria-label": `Unload slot ${i}`,
         dataset: { htw: "slot-unload", device: String(deviceIdx), slot: String(i) },
       });
       cell.appendChild(pickerBtn);
@@ -383,7 +383,7 @@ window.HardwareTwin = (function () {
       // against whatever bodyBg ended up being (white chassis or filament color).
       if (src) {
         const aceLetter = String.fromCharCode(65 + (src.ace ?? 0));
-        const slotN = (src.slot != null ? src.slot : 0) + 1;
+        const slotN = (src.slot != null ? src.slot : 0);
         source.textContent = `ACE ${aceLetter} · Slot ${slotN}`;
         source.setAttribute("fill-opacity", "1");
         source.setAttribute("fill",
