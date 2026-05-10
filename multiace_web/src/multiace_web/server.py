@@ -1032,6 +1032,44 @@ def create_app(
         result = await impl(gcode_path, slots_resp)
         return result
 
+    @app.post("/api/print_queue/{gcode_filename:path}/print")
+    async def start_print_for_gcode(request: Request, gcode_filename: str) -> dict:
+        """Start a print of a gcode in the queue. Refuses if the sidecar is
+        not 'ready' or if a print/swap is already in progress."""
+        s = request.app.state.state
+        if getattr(s, "swap_in_progress", False):
+            raise HTTPException(409, "swap in progress — wait before starting a print")
+
+        gcode_dir: Path = getattr(
+            request.app.state, "gcode_dir",
+            Path(_env("MULTIACE_GCODE_DIR", "/home/lava/printer_data/gcodes")),
+        )
+        gcode_path = gcode_dir / gcode_filename
+        sidecar_path = Path(str(gcode_path) + ".multiace.json")
+
+        # Refuse if no sidecar — caller should re-validate first
+        if not sidecar_path.exists():
+            raise HTTPException(404, f"no sidecar for {gcode_filename} — re-validate first")
+
+        # Refuse if sidecar status != ready
+        try:
+            sidecar = json.loads(sidecar_path.read_text())
+        except Exception as e:
+            raise HTTPException(500, f"could not read sidecar: {e}")
+        if sidecar.get("status") != "ready":
+            raise HTTPException(
+                409,
+                f"sidecar status is {sidecar.get('status')!r}, not 'ready'. "
+                f"Reason: {sidecar.get('reason')!r}. Fix loadout or re-validate first.",
+            )
+
+        moonraker: MoonrakerClient = request.app.state.moonraker
+        try:
+            result = await moonraker.start_print(gcode_filename)
+        except MoonrakerError as e:
+            raise HTTPException(502, f"Moonraker rejected start_print: {e}")
+        return {"started": gcode_filename, "result": result}
+
     @app.get("/api/logs/{kind}")
     async def get_logs(request: Request, kind: str, lines: int = 200) -> dict:
         if kind not in ("klippy",):

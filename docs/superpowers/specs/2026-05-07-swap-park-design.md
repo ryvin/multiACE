@@ -1,248 +1,323 @@
 # Swap-park — partial-retract for cross-ACE filament swaps
 
-**Status:** approved 2026-05-07 (per chat alignment; no critical-review pass yet — see §7)
-**Branch:** `feat/swap-park` off `main`
-**Scope:** Combined firmware (`ACE_PARK_HEAD`) + web (split-button affordance) for cross-ACE filament swaps. Eliminates the unload-everything-then-load-everything waste pattern observed during this session's T1/T3 swap experiments.
+**Status:** redesigned 2026-05-09 to drop the `ACE_PARK_HEAD` verb in favor of a `LENGTH=` parameter on the existing `ACE_UNLOAD_HEAD` (per decay71 prior art — see Provenance).
+**Branch:** `feat/swap-park` off `main`.
+**Scope:** Add `LENGTH=` parameter to `cmd_ACE_UNLOAD_HEAD` in firmware. Web smart-swap (already shipped on `main`) uses the parameterized unload for cross-ACE displacement; same chain shape, smaller firmware surface.
 
 ## One-line goal
 
-When the user swaps a head's source from ACE A to ACE B, the firmware shouldn't fully retract back to slot A's gate — it should park the filament in ACE A's bowden just past the splitter, ready to re-feed quickly if the user swaps back.
+When the user swaps a head's source from ACE A to ACE B, the firmware shouldn't fully retract back to slot A's gate — it should retract only as far as the ACE-side bowden just past the splitter, ready to re-feed quickly if the user swaps back.
+
+## Provenance
+
+The original v1 of this spec (2026-05-07) proposed a new `ACE_PARK_HEAD HEAD=N` gcode verb that internally called `FEED_AUTO LOAD=0` with a length override. Investigation of `decay71/multiACE` (a sibling fork) on 2026-05-09 found a cleaner design: their `ACE_UNLOAD_HEAD` already accepts a `RETRACT_LENGTH` parameter, and their `ACE_SWAP_HEAD` orchestration just passes a shorter length when the workflow wants a "park" effect. No separate park verb. This spec adopts the same approach for ryvin: parameterize the existing unload primitive instead of adding a new verb.
+
+**Why this matters:**
+- Smaller firmware surface (one parameter, not a new gcode command + macros + audit shape)
+- Aligns conceptually with decay71 — easier cross-fork comparison and contribution
+- Web smart-swap state machine (already merged at `498f4f6`) is unchanged — still calls two leg primitives, just passes `LENGTH=600` on the cross-ACE leg-1
+- `head_source[N].parked` boolean stays as a runtime marker (no schema break)
 
 ## Background — what we observed
 
-During the T1 B1→A1 swap this session, the operator (on hardware) noted: *"you didn't have to fully extract for a swap between aces in case you need to swap back."*
+During the T1 B1→A1 swap on 2026-05-07, the operator noted: *"you didn't have to fully extract for a swap between aces in case you need to swap back."*
 
 The current `ACEC__Unload_T<n>` macro retracts filament from the head sensor all the way back to the slot's gate retainer (~700+ mm in the U1's bowden setup). When the next operation is "load from the OTHER ACE into the same head," that fully-retracted filament is wasted travel:
 
 - **B1 unload**: ~3 min, retracts B1 from T1 all the way back into ACE B's slot
-- **A1 load**: ~3 min, has to feed from ACE A's slot all the way to T1 (which we know hits phase3 timeouts)
+- **A1 load**: ~3 min, has to feed from ACE A's slot all the way to T1
 - **If user swaps back to B1 later**: another ~3 min unload + ~3 min load
 
-The "park" insight: leave the filament tip parked in the ACE-side bowden just past the splitter junction. The other ACE feeds into a clear bowden run. Subsequent swap-back from A1 → B1 only needs to retract A1 to its splitter-side park and re-feed B1 from its splitter-side park. Saves ~5 minutes per swap-back.
+The "park" insight: leave the filament tip parked in the ACE-side bowden just past the splitter junction. Subsequent swap-back avoids the long bowden traversal.
 
 ## Scope (v1)
 
-**Firmware**: a new gcode command `ACE_PARK_HEAD HEAD=N` that:
-1. Reads `head_source[N]` to know which (ACE, slot) the head is sourced from
-2. Performs a calibrated partial retract — pulling filament back from T<n> to a "park" position in the ACE-side bowden (just past the splitter)
-3. Updates `head_source[N]` to indicate "parked" (filament is in bowden, not at gate, not at head)
-4. Audit log: emits `PARK_HEAD` action with `{head, ace, slot, retract_length}`
+**Firmware changes** to `multiace/klipper/extras/ace.py`:
+1. Add `LENGTH=` parameter to `cmd_ACE_UNLOAD_HEAD`. Default: full retract (current behavior). When provided: retract that many mm and stop.
+2. After the retract, set `head_source[N].parked = True` if `LENGTH` was explicitly provided AND the retract completed without clearing the slot. Otherwise (full unload), `head_source[N] = None` (current behavior).
+3. Audit log: `UNLOAD_HEAD` action's existing fields (`{head}`) gain `{length, parked}` when those apply.
+4. Add `[ace]` config key `default_park_retract_length_mm` (default 600). Used by `ACEC__Park_T<n>` convenience macros and by the web smart-swap.
 
-**Web**: a new affordance in the slot row's split-button: when clicking a slot's "Load" or chevron-T<n>, if `head_source[N]` is currently sourced from a *different* ACE than the new target slot, the web invokes `ACE_PARK_HEAD HEAD=N` first, then `ACE_LOAD_HEAD HEAD=N ACE=<new> SLOT=<new>`. Both pre- and post-conditions are observable in the audit log.
+**Convenience macros** in `multiace/config/extended/ace.cfg` (group H):
+- `ACEC__Park_T0` through `ACEC__Park_T3` — wrap `ACE_UNLOAD_HEAD HEAD=N LENGTH={default_park_retract_length_mm}`. Same operator-facing semantics as the v1 spec, just under the existing verb.
+
+**Web changes:** none required. The smart-swap state machine in `app.js` (already merged at `498f4f6`) calls two legs:
+- `_executeSmartSwapLeg1` for cross-ACE: call `ACE_UNLOAD_HEAD HEAD=N LENGTH=600` (replaces the planned `ACE_PARK_HEAD HEAD=N`)
+- `_executeSmartSwapLeg2`: existing `ACE_LOAD_HEAD HEAD=N ACE=M SLOT=S`
+
+The `usePark` boolean in `initiateSmartSwap` becomes "use parameterized unload"; the time estimate stays at ~4 min.
+
+**Web capability detection:** `_probe_swap_park` in `poller.py` currently looks for `gcode_macro ACEC__Park_T0`. The convenience macros land in this spec, so the probe stays valid as-is. (After this spec ships, the macros exist; the probe flips true; cross-ACE swaps automatically use the short retract.)
 
 ## Non-goals (v1)
 
-- **No automatic park** in normal `ACEC__Unload_T<n>`. Existing macro stays as full retract — that's still the right action for "remove this spool entirely from the printer."
-- **No park-on-print-end**. Print-end always wants the full unload (filament goes back to slots for storage / dryer).
-- **No mid-print park**. v0.81 firmware can't switch ACEs mid-print anyway. Park-park-load is for between-print swaps.
-- **No park-multiple-heads chain**. v1 is one head at a time. Multi-head park sequencing is a future concern.
-- **No swap-back optimization in firmware** beyond the park. The web layer is responsible for noticing "user swapped back to the parked source" and using a shorter feed sequence — but that's a Tier 2 follow-up.
+- **No automatic park** in normal `ACEC__Unload_T<n>`. Existing macro stays as full retract — that's still the right action for "remove this spool entirely."
+- **No park-on-print-end**. Print-end always wants the full unload.
+- **No mid-print park**. v0.81 firmware can't switch ACEs mid-print anyway.
+- **No multi-head park sequencing**. v1 is one head at a time.
+- **No park-aware swap-back optimization in firmware**. The web layer doesn't track "this head is parked at A2; if user swaps back to A2, do a short load instead of a full feed." Deferred to v1.5.
 
-## Hardware contract assumptions (need verification)
+## Hardware contract assumptions
 
-1. **Splitter-side park position is calibratable per printer**. The U1's bowden geometry is fixed at install; the distance from the extruder gear back to the splitter Y-junction is the same for every head. One value per printer — call it `park_retract_length_mm`. Reasonable default: 600 mm (less than the full ~700–800 mm, leaves filament tip in the ACE-side bowden ~100 mm past the splitter). Operator calibrates by trial: too short = filament still in shared bowden = blocks the other ACE; too long = filament back at the gate (defeats the point).
+1. **Splitter-side park position is calibratable per printer.** Reasonable default: 600 mm. Operator calibrates by trial: too short = filament still in shared bowden = blocks the other ACE; too long = filament back at the gate (defeats the point).
 
-2. **The "park" position must be physically observable**. After a park, `e<head>_filament` should read False (sensor is downstream of the park). `gate_status[slot]` should still read 1 (slot still has filament backed up to the gate). No way to directly observe "filament is in the ACE-side bowden but not at the gate" — the park position is inferred from the audit log + the fact that wheel encoder ticked the right amount during retract.
+2. **The "park" position must be physically observable.** After a park, `e<head>_filament` should read False. `gate_status[slot]` should still read 1. The park position is inferred from the audit log's `length` field + the wheel encoder having ticked the right amount during retract.
 
-3. **Park calibration value lives in `ace.cfg [ace]` section**, not hardcoded. New config key `park_retract_length_mm` (default 600).
+3. **Park calibration value lives in `ace.cfg [ace]` section** as `default_park_retract_length_mm` (default 600). Used as the default `LENGTH` for the `ACEC__Park_T<n>` macros.
 
 ## 1. Architecture
 
-A small firmware addition + a small web change.
+### Firmware change to `cmd_ACE_UNLOAD_HEAD`
 
-### Firmware (`multiace/klipper/extras/ace.py`)
+Current signature: `ACE_UNLOAD_HEAD HEAD=<n>` — full retract via `FEED_AUTO ... UNLOAD=1 STAGE=prepare/doing`.
 
-- New module-level / `[ace]` config key `park_retract_length_mm` (default 600).
-- New gcode command `ACE_PARK_HEAD HEAD=N`. Implementation pattern matches `cmd_ACE_UNLOAD_HEAD`:
-  - Pre-flight: head must have `head_source[N]` set (can't park empty head). Sensor `e<head>_filament` must read True (must have filament to park).
-  - If `active_device != head_source[N].ace_index`, switch via `ACE_SWITCH TARGET=<source.ace>`.
-  - Issue partial retract via `FEED_AUTO MODULE=<module> CHANNEL=<channel> EXTRUDER=<head> LOAD=0` — the existing unload feeder, but with a `LENGTH` override (or a similar mechanism) to retract only `park_retract_length_mm` instead of the full distance.
-  - Verify `e<head>_filament` reads False post-retract (filament cleared from the head sensor — the success criterion). If True, retract didn't complete; raise.
-  - Update `head_source[N]` in place: keep `ace_index` and `slot` for swap-back routing, add a `parked: True` marker. Web reads this marker to render the row distinctly ("Parked at ACE A slot 1").
-  - Persist via `_save_head_source`.
-  - Audit `PARK_HEAD` with `{head, ace, slot, retract_length, e<head>_filament_post}`.
+New signature: `ACE_UNLOAD_HEAD HEAD=<n> [LENGTH=<mm>]` — when LENGTH is provided, the retract stops after that many mm.
 
-### Web — slot row split-button auto-park
+The implementation needs to thread `LENGTH` through to `FEED_AUTO`. Two paths depending on what `FEED_AUTO` accepts today:
 
-Add to multiACE web's slot Load click handler in `app.js` (near `pickHeadFor` / `sendLoad` from the dual-ACE GUI work):
+- **(a) `FEED_AUTO` accepts a `LENGTH=` parameter:** simplest — `cmd_ACE_UNLOAD_HEAD` just passes it through. Audit log gains `length` field when set.
+- **(b) `FEED_AUTO` doesn't:** add `LENGTH` plumbing into `filament_feed_ace.py`'s `FEED_AUTO` UNLOAD path. Probably ~30 lines: thread `length` from gcode to the unload state machine, stop the wheel-encoder loop when accumulated length reaches the target.
+
+Implementer's first task: read `multiace/klipper/extras/filament_feed_ace.py` to determine which path applies. The existing `FEED_AUTO ... UNLOAD=1 STAGE=prepare/doing` invocations have NO length parameter; they unload to a fixed default. Path (b) is likely.
+
+### head_source.parked semantics
+
+When `LENGTH` is provided AND the retract completes (sensor clears at head), set `head_source[N].parked = True` and KEEP `head_source[N].ace`/`slot` (filament still belongs to that source).
+
+When `LENGTH` is NOT provided (full unload, default), `head_source[N] = None` (current behavior — filament fully retracted to slot, head is empty).
+
+The web's existing parked-state visual (dashed border + "Parked" badge) reads this flag and renders accordingly. The Unload chevron item still appears on parked heads (clicking it issues `ACE_UNLOAD_HEAD HEAD=N` with NO length — fully retracts the parked filament back to slot).
+
+### Web smart-swap delta (no code change required)
+
+The web's `_executeSmartSwapLeg1` (in `app.js`) currently has:
 
 ```js
-async function pickHeadFor(targetAce, targetSlot, targetHead) {
-  const currentSrc = state.head_source[targetHead];
-  if (currentSrc && currentSrc.ace_index !== targetAce) {
-    // Cross-ACE swap — park current source first, then load the new one.
-    await sendCommand(`ACE_PARK_HEAD HEAD=${targetHead}`);
-  }
-  await sendScript(`ACE_LOAD_HEAD HEAD=${targetHead} ACE=${targetAce} SLOT=${targetSlot}`);
+if (usePark) {
+  leg1Ok = await sendScript(`ACE_PARK_HEAD HEAD=${targetHead}`);
+} else {
+  // ... full unload via ACEC__Unload_T<n> macro ...
 }
 ```
 
-The chained call is one user-facing operation but two gcode events. Audit log shows `PARK_HEAD` then `LOAD_HEAD` (or the standard `LOAD_HEAD_TIP_REFRESHED` etc.).
+When this firmware change ships, the `usePark` branch's gcode call should change to:
 
-### Branch
+```js
+if (usePark) {
+  leg1Ok = await sendScript(`ACE_UNLOAD_HEAD HEAD=${targetHead} LENGTH=600`);
+}
+```
 
-`feat/swap-park` off `main` after the wheel-encoder fallback is merged (which it now is, at f393e29).
+The `LENGTH=600` value should match the `default_park_retract_length_mm` config. Implementer can either hardcode 600 in the JS (simple, fragile) or add a `state.parkRetractLength` field surfaced from `state.py` (clean). Recommend the former for v1; the latter for v1.1 if calibration changes per deployment.
 
 ## 2. Components
 
-### `multiace/klipper/extras/ace.py` (~70 lines added)
+### `multiace/klipper/extras/ace.py`
 
-- New config read in `__init__`:
-  ```python
-  self.park_retract_length_mm = config.getint(
-      'park_retract_length_mm', 600, minval=100, maxval=2000)
-  ```
-- Register `ACE_PARK_HEAD` in `_register_commands` next to `ACE_UNLOAD_HEAD`.
-- `cmd_ACE_PARK_HEAD` method: ~50 lines, pattern matching `cmd_ACE_UNLOAD_HEAD` but with the partial-retract length and the new `parked` marker.
+- `cmd_ACE_UNLOAD_HEAD_help` updated to mention `LENGTH=` parameter and explain semantics.
+- `cmd_ACE_UNLOAD_HEAD` body: read `gcmd.get_int('LENGTH', None)`. Pass to `FEED_AUTO` (or to the underlying unload state machine — path b).
+- After successful retract: if `length is not None`, set `self._head_source[head]['parked'] = True` (keep ace/slot/etc). Else clear `head_source[head] = None` as today.
+- `_audit_state('UNLOAD_HEAD', ...)` payload gains `length` (when set) and `parked: True/False`.
+- New config read in `__init__`: `self.default_park_retract_length_mm = config.getint('default_park_retract_length_mm', 600, minval=100, maxval=2000)`.
+
+### `multiace/klipper/extras/filament_feed_ace.py` (if path b applies)
+
+- Thread a `length` parameter through `FEED_AUTO`'s UNLOAD path
+- Stop the unload loop when the accumulated retract distance reaches the target
+- If sensor clears before the target distance, that's still a successful park (filament tip is past the splitter, just earlier than expected — operator-side it's fine)
 
 ### `multiace/config/extended/ace.cfg`
 
-- Optional `park_retract_length_mm = 600` entry in the `[ace]` config section, with a comment explaining how to calibrate.
-- Group H (Recovery) gets a new convenience macro `ACEC__Park_T<n>` for each head:
-  ```cfg
-  [gcode_macro ACEC__Park_T0]
-  description: Park T0's filament in ACE-side bowden just past splitter (for swap-back-friendly cross-ACE swaps).
-  gcode:
-    ACE_PARK_HEAD HEAD=0
-  ```
+```cfg
+# (in [ace] section)
+default_park_retract_length_mm: 600
+# Passed to ACE_UNLOAD_HEAD by ACEC__Park_T<n> macros. Operator calibrates per
+# printer geometry — default 600mm parks the filament tip in the ACE-side bowden
+# just past the splitter Y-junction. Tune up if the parked tip blocks the other
+# ACE's feed; tune down if it ends up at the gate.
+```
+
+Group H convenience macros:
+
+```cfg
+[gcode_macro ACEC__Park_T0]
+description: Park T0 — partial retract using default_park_retract_length_mm.
+gcode:
+  ACE_UNLOAD_HEAD HEAD=0 LENGTH={ printer["gcode_macro _MULTIACE_VARS"].default_park_retract_length_mm | default(600) }
+
+# (T1, T2, T3 analogous)
+```
+
+If `gcode_macro _MULTIACE_VARS` doesn't exist (it might not — depends on existing convention in `ace.cfg`), fall back to a literal:
+
+```cfg
+gcode:
+  ACE_UNLOAD_HEAD HEAD=0 LENGTH=600
+```
+
+The literal-600 form ships v1; the printable-config-driven form is a v1.1 polish.
 
 ### `multiace_web/src/multiace_web/static/app.js`
 
-- New helper `pickHeadFor(ace, slot, head)` that runs park-then-load when cross-ACE.
-- Slot row click handler (already implemented for the dual-ACE GUI feature) updated to call `pickHeadFor` instead of directly sending `ACE_LOAD_HEAD`.
+Change ONE line in `_executeSmartSwapLeg1`:
 
-### `multiace_web/src/multiace_web/state.py`
+```js
+// Before:
+leg1Ok = await sendScript(`ACE_PARK_HEAD HEAD=${targetHead}`);
+// After:
+leg1Ok = await sendScript(`ACE_UNLOAD_HEAD HEAD=${targetHead} LENGTH=600`);
+```
 
-- `head_source[h]` may now contain `parked: True` per the firmware change. State serialization is dict-pass-through, so no schema bump needed — the `parked` field flows through automatically. Frontend reads it.
+That's the entire web change. The capability probe (`_probe_swap_park` checking for `gcode_macro ACEC__Park_T0`) stays valid because this spec ships those macros.
 
-### `multiace_web/src/multiace_web/static/style.css` (small addition)
+### `multiace_web/src/multiace_web/poller.py`
 
-- A new `.slot-row.parked` style: subtle visual differentiator (e.g. dashed border or muted-color row) so users can tell a slot is in "parked" state vs fully retracted vs loaded.
+No change. The probe already looks for `ACEC__Park_T0`; this spec adds it.
+
+### `multiace/install/install_multiace.sh` / `uninstall_multiace.sh`
+
+No change. Existing `ace.cfg` install steps cover the new config key + macros.
 
 ### Tests
 
-Firmware: per CLAUDE.md, no automated tests. Live validation per §5.
-
-Web: extend existing `test_state.py` to verify `head_source[h].parked` round-trips via WS payload.
+- **Firmware**: per CLAUDE.md, no automated tests. Live validation per §5.
+- **Web**: existing `test_state.py` round-trips `head_source[h].parked`. No new tests needed (the JS change is one line; behavior is the same as the existing parked-state path).
+- **Calibration drill**: see §5.
 
 ## 3. Data flow
 
-### Cross-ACE swap with park
+### Cross-ACE swap with parameterized unload
 
 ```
 [user clicks "→ T1" from ACE B slot 1's chevron menu]
        │
        ▼
-pickHeadFor(targetAce=1, targetSlot=1, targetHead=1):
-  currentSrc = state.head_source[1]   // {ace_index:0, slot:1} (sourced from ACE A)
-  currentSrc.ace_index (0) !== targetAce (1)  → cross-ACE swap path
+initiateSmartSwap(targetHead=1, targetAce=1, targetSlot=1, headState="loaded_cross_ace"):
+  // currentSrc = state.head_source[1] = {ace: 0, slot: 1}  (sourced from ACE A)
+  // usePark = state.swapParkAvailable && headState === "loaded_cross_ace" → true
+  // toast countdown → 3 sec → user does not cancel
        │
        ▼
-sendCommand("ACE_PARK_HEAD HEAD=1")
+_executeSmartSwapLeg1(usePark=true):
+  state.smartSwapPending = { head: 1, leg: 1, ... }
+  await sendScript("ACE_UNLOAD_HEAD HEAD=1 LENGTH=600")
        │
        ▼
 [Firmware]
-  - read head_source[1]: ACE 0 / slot 1
-  - active_device (currently 0 = ACE A) — no switch needed for park
-  - issue FEED_AUTO LOAD=0 with LENGTH=park_retract_length_mm
-  - filament retracts ~600 mm: T1 → bowden → past splitter → into ACE A's bowden
-  - e1_filament transitions True → False (success signal)
-  - head_source[1] = {ace_index:0, slot:1, ..., parked: True}
-  - _save_head_source
-  - audit: PARK_HEAD {head:1, ace:0, slot:1, retract_length:600, e1_filament_post:false}
+  cmd_ACE_UNLOAD_HEAD(HEAD=1, LENGTH=600):
+    head_source[1] = {ace:0, slot:1}  (read)
+    active_device = 0 (no switch needed for unload)
+    FEED_AUTO MODULE=... CHANNEL=... EXTRUDER=1 UNLOAD=1 STAGE=prepare
+    FEED_AUTO MODULE=... CHANNEL=... EXTRUDER=1 UNLOAD=1 STAGE=doing  LENGTH=600
+    -> Retract 600mm; sensor e1_filament transitions True → False
+    head_source[1] = {ace:0, slot:1, ..., parked: True}
+    audit: UNLOAD_HEAD {head:1, length:600, parked:true}
        │
        ▼
-sendScript("ACE_LOAD_HEAD HEAD=1 ACE=1 SLOT=1")
+_executeSmartSwapLeg2:
+  state.smartSwapPending = { head: 1, leg: 2, ... }
+  await sendScript("ACE_LOAD_HEAD HEAD=1 ACE=1 SLOT=1")
        │
        ▼
 [Firmware standard load path — switches A→B, feeds from ACE B slot 1]
        │
        ▼
 audit: SWITCH_TARGET, SWITCH, LOAD_HEAD_TIP_REFRESHED, ..., LOAD_HEAD
+state.head_source[1] = {ace:1, slot:1, ...}  (parked marker gone)
+state.smartSwapPending = null
        │
        ▼
-state.head_source[1] = {ace_index:1, slot:1, ...}  (parked marker gone)
-state.head_source[?] for the parked filament — currently nothing tracks
-  "filament is parked in ACE A's bowden waiting" — that's a Tier 2 concern
-  (see §7 follow-ups: parked-source registry).
+[Old A1 filament is parked in ACE A bowden at ~600mm; if user later swaps back
+to A1, the load operation has to traverse the full bowden again because the
+firmware doesn't track "this slot has parked filament waiting." That's the
+v1.5 swap-back optimization deferral.]
 ```
-
-### Swap-back optimization (deferred — see §7)
-
-A future Tier 2: when swapping back from ACE B's slot to a previously-parked ACE A slot, the firmware could feed only `park_retract_length_mm` instead of full bowden length. Out of scope for v1 — the firmware doesn't currently track "parked filaments" anywhere persistent. v1 just makes the park happen; the swap-back optimization wants a dedicated tracker.
 
 ## 4. Error handling
 
-- **head_source[N] is None** when ACE_PARK_HEAD called: refuse with `gcmd.error('Head N is not loaded; nothing to park.')`. No audit.
-- **e<head>_filament is False** when ACE_PARK_HEAD called (head physically empty despite bookkeeping): refuse with `gcmd.error('Head N sensor reads no filament; bookkeeping is wrong. Use ACE_CLEAR_HEADS or ACE_MARK_HEAD_LOADED to fix first.')`. No audit (caller error).
-- **Source ACE not reachable** (`active_device != source.ace_index` AND switch fails): emit `PARK_HEAD_FAILED reason=switch_failed`. raise.
-- **FEED_AUTO LOAD=0 raises** (retract feed failure): emit `PARK_HEAD_FAILED reason=feed_auto_error error=<str(e)>`. raise. **NO sensor-fallback** here — for park, we genuinely need the wheel to spin to pull filament back. If feed fails, retry isn't safe (filament half-out is worse than fully-loaded).
-- **e<head>_filament reads True post-retract** (retract didn't complete enough to clear the head): emit `PARK_HEAD_FAILED reason=sensor_still_detecting`. raise. Operator should run `ACE_PARK_HEAD HEAD=N` again with a longer LENGTH or fall back to `ACEC__Unload_T<n>` for a full retract.
-- **`park_retract_length_mm` is mis-configured** (too short — filament still in shared bowden after park): user observes the next load from another ACE fails (jam at splitter). Recovery: full unload, recalibrate, retry. The audit log's `retract_length` field tells operator what they tried.
-- **Print is in progress** when ACE_PARK_HEAD called: refuse with `gcmd.error('Cannot park during print.')` based on `print_stats.state`. No audit.
+- **`head_source[N]` is None**, full unload requested: refuse with `gcmd.error('Head N is not loaded.')`. (Current behavior; no change.)
+- **`head_source[N]` is None**, length unload requested: same refusal.
+- **`LENGTH` < 100 or > 2000**: refuse with `gcmd.error('LENGTH must be 100-2000mm.')`. (Sanity bound.)
+- **Sensor reads False before retract starts** (head physically empty despite bookkeeping): refuse with the existing tooltip about ACE_MARK_HEAD_UNLOADED for recovery.
+- **Sensor still reads True after retract completes** (LENGTH was too short to clear the head): emit `UNLOAD_HEAD_FAILED reason=sensor_still_detecting length=<N>`. Operator should retry with a longer LENGTH or full unload.
+- **`FEED_AUTO` raises mid-retract**: emit `UNLOAD_HEAD_FAILED reason=feed_auto_error error=<str(e)>`. Existing recovery behavior. Wheel-encoder Tier-2 fallback (already shipped) catches this gracefully.
+- **Print is in progress**: refuse with the existing print-state gate. (No change.)
 
 ## 5. Testing
 
 ### Firmware (manual on hardware)
 
-1. **Calibration drill**: print a 4-color test, then run `ACE_PARK_HEAD HEAD=0`. Visually inspect:
-   - Filament at T0 sensor cleared (e0_filament=False)
-   - Filament tip visible in ACE A's bowden tube (looking down the bowden) ~100 mm before the splitter
-   - Slot 0 still shows filament at gate (gate_status=1)
-   If filament is past the splitter into the shared bowden, `park_retract_length_mm` is too short. Increase by 50 mm and retry. If filament is back at the slot gate, decrease by 50 mm.
+1. **Calibration drill**: with T0 loaded from A1, run `ACE_UNLOAD_HEAD HEAD=0 LENGTH=600`. Visually inspect:
+   - Filament tip pulled out of T0's hotend (e0_filament=False)
+   - Filament tip visible in ACE A's bowden tube ~100mm before the splitter
+   - Slot 0 still shows filament backed up to its gate (gate_status[0]=1)
+   If filament is past the splitter (in shared bowden, blocking the other ACE), increase LENGTH to 700 and retry. If filament is back at the slot gate, decrease to 500. Pin the calibrated value as `default_park_retract_length_mm` in `ace.cfg`.
 
-2. **Cross-ACE swap with park**: from a state where T1 is loaded from ACE A slot 1, run:
+2. **Cross-ACE swap with park — timing comparison**: from a state where T1 is loaded from ACE A slot 1, time both paths:
+
+   Path A (parameterized unload, ~600mm):
    ```
-   ACE_PARK_HEAD HEAD=1
-   ACE_LOAD_HEAD HEAD=1 ACE=1 SLOT=1
+   time curl -s -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
+     -H "Content-Type: application/json" \
+     --data '{"script":"ACE_UNLOAD_HEAD HEAD=1 LENGTH=600\nACE_LOAD_HEAD HEAD=1 ACE=1 SLOT=1"}'
    ```
-   Verify total time < (full ACEC__Unload_T1 + ACE_LOAD_HEAD HEAD=1 ACE=1 SLOT=1). Verify second load doesn't hit splitter friction (no abnormal phase3 retries from the parked filament blocking the path).
 
-3. **Bookkeeping marker**: after a park, query `/printer/objects/query?ace`. `head_source[1]` should include `parked: True`. After the subsequent load, `head_source[1]` should have the new ACE/slot and no `parked` field.
+   Path B (full unload, no LENGTH):
+   ```
+   time curl -s -X POST "http://$DAVINCI_U1_HOST:7125/printer/gcode/script" \
+     -H "Content-Type: application/json" \
+     --data '{"script":"ACEC__Unload_T1\nACE_LOAD_HEAD HEAD=1 ACE=1 SLOT=1"}'
+   ```
 
-4. **Refusal on empty head**: with T2 not loaded (head_source[2]=None), run `ACE_PARK_HEAD HEAD=2`. Should refuse with the "not loaded" error.
+   Path A should be at least 1 minute faster than Path B.
 
-5. **Refusal during print**: start a print, attempt `ACE_PARK_HEAD HEAD=0` mid-print. Should refuse.
+3. **Bookkeeping marker**: after `ACE_UNLOAD_HEAD HEAD=0 LENGTH=600`, query `/printer/objects/query?ace`. `head_source[0]` should include `parked: True` AND retain its original `ace`/`slot`. After a full unload (`ACE_UNLOAD_HEAD HEAD=0` no length), `head_source[0]` should be `None`.
 
-### Web (manual + visual)
+4. **Web UX**: after a parked state, the slot card should show the dashed "Parked" badge (already shipped). The chevron menu's `↗ Unload T<n>` item on the parked source slot should still appear and, when clicked, fully retract the parked filament back to the slot (`ACE_UNLOAD_HEAD HEAD=0` with no length).
 
-1. **Cross-ACE swap UX**: with T1 sourced from ACE A, click ACE B slot 1's chevron → "→ T1". The web should:
-   - Issue `ACE_PARK_HEAD HEAD=1` automatically (visible in Activity tab as a new `PARK_HEAD` action).
-   - Then issue `ACE_LOAD_HEAD HEAD=1 ACE=1 SLOT=1`.
-   - Slot row updates to show T1 sourced from ACE B slot 1, with no flicker showing "T1 empty" in between (state.head_source[1] transitions A1 (parked) → B1 directly).
+5. **Refusal during print**: start a print, attempt `ACE_UNLOAD_HEAD HEAD=0 LENGTH=600` mid-print. Should refuse with the existing print-state gate.
 
-2. **Same-ACE swap unaffected**: with T1 sourced from ACE A slot 1, click ACE A slot 2 → "→ T1". The web should NOT issue ACE_PARK_HEAD (same-ACE swap, no cross-ACE penalty). Just the standard unload-then-load flow.
-
-3. **Parked state visual**: temporarily induce a parked state by running `ACE_PARK_HEAD HEAD=0` directly. The Dashboard slot row for ACE A slot 0 should show a "parked" visual indicator (dashed border or "parked" badge). Click "→ T0" on ACE A slot 0 again — the load should be FAST (filament feeds from park to T0, not from gate).
-
-### Backend / unit
-
-- `test_state.py`: assert `head_source[h].parked` round-trips via WS payload. Single small test addition.
+6. **Smart-swap end-to-end**: after the firmware change ships, click `→ T1` on a cross-ACE slot in the web. The toast should show "~4 min" timing (cross-ACE-with-park branch). Audit log should show `UNLOAD_HEAD {length:600, parked:true}` followed by `LOAD_HEAD`. Total elapsed ~4 min instead of ~6.
 
 ## 6. Migration
 
-No data migration. `head_source` is reconstructed from `save_variables` on Klipper boot — old saves without `parked` markers just deserialize as no marker, which is the correct default ("not parked").
+No data migration. `head_source` already supports the `parked` field (round-trip test landed at `27c2c9a`); old saves without `parked` markers deserialize as `parked` falsy, which is the correct default.
 
-`ace.cfg` users will need to add `park_retract_length_mm` to the `[ace]` section (defaults to 600 if absent). Documentation update to `multiace/README.md` walks through the calibration step.
+`ace.cfg` operators add `default_park_retract_length_mm` to the `[ace]` section (defaults to 600 if absent). Documentation update to `multiace/README.md` walks through the calibration step.
+
+The original v1 spec's `ACE_PARK_HEAD` verb is NOT shipped — operators who saw that name in earlier docs should use `ACE_UNLOAD_HEAD HEAD=N LENGTH=<mm>` or the `ACEC__Park_T<n>` convenience macros.
 
 ## 7. Out-of-scope follow-ups
 
-- **Parked-source registry**: track every parked filament's (ACE, slot, park_distance) in firmware so swap-back can feed only the parked distance, not full bowden length. Requires a new `_parked_sources` dict alongside `_head_source`. Real swap-back optimization gain — but bigger change.
-- **Park calibration UX**: a `ACE_CALIBRATE_PARK` macro that auto-discovers the right park length by retracting incrementally and watching `e<head>_filament` transitions. Replaces the trial-and-error in §5 step 1.
-- **Multi-head park-and-load chain**: a single macro that parks all 4 heads then loads them from a different ACE, optimized for batch swaps. Would have made tonight's T1/T3 swap chains faster.
-- **Print-end park option**: an opt-in macro that parks instead of fully unloads on print end. Useful for "I'm going to print again with the same loadout in an hour" workflows.
+- **Park-aware swap-back optimization** — track parked filaments in firmware so swap-back can feed only the parked distance. Requires a new `_parked_sources` dict alongside `_head_source` and load-side awareness. Real swap-back optimization gain — but bigger change. Deferred to v1.5.
+- **Park calibration auto-discovery** — a `ACE_CALIBRATE_PARK` macro that retracts incrementally and watches `e<head>_filament` transitions. Replaces operator trial-and-error.
+- **Multi-head park-and-load chain** — single macro that parks all 4 heads then loads them from a different ACE.
+- **Print-end park option** — opt-in macro that parks instead of fully unloads on print end.
+- **Mid-print readiness** — see §8 below for patterns to steal from decay71's `ACE_SWAP_HEAD` when web-ops gets lifted from pre-print-only.
 
-## 8. Critical-review note
+## 8. Mid-print readiness — patterns to steal from decay71
 
-This spec was approved on the basis of in-chat alignment but did NOT go through a separate code-reviewer / architect critical review pass. Before implementing, recommend a quick critical review focused on:
+When this spec's firmware ships and the web smart-swap moves from pre-print-only to mid-print-aware (a v2 concern, not in scope here), the following patterns from decay71's `cmd_ACE_SWAP_HEAD` (`ace.py:2783–2990` on `decay71/main`) are the right reference:
 
-- Is `park_retract_length_mm` really a per-printer constant, or does it vary per-head (different bowden routing)?
-- Does the firmware's existing FEED_AUTO LOAD=0 path accept a LENGTH override, or do we need a different mechanism?
-- Is `parked: True` a sufficient marker, or do we need to track the precise park distance per head (in case a future calibration changes mid-session)?
+1. **Heater hold during unload via `KEEP_HEAT=swap_temp` parameter on `ACE_UNLOAD_HEAD`** — prevents nozzle cool-down between legs of a swap.
+2. **Position save/restore around the unload+load sequence** — saves printhead position, lifts Z, performs swap, restores.
+3. **Toolhead switch (`T<n> A0`)** if the active extruder differs from the swap target — selects the right extruder for the swap legs.
+4. **`_pause_for_recovery()` firmware-side recovery** — if leg1 or leg2 fails, pause the print and write a multilingual instruction sheet to the Fluidd log; operator runs follow-up gcode and `RESUME`. Distinct from the current web-side state-aware retry toast (which works for pre-print but NOT for mid-print since the print is paused).
+5. **Anti-ooze retract sequencing** (`swap_anti_ooze_retract`) — small retract before un-loading and small extrude after re-loading to manage drool.
+6. **Post-load nozzle clean** (`ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD`) — primes the new filament cleanly before resuming the print.
 
-These are the kinds of issues a critical-review pass would surface; flagging them here so the implementer doesn't get bitten.
+Each pattern is ~10-30 lines in decay71's source. Copy the structure; rewire to ryvin's existing primitives (the heater hold, position save, etc. all have direct ryvin equivalents).
+
+The spec does NOT require these for v1 (pre-print only). They're called out here so the implementer doesn't paint themselves into a corner that would need a rewrite when mid-print lands.
 
 ## Open questions
 
-1. **Per-head vs per-printer park length** — verify by inspection. If U1's bowden routing is symmetric across heads (likely), one printer-wide constant is enough.
-2. **FEED_AUTO LOAD=0 LENGTH parameter** — verify by reading filament_feed.py. If unsupported, alternative is to call `ACE_RETRACT INDEX=<source_slot> LENGTH=<park_length>` directly, skipping FEED_AUTO entirely.
+1. **Does `FEED_AUTO`'s UNLOAD path already accept a length parameter?** Implementer's first action: read `multiace/klipper/extras/filament_feed_ace.py`. If yes, path (a) — minimal change. If no, path (b) — thread the parameter through ~30 lines.
+
+2. **Should the literal `LENGTH=600` in `app.js` be parameterized via `state.parkRetractLength`?** v1 says hardcode for simplicity. v1.1 if multi-deployment calibration becomes a real need.
+
+3. **What does `FEED_AUTO ... UNLOAD=1 STAGE=...` actually retract today?** Defaults are buried in the existing implementation; the spec needs to confirm the full-retract distance is roughly 700-800mm so 600mm parking is meaningfully shorter (hence the timing win).
+
+## Plan dependency note
+
+The original plan at `docs/superpowers/plans/2026-05-07-swap-park.md` was written against the v1 (ACE_PARK_HEAD verb) spec. **It needs regeneration** to match this redesigned spec before implementation begins. The plan's scope shrinks meaningfully — fewer firmware lines, no new audit shape, a one-line web change. Re-run writing-plans against this v2 spec.
