@@ -1432,7 +1432,7 @@ function openFixLoadoutWizard(item) {
               `<button class="fix-candidate-btn ghost-btn"
                  data-tool="${idx}" data-ace="${c.ace}" data-slot="${c.slot}"
                  data-spool="${c.spool_id}">
-                 ACE ${String.fromCharCode(65 + c.ace)} / Slot ${c.slot + 1}
+                 ACE ${String.fromCharCode(65 + c.ace)} / Slot ${c.slot}
                  ${c.spool_name ? "— " + c.spool_name : ""}
                </button>`
             ).join("")}
@@ -1463,7 +1463,7 @@ function openFixLoadoutWizard(item) {
   body.querySelectorAll(".fix-candidate-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const filename = item.filename;
-      toast(`Accepting ACE ${String.fromCharCode(65 + parseInt(btn.dataset.ace))} / Slot ${parseInt(btn.dataset.slot)+1} for tool ${btn.dataset.tool}`, "info");
+      toast(`Accepting ACE ${String.fromCharCode(65 + parseInt(btn.dataset.ace))} / Slot ${parseInt(btn.dataset.slot)} for tool ${btn.dataset.tool}`, "info");
       await fetch(api("api/print_queue/" + encodeURIComponent(filename) + "/revalidate"),
         { method: "POST", headers: authHeader() });
       await fetchPrintQueue();
@@ -1527,7 +1527,7 @@ function _renderResolutionTable(tools) {
   const rows = Object.entries(tools).map(([idx, t]) => {
     const resolved = t.resolved;
     const aceLabel = resolved
-      ? `ACE ${String.fromCharCode(65 + resolved.ace)} / Slot ${resolved.slot + 1}`
+      ? `ACE ${String.fromCharCode(65 + resolved.ace)} / Slot ${resolved.slot}`
       : "—";
     const spool = t.candidates && t.candidates.length === 1
       ? (t.candidates[0].spool_name || "—")
@@ -1703,7 +1703,7 @@ function rgbFromUint(packed) {
 // audit events, and Klipper g-code (T0..T3) keep using the raw index — only
 // human-visible text gets shifted.
 function tName(i)    { return `T${(+i) + 1}`; }
-function slotName(i) { return `Slot ${(+i) + 1}`; }
+function slotName(i) { return `Slot ${+i}`; }
 
 // Pick contrasting text color for a swatch background. Uses ITU-R BT.601
 // perceived brightness so white/light filament gets dark text and dark
@@ -1891,7 +1891,7 @@ async function initiateSmartSwap(targetHead, targetAce, targetSlot, headState) {
   // Build toast text for displacement swap
   const src = state.head_source[targetHead];
   const srcAceLetter = String.fromCharCode(65 + src.ace);
-  const srcSlotLabel = String(src.slot + 1);
+  const srcSlotLabel = String(src.slot);
   const dstAceLetter = String.fromCharCode(65 + targetAce);
   const dstSlotLabel = String(targetSlot + 1);
   const swapLabel = `${srcAceLetter}${srcSlotLabel} → ${dstAceLetter}${dstSlotLabel}`;
@@ -2037,7 +2037,7 @@ function openHeadTargetMenu(anchor, ace, slotIdx) {
       if (hc !== "empty") {
         const src = state.head_source[h];
         const srcAceLetter = String.fromCharCode(65 + src.ace);
-        item.title = `Will displace ${srcAceLetter}${src.slot + 1} currently loaded in ${tName(h)}`;
+        item.title = `Will displace ${srcAceLetter}${src.slot} currently loaded in ${tName(h)}`;
       }
       item.addEventListener("click", async () => {
         menu.remove();
