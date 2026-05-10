@@ -37,11 +37,21 @@ class MoonrakerClient:
             raise MoonrakerError(f"printer_info failed: {e}") from e
         return resp.json()["result"]
 
-    async def run_gcode(self, script: str) -> str:
-        """POST /printer/gcode/script?script=<encoded> → returns result string."""
+    async def run_gcode(self, script: str, timeout: float = 600.0) -> str:
+        """POST /printer/gcode/script?script=<encoded> → returns result string.
+
+        Default timeout is 10 minutes — Moonraker holds the response open
+        until the gcode command completes, and ACE-driven gcode (e.g.
+        ACE_LOAD_HEAD, ACE_UNLOAD_HEAD with LENGTH=) routinely takes 1-3
+        minutes on hardware. The class-level default httpx timeout (30s)
+        is too short for these and would cut off the proxy while the
+        firmware is still mid-operation, leaving the web with a false
+        failure indication while the firmware completes the operation
+        anyway (exposed by the swap-park T6 hardware test on 2026-05-10).
+        """
         url = f"/printer/gcode/script?script={quote(script)}"
         try:
-            resp = await self._client.post(url)
+            resp = await self._client.post(url, timeout=timeout)
         except httpx.HTTPError as e:
             raise MoonrakerError(f"run_gcode {script!r} connection error: {e}") from e
         if resp.status_code >= 400:
@@ -96,16 +106,18 @@ class MoonrakerClient:
             raise MoonrakerError(f"list_gcode_files failed: {e}") from e
         return resp.json().get("result", [])
 
-    async def start_print(self, filename: str) -> str:
+    async def start_print(self, filename: str, timeout: float = 60.0) -> str:
         """POST /printer/print/start?filename=<encoded> → returns result string.
 
         Asks Moonraker to start a print of the named gcode file from the
         gcodes root. Filename should be relative to the gcodes dir (e.g.
-        "demo.gcode" or "subfolder/demo.gcode").
+        "demo.gcode" or "subfolder/demo.gcode"). 60s timeout to cover
+        Moonraker's start-print handoff (parses the file, validates,
+        switches state) — short enough to fail fast on connection issues.
         """
         url = f"/printer/print/start?filename={quote(filename)}"
         try:
-            resp = await self._client.post(url)
+            resp = await self._client.post(url, timeout=timeout)
         except httpx.HTTPError as e:
             raise MoonrakerError(f"start_print {filename!r} connection error: {e}") from e
         if resp.status_code >= 400:
