@@ -338,6 +338,19 @@ async def lifespan(app: FastAPI):
 
     state_tailer = LogTailer(state_log, on_line=on_state_line)
     poller = StatusPoller(moonraker, interval=5.0, state=state)
+
+    # Synchronously probe ACEC__Park_T0 presence so /api/state returns the
+    # right swap_park_available before the StatusPoller's first 5s tick. Without
+    # this, a chevron click within ~5s of a multiace-web restart sees
+    # swap_park_available=False (default) and falls through to the full-unload
+    # branch instead of the park branch — see Bug D in the T6 test on 2026-05-10.
+    # Failures (Klipper down, network blip) keep the default False; the periodic
+    # poller will pick up the macro presence as soon as Klipper is reachable.
+    try:
+        async with httpx.AsyncClient() as _probe_client:
+            state.swap_park_available = await poller._probe_swap_park(_probe_client)
+    except Exception:
+        log.exception("startup swap_park probe failed; will retry via poller")
     print_poller = PrintStatePoller(
         fetcher=lambda: _compute_print_payload(moonraker),
         app_state=app.state,
