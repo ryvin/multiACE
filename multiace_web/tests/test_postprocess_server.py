@@ -55,6 +55,7 @@ def app_with_sidecars(tmp_path, monkeypatch):
     mock_mr = MagicMock()
     mock_mr.close = AsyncMock()
     mock_mr.run_gcode = AsyncMock(return_value="ok")
+    mock_mr.start_print = AsyncMock(return_value="ok")
     mock_mr.get_logs = AsyncMock(return_value=[])
     # list_gcode_files returns filenames as Moonraker would
     mock_mr.list_gcode_files = AsyncMock(return_value=[
@@ -133,3 +134,61 @@ def test_revalidate_409_when_swap_in_progress(app_with_sidecars):
         resp = c.post("/api/print_queue/demo.gcode/revalidate")
         app_with_sidecars.state.state.swap_in_progress = False
     assert resp.status_code == 409
+
+
+# --- /api/print_queue/{filename}/print ---
+
+def test_print_starts_when_sidecar_ready(app_with_sidecars):
+    """POST /print on a ready sidecar should call moonraker.start_print and return 200."""
+    with TestClient(app_with_sidecars) as c:
+        resp = c.post("/api/print_queue/demo.gcode/print")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["started"] == "demo.gcode"
+    # Verify moonraker.start_print was called with the right filename
+    mr = app_with_sidecars.state.moonraker
+    mr.start_print.assert_awaited_once_with("demo.gcode")
+
+
+def test_print_409_when_sidecar_pending(app_with_sidecars):
+    """POST /print on a pending sidecar must refuse with 409 + reason."""
+    with TestClient(app_with_sidecars) as c:
+        resp = c.post("/api/print_queue/pending.gcode/print")
+    assert resp.status_code == 409
+    detail = resp.json().get("detail", "")
+    assert "pending" in detail
+    # And moonraker.start_print should NOT have been called
+    mr = app_with_sidecars.state.moonraker
+    mr.start_print.assert_not_awaited()
+
+
+def test_print_404_when_no_sidecar(app_with_sidecars):
+    """POST /print without a sidecar must 404 with a message about re-validating."""
+    with TestClient(app_with_sidecars) as c:
+        resp = c.post("/api/print_queue/nonexistent.gcode/print")
+    assert resp.status_code == 404
+    assert "re-validate" in resp.json().get("detail", "")
+
+
+def test_print_409_when_swap_in_progress(app_with_sidecars):
+    """POST /print must refuse with 409 if swap_in_progress is True."""
+    with TestClient(app_with_sidecars) as c:
+        app_with_sidecars.state.state.swap_in_progress = True
+        resp = c.post("/api/print_queue/demo.gcode/print")
+        app_with_sidecars.state.state.swap_in_progress = False
+    assert resp.status_code == 409
+    mr = app_with_sidecars.state.moonraker
+    mr.start_print.assert_not_awaited()
+
+
+def test_print_502_when_moonraker_rejects(app_with_sidecars):
+    """If Moonraker raises MoonrakerError, the endpoint should return 502."""
+    from multiace_web.moonraker import MoonrakerError
+    with TestClient(app_with_sidecars) as c:
+        # Override start_print AFTER lifespan startup so app.state.moonraker exists
+        app_with_sidecars.state.moonraker.start_print = AsyncMock(
+            side_effect=MoonrakerError("file not found")
+        )
+        resp = c.post("/api/print_queue/demo.gcode/print")
+    assert resp.status_code == 502
+    assert "file not found" in resp.json().get("detail", "")

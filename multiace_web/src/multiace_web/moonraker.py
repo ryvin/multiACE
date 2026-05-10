@@ -95,3 +95,23 @@ class MoonrakerClient:
         except httpx.HTTPError as e:
             raise MoonrakerError(f"list_gcode_files failed: {e}") from e
         return resp.json().get("result", [])
+
+    async def start_print(self, filename: str) -> str:
+        """POST /printer/print/start?filename=<encoded> → returns result string.
+
+        Asks Moonraker to start a print of the named gcode file from the
+        gcodes root. Filename should be relative to the gcodes dir (e.g.
+        "demo.gcode" or "subfolder/demo.gcode").
+        """
+        url = f"/printer/print/start?filename={quote(filename)}"
+        try:
+            resp = await self._client.post(url)
+        except httpx.HTTPError as e:
+            raise MoonrakerError(f"start_print {filename!r} connection error: {e}") from e
+        if resp.status_code >= 400:
+            try:
+                err = resp.json().get("error", {}).get("message", resp.text)
+            except Exception:
+                err = resp.text
+            raise MoonrakerError(f"start_print {filename!r} failed: {err}")
+        return resp.json().get("result", "ok")
