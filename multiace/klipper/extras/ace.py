@@ -1428,12 +1428,22 @@ class BunnyAce:
                         head, saved[key]['ace_index'] + 1, saved[key]['slot']))
 
     def _save_head_source(self):
-        
+
         save_data = {}
         for head in range(4):
             save_data[str(head)] = self._head_source[head]
-        
-        value_str = json.dumps(save_data).replace('null', 'None')
+
+        # Klipper's SAVE_VARIABLE parses VALUE via ast.literal_eval which expects
+        # Python literals (None, True, False) — not the JSON forms (null, true,
+        # false). Replace the colon-prefixed JSON tokens; the prefix avoids
+        # matching inside string values (a brand named "true" stays unchanged
+        # since it would be quoted: '"true"' not ': true').
+        value_str = (
+            json.dumps(save_data)
+            .replace(': null', ': None')
+            .replace(': true', ': True')
+            .replace(': false', ': False')
+        )
         self.gcode.run_script_from_command(
             "SAVE_VARIABLE VARIABLE=%s VALUE='%s'"
             % (self.VARS_ACE_HEAD_SOURCE, value_str))
@@ -1874,14 +1884,24 @@ class BunnyAce:
                     "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d UNLOAD=1 STAGE=doing"
                     % (module, channel, head))
             else:
-                # Partial retract: call _retract directly with the requested length,
-                # bypassing FEED_AUTO STAGE=doing whose retract is hardcoded to
-                # self.retract_length. After STAGE=prepare completes the nozzle is
-                # hot and filament is tipped — only the ACE-side retract differs.
-                self._retract(slot, park_length, self.retract_speed)
-                self.wait_ace_ready()
-                # Turn off nozzle heater (FEED_AUTO STAGE=doing does this internally).
-                self.gcode.run_script_from_command("M104 S0\r\n")
+                # Partial retract: STAGE=doing handles INNER_FILAMENT_UNLOAD
+                # (extruder-gear retract — pulls filament tip out of head sensor)
+                # AND retract_fil (ACE-side wheel) AND verification + retry. We
+                # need all of those for a working park; calling _retract alone
+                # leaves the filament tip wedged at the head. Temporarily
+                # override self.retract_length so retract_fil pulls back the
+                # requested park distance instead of the full length.
+                # filament_feed_ace.py also clears head_source[head] = None on
+                # success — the post-retract block below re-sets it with
+                # parked=True, restoring the source-slot bookkeeping.
+                saved_retract_length = self.retract_length
+                self.retract_length = park_length
+                try:
+                    self.gcode.run_script_from_command(
+                        "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d UNLOAD=1 STAGE=doing"
+                        % (module, channel, head))
+                finally:
+                    self.retract_length = saved_retract_length
 
         except Exception as e:
             self.gcode.run_script_from_command(
