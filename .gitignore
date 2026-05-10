@@ -9,6 +9,8 @@
 .playwright-mcp/
 /hardware-*.png
 /embed-*.png
+/fluidd-*.png
+/humidity-*.png
 
 # Python
 __pycache__/
@@ -18,6 +20,7 @@ __pycache__/
 # venv
 .venv/
 venv/
+.venv_test/
 
 # Editor
 .vscode/*
