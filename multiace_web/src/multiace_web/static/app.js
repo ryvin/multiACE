@@ -1702,7 +1702,7 @@ function rgbFromUint(packed) {
 // UI labels are 1-based even though internal indices stay 0-based. Macros,
 // audit events, and Klipper g-code (T0..T3) keep using the raw index — only
 // human-visible text gets shifted.
-function tName(i)    { return `T${(+i) + 1}`; }
+function tName(i)    { return `T${+i}`; }
 function slotName(i) { return `Slot ${+i}`; }
 
 // Pick contrasting text color for a swatch background. Uses ITU-R BT.601
