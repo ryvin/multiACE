@@ -1944,7 +1944,31 @@ async function _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark,
     return;
   }
 
+  // Wait for leg 1's effect on head_source to propagate before dispatching
+  // leg 2. Without this, the server preflight on leg 2 races against the
+  // multiace_state.log tailer: leg 1's HTTP response returns the moment the
+  // firmware's audit hits the log, but the tailer reads the file
+  // asynchronously and may not have applied the new head_source yet when
+  // the preflight runs — yielding a 409 "head busy" on a head we *just*
+  // unloaded. See the T6 swap-park test on 2026-05-10.
+  await _waitForSwapLeg1Propagation(targetHead);
+
   _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, 0);
+}
+
+async function _waitForSwapLeg1Propagation(targetHead) {
+  const DEADLINE_MS = 5000;
+  const t0 = Date.now();
+  while (Date.now() - t0 < DEADLINE_MS) {
+    const src = state.head_source[targetHead];
+    // Leg 1 succeeded if the source is now null (full unload cleared it)
+    // OR has parked=true (LENGTH= retract path). Either way the preflight
+    // will allow leg 2.
+    if (!src || src.parked === true) return;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  // Defensive: proceed anyway. If leg 2 then 409s, the existing
+  // showSwapFailure path surfaces it.
 }
 
 async function _executeSmartSwapLeg2(targetHead, targetAce, targetSlot, failCount) {
