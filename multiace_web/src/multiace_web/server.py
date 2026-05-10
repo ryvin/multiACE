@@ -211,7 +211,12 @@ def _preflight_load_head(state: Any, script: str) -> "str | None":
     slot = int(m.group(3)) if m.group(3) is not None else head
 
     head_source = getattr(state, "head_source", {}) or {}
-    if head_source.get(head) or head_source.get(str(head)):
+    src = head_source.get(head) or head_source.get(str(head))
+    # Allow loads when the head's current source is parked (LENGTH= retract).
+    # That's the whole point of swap-park leg 2 — the head is empty, the
+    # bookkeeping just remembers which slot to swap-back to. Treat parked
+    # sources as not-busy.
+    if src and not src.get("parked"):
         return f"head T{head} is busy — unload first"
     if ace == active_device:
         gate = getattr(state, "gate_status", []) or []

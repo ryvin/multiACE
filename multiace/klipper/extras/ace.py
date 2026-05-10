@@ -2471,10 +2471,21 @@ class BunnyAce:
             }
             for h in range(4):
                 src = self._head_source.get(h)
-                state['head_source'][h] = {
-                    'ace': src['ace_index'], 'slot': src['slot'],
-                    'type': src.get('type', ''), 'color': src.get('color', '')
-                } if src else None
+                if src:
+                    serialized = {
+                        'ace': src['ace_index'], 'slot': src['slot'],
+                        'type': src.get('type', ''), 'color': src.get('color', ''),
+                    }
+                    # Preserve parked flag set by the LENGTH= retract path so the
+                    # web's swap-park UI and the server-side load preflight can
+                    # distinguish parked-source from active-source. Without this,
+                    # the audit shows head_source[h] populated and the preflight
+                    # rejects leg 2 of a swap-park with 409 (head busy).
+                    if src.get('parked'):
+                        serialized['parked'] = True
+                    state['head_source'][h] = serialized
+                else:
+                    state['head_source'][h] = None
 
             sensors = {}
             for h in range(4):
