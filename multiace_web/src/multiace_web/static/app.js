@@ -1921,9 +1921,13 @@ async function _executeSmartSwapLeg1(targetHead, targetAce, targetSlot, usePark,
 
   let leg1Ok;
   if (usePark) {
-    // Park = parameterized full-retract: ACE_UNLOAD_HEAD with LENGTH=<park>.
-    // 600mm matches default_park_retract_length_mm in [ace] config.
-    leg1Ok = await sendScript(`ACE_UNLOAD_HEAD HEAD=${targetHead} LENGTH=600`);
+    // Park retract — route through the ACEC__Park_T<n> macro so the length
+    // is owned by [ace] config (default_park_retract_length_mm) rather than
+    // hardcoded here. Keeps the firmware-side config the single source of
+    // truth for retract length (revised 2026-05-10 from a hardcoded 600 mm
+    // to a macro after the 600 mm retract caused cumulative cross-slot
+    // drift past the ACE drive wheel — see ace.cfg comment for details).
+    leg1Ok = await sendCommand(`ACEC__Park_T${targetHead}`);
   } else {
     seedSingleHeadWorkflow("unload_single", targetHead, `Unload ${tName(targetHead)}`);
     leg1Ok = await sendCommand(`ACEC__Unload_T${targetHead}`);
