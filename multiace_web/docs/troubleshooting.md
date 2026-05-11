@@ -77,6 +77,84 @@ If you're recovering a stuck head right now and don't want to wait for the
 config change to take effect, run those two lines manually then retry
 `ACEC__Load_Tx`.
 
+## Load times out with `sensor not reached` — filament past ACE grip wheel
+
+**Symptom**
+
+```
+[feed_loading] attempt 1: sensor not reached
+[feed_loading] retry 1/1: retracting 50mm
+[feed_loading] attempt 2: sensor not reached
+[feed] extruder[N] hanging neutral, try: 0/1, cnt1:1, cnt2: 1
+[feed][load] channel[N] auto load error: logic error!
+extruder[N]: state: load_feeding, error: timeout!raw msg:logic error!
+```
+
+`ACE_LOAD_HEAD` runs the full 2 × ~35 s feed cycle, the dashboard's head card
+stays empty (`sensor[N] = false`), and the activity feed surfaces
+`LOAD_HEAD_FAILED` with `reason=feed_auto_error`. You can hear the ACE motor
+turn during the attempt — sound is there but nothing physically advances.
+
+The `cnt1:1, cnt2:1` in the log is the **toolhead extruder gear** counter
+(not the ACE drive wheel) and is normal here — filament never reached the
+extruder, so its gear never had anything to bite.
+
+**Cause**
+
+The filament tip has retracted past the ACE Pro's drive wheel toward the
+spool, so the wheel has nothing between its rollers to grip. The motor
+spins but the filament doesn't advance. This commonly happens after:
+
+- A **`LENGTH=` retract that was too long** (e.g., `ACE_UNLOAD_HEAD HEAD=N
+  LENGTH=>1500`) — pulled the tip beyond the drive wheel position.
+- **Cumulative cross-slot coupling drift** — the ACE's slots share drive
+  hardware; retracting slot N drifts neighboring slots back by some
+  fraction. Over many swap-park operations, *untouched* slots' tips can
+  accumulate past their drive wheels even though you never explicitly
+  retracted them.
+
+**Diagnose**
+
+Send `ACE_FEED INDEX=<slot> LENGTH=1500 SPEED=30` against the affected slot
+and watch the head sensor on the dashboard (or `/api/state`). If the sensor
+stays `False` for the full ~50 s feed, the wheel really is spinning empty —
+filament is past the grip wheel. If the sensor trips, the grip is fine and
+your load-length tuning is the issue (different troubleshooting, see the
+`move_extrude` section above for a related case).
+
+**Fix**
+
+There is **no programmatic recovery** — the ACE Pro's USB protocol doesn't
+expose a "re-thread filament past the drive wheel" command, and the
+`feed_filament` primitive can only push filament that's already gripped.
+
+Manual reseat procedure:
+
+1. Open ACE A or B's top cover. Find the affected slot (slot N, where N is
+   the head index that failed).
+2. **Pull the slot's filament fully out** — all the way back, past the slot
+   intake hole.
+3. Cut a **fresh ~45° angle** on the tip with side cutters (helps the wheel
+   bite cleanly).
+4. **Re-insert** firmly through the intake hole. The ACE should grab and
+   pull the filament 10-20 cm inward — you should feel a tug as the wheel
+   engages.
+5. If no tug after 2-3 s: check the wheel housing latch is fully closed,
+   look for filament shards or debris between the drive wheel and the idler.
+6. Retry the LOAD.
+
+**Prevention**
+
+- Calibrate `default_park_retract_length_mm` conservatively for your
+  printer's geometry (head→splitter distance plus a small margin on the
+  ACE-branch side). On Davinci-U1 the calibrated value is 700 mm.
+- For long multi-color print runs, plan periodic full-unload operations
+  (`ACE_UNLOAD_HEAD HEAD=N` without `LENGTH=`) to reset all slots and
+  prevent drift accumulation.
+- If multiple slots on one ACE fail in quick succession, that's the
+  cumulative-drift symptom — reseat all four slots on that ACE while you
+  have the cover open.
+
 ## `LOAD_HEAD_SUSPICIOUS` with `wheel_not_moving` (false positive)
 
 **Symptom**

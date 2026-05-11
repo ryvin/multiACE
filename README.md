@@ -15,6 +15,21 @@ USB-level misbehaviour related to the ACE Pro's internal reset cycle could cause
 
 **Logging:** dedicated state and USB debug logs were significantly expanded for post-mortem analysis after print issues (`state_debug` / `usb_debug` in `[ace]`).
 
+### 0.81b in-flight updates (post First Light Hotfix 1)
+
+**Swap-park GUI flow** — the dashboard's slot chevron menu (`▾` next to each Load button) now offers a single-click `→ T<n> (swap)` for cross-ACE swaps. Leg 1 parks the current source via the new `ACEC__Park_T<n>` macros (partial-retract; configurable `default_park_retract_length_mm` in `[ace]`), leg 2 loads from the new slot. Falls back to full unload when the firmware doesn't expose `ACEC__Park_T<n>` (older installs). Validated end-to-end on Davinci-U1.
+
+**Calibration: `default_park_retract_length_mm = 700` mm (Davinci-U1).** This is the head→splitter distance plus a small ACE-branch margin. Calibrate per printer geometry — too short leaves the parked tip in the shared bowden between splitter and toolhead (blocks the *other* ACE from loading); too long pushes the tip past the ACE drive wheel (loses grip, needs manual reseat).
+
+**Known caveat — cumulative cross-slot coupling drift.** The ACE Pro's drive train couples slots mechanically: retracting slot N also drifts neighboring slots back by some fraction. Over many swap-park operations, untouched slots can accumulate enough drift to lose grip and require manual reseat (pull filament out, re-insert through the slot intake until the ACE auto-feeds). See `multiace_web/docs/troubleshooting.md` for the recovery procedure.
+
+**Bug fixes (web console)**:
+- "Tool change in progress" banner no longer sticks forever after a SWITCH — `state.py` force-clears `swap_in_progress` on all SWITCH-family terminal audits (the firmware emits these while the flag is still True; the matching clear has no audit event).
+- Chevron menu no longer offers `→ T<n>` for slots already actively feeding `T<n>` (would have been a no-op refresh).
+- Smart-swap leg 2 no longer races against the audit-log tailer — `_waitForSwapLeg1Propagation` waits for `head_source[targetHead]` to update before dispatching leg 2, eliminating the `409 head busy` false rejection.
+- `swap_park_available` is probed synchronously at lifespan startup so the first chevron click after a `multiace-web` restart sees the right capability without waiting for the StatusPoller's first 5s tick.
+- Firmware's audit serializer now preserves the `parked` flag on `head_source[h]` payloads, and the server's `/api/command` preflight allows loads when the head's current source is parked (it's not actually busy).
+
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
 ## multiACE v0.81b "First Light" Hotfix 1
