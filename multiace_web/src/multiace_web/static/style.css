@@ -521,6 +521,10 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .config-fields input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.config-help {
+  font-size: 0.75rem; color: var(--fg-muted);
+  line-height: 1.4; margin-top: 0.1rem;
+}
 .form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 
 /* ---- Dashboard layout ---- */
@@ -877,8 +881,10 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
     grid-template-rows: repeat(2, auto);
     grid-auto-flow: column;
   }
-  .config-fields label { grid-template-columns: 220px 1fr; align-items: center; }
-  .config-fields label > span { text-align: right; }
+  .config-fields label { grid-template-columns: 220px 1fr; align-items: start; }
+  .config-fields label > span { text-align: right; padding-top: 0.55rem; }
+  /* Help text below the input on desktop (column 2, row 2) */
+  .config-fields label > .config-help { grid-column: 2; }
 }
 
 /* ---- Desktop (>=1024) ---- */
