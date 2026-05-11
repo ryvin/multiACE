@@ -2641,6 +2641,46 @@ function editDryProfiles() {
 
 let configValues = {}; // last fetched config
 
+// Hints for individual keys: tooltip/help text + input type constraints.
+// Keys not listed here render as a plain text input with no help (existing
+// behavior). Add hints incrementally for the calibration-critical ones —
+// these are values where wrong settings have material physical consequences
+// (filament past grip, blocked bowden, etc.).
+const CONFIG_KEY_HINTS = {
+  default_park_retract_length_mm: {
+    help: "Park retract length (mm) for cross-ACE swap-park. Too short → blocks shared bowden between splitter and toolhead. Too long → filament drifts past ACE drive wheel (needs manual reseat). Davinci-U1 calibrated 700. Firmware bounds: 100-2000. Tune in ±50mm steps.",
+    type: "number", min: 100, max: 2000, step: 50,
+  },
+  retract_length: {
+    help: "Full-unload retract distance (mm). Calibrated to head→splitter+ACE-side full retract. Wrong values cause incomplete unloads.",
+    type: "number", min: 500, max: 3000, step: 50,
+  },
+  retract_speed: {
+    help: "Retract speed (mm/s).",
+    type: "number", min: 5, max: 100, step: 1,
+  },
+  load_length: {
+    help: "Full-load feed distance from ACE to head sensor (mm).",
+    type: "number", min: 500, max: 3000, step: 50,
+  },
+  feed_speed: {
+    help: "Feed speed (mm/s) for load/unload operations.",
+    type: "number", min: 5, max: 100, step: 1,
+  },
+  tip_refresh_retract_length: {
+    help: "Pre-load tip refresh: small retract distance (mm) to back off a deformed tip.",
+    type: "number", min: 0, max: 200, step: 5,
+  },
+  tip_refresh_feed_length: {
+    help: "Pre-load tip refresh: forward feed (mm) after retract to expose fresh filament.",
+    type: "number", min: 0, max: 400, step: 5,
+  },
+  ace_device_count: {
+    help: "Number of ACE Pro units. Required for multi-ACE setups so multiACE waits for all of them at startup.",
+    type: "number", min: 1, max: 8, step: 1,
+  },
+};
+
 async function renderConfig() {
   const fields = document.getElementById("config-fields");
   if (Object.keys(configValues).length === 0) {
@@ -2659,11 +2699,25 @@ async function renderConfig() {
     const span = document.createElement("span");
     span.textContent = k;
     const input = document.createElement("input");
-    input.type = "text";
+    const hint = CONFIG_KEY_HINTS[k];
+    if (hint) {
+      input.type = hint.type || "text";
+      if (hint.min != null) input.min = hint.min;
+      if (hint.max != null) input.max = hint.max;
+      if (hint.step != null) input.step = hint.step;
+    } else {
+      input.type = "text";
+    }
     input.name = k;
     input.value = v;
     lbl.appendChild(span);
     lbl.appendChild(input);
+    if (hint && hint.help) {
+      const helpEl = document.createElement("small");
+      helpEl.className = "config-help";
+      helpEl.textContent = hint.help;
+      lbl.appendChild(helpEl);
+    }
     fields.appendChild(lbl);
   }
 }
