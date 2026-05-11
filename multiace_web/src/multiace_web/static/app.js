@@ -1383,9 +1383,35 @@ function renderStatusBanner() {
     const err = state.last_error;
     banner.classList.remove("hidden"); banner.classList.add("bad");
     const headTag = Number.isInteger(err.head) ? `${tName(err.head)} ` : "";
-    setEl(banner, "strong", { textContent: `${headTag}${err.action}` });
-    const msg = setEl(banner, "span");
-    msg.textContent = " " + (err.error || err.reason || "see Activity for details");
+
+    // Recognize the "load_feeding ... timeout" pattern — the firmware emits
+    // this when LOAD's ACE-side feed runs to the configured length but the
+    // head's runout_sensor never trips. Most common cause is the filament
+    // tip having drifted past the ACE drive wheel (cumulative cross-slot
+    // coupling, or a too-long LENGTH= retract). The wheel spins but doesn't
+    // bite. Recovery is a manual reseat of the slot — there's no firmware-
+    // side fix. Surface that explicitly instead of the raw exception text.
+    const isLoadFeedTimeout =
+      err.action === "LOAD_HEAD_FAILED" &&
+      err.reason === "feed_auto_error" &&
+      typeof err.error === "string" &&
+      /load_feeding/i.test(err.error) &&
+      /timeout/i.test(err.error);
+
+    if (isLoadFeedTimeout && Number.isInteger(err.ace) && Number.isInteger(err.slot)) {
+      const aceLetter = String.fromCharCode(65 + err.ace);
+      setEl(banner, "strong", { textContent: `${headTag}Load timed out` });
+      const msg = setEl(banner, "span");
+      msg.textContent =
+        ` — ${aceLetter}${err.slot} wheel not gripping filament. ` +
+        `Likely past-grip drift. Open ACE ${aceLetter}, pull slot ${err.slot}'s ` +
+        `filament out, cut a fresh 45° tip, re-insert through the intake until ` +
+        `the wheel tugs it inward. See troubleshooting.md for details.`;
+    } else {
+      setEl(banner, "strong", { textContent: `${headTag}${err.action}` });
+      const msg = setEl(banner, "span");
+      msg.textContent = " " + (err.error || err.reason || "see Activity for details");
+    }
   }
 }
 
