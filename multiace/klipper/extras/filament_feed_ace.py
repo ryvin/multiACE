@@ -1011,6 +1011,23 @@ class FilamentFeed:
                             load_retries = self.ace.head_load_retry[self.filament_ch[ch]]
                             load_retry_retract = self.ace.head_load_retry_retract[self.filament_ch[ch]]
 
+                            # NOTE on past-grip detection (was attempted, reverted):
+                            # The ACE wheel encoder (FeedTachometer wrapping a
+                            # FrequencyCounter on a Hall pin) measures *wheel
+                            # rotation*, not filament motion. When the wheel
+                            # spins empty (past-grip — filament tip retracted
+                            # past the drive wheel), the encoder still counts
+                            # as the motor turns. An early "wheel stalled"
+                            # check based on encoder delta therefore fires
+                            # only on motor stalls (rare) and misses every
+                            # past-grip case (common). Without a filament-side
+                            # motion sensor between ACE and head, past-grip
+                            # can only be detected post-hoc when the head's
+                            # runout_sensor still hasn't tripped after the
+                            # full configured feed length. The web GUI
+                            # recognizes this pattern and surfaces a "manual
+                            # reseat" recovery hint — see _executeSmartSwapLeg1
+                            # and renderStatusBanner in app.js.
                             for load_attempt in range(load_retries + 1):
                                 if load_attempt > 0:
                                     logging.info("[feed_loading] retry %d/%d: retracting %dmm",

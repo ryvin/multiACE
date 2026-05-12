@@ -95,6 +95,15 @@ stays empty (`sensor[N] = false`), and the activity feed surfaces
 `LOAD_HEAD_FAILED` with `reason=feed_auto_error`. You can hear the ACE motor
 turn during the attempt — sound is there but nothing physically advances.
 
+**Why not fast-fail?** The ACE drive wheel's encoder measures wheel rotation
+(via a FrequencyCounter on a Hall sensor), not filament motion. When the
+wheel spins empty (past-grip), the encoder still counts. Without a
+filament-side motion sensor between the ACE and the head, the firmware
+can't distinguish past-grip from a successful feed until the full
+`load_length` has elapsed without the head's `runout_sensor` tripping.
+The web GUI recognizes this pattern post-hoc and surfaces a recovery hint
+in the status banner.
+
 The `cnt1:1, cnt2:1` in the log is the **toolhead extruder gear** counter
 (not the ACE drive wheel) and is normal here — filament never reached the
 extruder, so its gear never had anything to bite.
