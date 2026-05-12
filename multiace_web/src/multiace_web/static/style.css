@@ -375,7 +375,14 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 .activity li.ok::before { background: var(--good); }
 .activity li .ts { color: var(--fg-faint); }
 .activity li .action { color: var(--fg-strong); font-weight: 600; }
-.activity li .params { color: var(--fg-muted); }
+.activity li .params {
+  color: var(--fg-muted);
+  /* Long JSON params blobs would otherwise push past the right edge on
+     narrow viewports — break them mid-character if needed so the row
+     wraps within the activity feed's column. */
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
 .activity li.fail .action { color: var(--bad); }
 .activity li.ok .action { color: var(--good); }
 
@@ -1034,6 +1041,14 @@ button.ghost-btn[aria-pressed="true"] .kbd-dot { background: var(--accent); }
 }
 .htw-slot-actions { width: 70%; grid-template-columns: repeat(4, 1fr); }
 .htw-tool-actions { width: 100%; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 0 8px; }
+/* On narrow viewports (mobile) the 70%-wide slot-actions row has only
+   ~57 px per cell, but each cell contains stacked buttons up to ~85 px
+   ("Load → T<n>"). The rightmost cell ends up pushed past the viewport.
+   Expand to full width on mobile and shrink button text slightly. */
+@media (max-width: 480px) {
+  .htw-slot-actions { width: 100%; }
+  .htw-actions button { font-size: 11px; padding: 5px 4px; }
+}
 .htw-actions .htw-cell { display: flex; flex-direction: column; gap: 3px; }
 .htw-actions button {
   font-size: 12px; padding: 6px 8px; border: 0; border-radius: 4px;
@@ -1143,8 +1158,14 @@ body.multiace-embed { background: transparent; }
   box-shadow: var(--shadow-sm);
 }
 .autodry-header h3 { margin: 0 0 1rem 0; color: var(--fg-strong); }
-.autodry-row { display: flex; align-items: center; gap: 1rem; margin: 0.5rem 0; color: var(--fg); }
+.autodry-row { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: 0.5rem 0; color: var(--fg); }
 .autodry-row label { min-width: 9rem; font-weight: 600; color: var(--fg-strong); }
+/* On narrow viewports drop the label's min-width so the control beside it
+   wraps onto its own line cleanly instead of pushing past the right edge. */
+@media (max-width: 480px) {
+  .autodry-row label { min-width: 0; flex-basis: 100%; }
+  .autodry-mode-btns { flex-wrap: wrap; }
+}
 .autodry-row input[type=range] { flex: 1; }
 .autodry-value { min-width: 3rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
 .autodry-mode-btns { display: inline-flex; gap: 0.25rem; }
@@ -1251,7 +1272,11 @@ body.multiace-embed { background: transparent; }
 /* ---- Multi-ACE Dashboard layout ---- */
 .slots-panel {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  /* Use min(380px, 100%) so the min-track collapses to the container width
+     on viewports narrower than 380px (e.g., iPhone mobile at 375). Without
+     this, the 380px minimum forces the track to 380px and the panel
+     overflows the viewport, producing a horizontal page scrollbar. */
+  grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
   gap: 1rem;
 }
 .ace-block {

@@ -1922,7 +1922,11 @@ async function initiateSmartSwap(targetHead, targetAce, targetSlot, headState) {
   const srcAceLetter = String.fromCharCode(65 + src.ace);
   const srcSlotLabel = String(src.slot);
   const dstAceLetter = String.fromCharCode(65 + targetAce);
-  const dstSlotLabel = String(targetSlot + 1);
+  // Slot labels are 0-based throughout the app (chevron menus, slot cards,
+   // activity feed). The +1 here was a leftover from the 1-based labeling
+   // era and made the swap-confirm toast say e.g. "Swap A1 → B2" when the
+   // actual swap targets B slot 1 (mate-pair of T1).
+  const dstSlotLabel = String(targetSlot);
   const swapLabel = `${srcAceLetter}${srcSlotLabel} → ${dstAceLetter}${dstSlotLabel}`;
 
   const usePark = state.swapParkAvailable && headState === "loaded_cross_ace";
