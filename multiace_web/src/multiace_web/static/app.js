@@ -1390,7 +1390,10 @@ function renderStatusBanner() {
     // tip having drifted past the ACE drive wheel (cumulative cross-slot
     // coupling, or a too-long LENGTH= retract). The wheel spins but doesn't
     // bite. Recovery is a manual reseat of the slot — there's no firmware-
-    // side fix. Surface that explicitly instead of the raw exception text.
+    // side fix (the wheel encoder measures wheel rotation, not filament
+    // motion, so the firmware can't tell past-grip from successful feed
+    // until the full configured load_length has elapsed without tripping
+    // the head's runout sensor). Surface the recovery hint explicitly.
     const isLoadFeedTimeout =
       err.action === "LOAD_HEAD_FAILED" &&
       err.reason === "feed_auto_error" &&
