@@ -2125,13 +2125,42 @@ function openHeadTargetMenu(anchor, ace, slotIdx) {
     }
   }
 
-  // Position and dismiss logic (preserve from original)
+  // Position and dismiss logic. Append first (offscreen) so we can measure
+  // the menu's actual rendered size before clamping to the viewport — on
+  // mobile (e.g., 390px wide) the chevron is often within 30 px of the
+  // right edge, so the default "anchor.left + menu.width" placement
+  // pushes the menu off-screen and the user can't read or tap the items.
   const r = anchor.getBoundingClientRect();
   menu.style.position = "fixed";
-  menu.style.top = `${r.bottom + 4}px`;
-  menu.style.left = `${r.left}px`;
+  menu.style.top = "-9999px";
+  menu.style.left = "0";
   menu.style.zIndex = "1000";
   document.body.appendChild(menu);
+
+  const VIEWPORT_MARGIN = 8;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const mr = menu.getBoundingClientRect();
+
+  // Horizontal: prefer anchor.left, but if that would clip the right edge,
+  // shift left so menu.right aligns with viewport - margin. Then clamp to
+  // viewport left if still off-screen (very narrow viewport vs. wide menu).
+  let left = r.left;
+  if (left + mr.width + VIEWPORT_MARGIN > vw) {
+    left = Math.max(VIEWPORT_MARGIN, vw - mr.width - VIEWPORT_MARGIN);
+  }
+  if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
+
+  // Vertical: prefer below anchor; if that would clip the bottom, open
+  // upward instead (so the menu's bottom is just above the anchor).
+  let top = r.bottom + 4;
+  if (top + mr.height + VIEWPORT_MARGIN > vh) {
+    const upward = r.top - mr.height - 4;
+    top = upward >= VIEWPORT_MARGIN ? upward : Math.max(VIEWPORT_MARGIN, vh - mr.height - VIEWPORT_MARGIN);
+  }
+
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
 
   setTimeout(() => {
     function onDocClick(ev) {
