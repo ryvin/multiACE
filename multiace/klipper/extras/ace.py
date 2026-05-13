@@ -139,9 +139,14 @@ class BunnyAce:
 
         self._head_source = {0: None, 1: None, 2: None, 3: None}
         
-        self._swap_in_progress = False  
-        self._auto_feed_enabled = False  
-        self._hotplug_gone = {}          
+        self._swap_in_progress = False
+        self._auto_feed_enabled = False
+        self._hotplug_gone = {}
+        # Feed-assist context: 'idle' | 'print' | 'load'. Wired to print-start
+        # / load-start transitions in Phase 3 (per-ACE FA toggles). For now,
+        # always 'idle' — emitted in audit state for forward-compat with the
+        # decay71 0.95b web protocol.
+        self._fa_context = 'idle'
         
         self._serial_failed = False
         self._serial_failed_at = 0.0
@@ -2543,6 +2548,7 @@ class BunnyAce:
                 'mode': getattr(self, '_ace_mode', 'unknown'),
                 'swap_in_progress': self._swap_in_progress,
                 'auto_feed': self._auto_feed_enabled,
+                'fa_context': getattr(self, '_fa_context', 'idle'),
                 'feed_assist': self._feed_assist_index,
                 'gate_status': self.gate_status[:],
                 'head_source': {},
