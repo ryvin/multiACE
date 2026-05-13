@@ -42,6 +42,15 @@ class BunnyAce:
     def __init__(self, config):
         self._connected = False
         self._serial = None
+        # Per-ACE connection scaffolding (decay71 0.95b USB engine).
+        # _serial/_connected above are kept as legacy views onto the
+        # currently-active ACE; the dicts below hold per-ACE state so we
+        # don't have to close/reopen the serial port on every cross-ACE
+        # toolchange. Populated lazily in _serial_connect(); see
+        # docs/superpowers/plans/2026-05-13-decay71-feature-port.md.
+        self._serials = {}            # idx -> serial.Serial (open per ACE)
+        self._protocols = {}          # idx -> AceProtocol instance
+        self._connected_per_ace = {}  # idx -> bool
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
@@ -586,6 +595,13 @@ class BunnyAce:
         if self._serial is not None and self._serial.is_open:
             self._serial.close()
             self._connected = False
+        # Clear the active ACE's cache entry so a future switch back doesn't
+        # try to reuse a closed handle. Other ACE entries (if any) are left
+        # intact — they belong to inactive ACEs whose handles are still alive.
+        _idx = self._active_device_index
+        if _idx in self._serials:
+            self._serials.pop(_idx, None)
+            self._connected_per_ace[_idx] = False
         if self.heartbeat_timer:
             try:
                 self.reactor.unregister_timer(self.heartbeat_timer)
@@ -628,6 +644,12 @@ class BunnyAce:
                 self._usb_stats['connects'] += 1
                 self._usb_log.info('CONNECT success serial=%s time=%.1fms', self.serial_id, connect_ms)
                 logging.info(f'[multiACE] Connected to {self.serial_id}')
+                # Record this open serial in the per-ACE cache so a future
+                # cross-ACE switch can promote it instead of closing+reopening.
+                _idx = self._active_device_index
+                self._serials[_idx] = self._serial
+                self._protocols[_idx] = AceProtocolV1()
+                self._connected_per_ace[_idx] = True
                 self.ace_dev_fd = self.reactor.register_fd(
                     self._serial.fileno(),
                     self._reader_cb,
