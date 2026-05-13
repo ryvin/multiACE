@@ -30,6 +30,9 @@ log "Config dir: $CONFIG_DIR"
 # --- Verify source files exist ---
 for f in \
     "klipper/extras/ace.py" \
+    "klipper/extras/ace_protocol.py" \
+    "klipper/extras/ace_protocol_v1.py" \
+    "klipper/extras/ace_protocol_v2.py" \
     "klipper/extras/filament_feed_ace.py" \
     "klipper/extras/filament_switch_sensor_ace.py" \
     "klipper/kinematics/extruder_ace.py" \
@@ -75,9 +78,18 @@ log "Installing multiACE files..."
 
 # Klipper extras
 cp "$INSTALL_DIR/klipper/extras/ace.py" "$EXTRAS_DIR/ace.py"
+cp "$INSTALL_DIR/klipper/extras/ace_protocol.py" "$EXTRAS_DIR/ace_protocol.py"
+cp "$INSTALL_DIR/klipper/extras/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v1.py"
+cp "$INSTALL_DIR/klipper/extras/ace_protocol_v2.py" "$EXTRAS_DIR/ace_protocol_v2.py"
 cp "$INSTALL_DIR/klipper/extras/filament_feed_ace.py" "$EXTRAS_DIR/filament_feed_ace.py"
 cp "$INSTALL_DIR/klipper/extras/filament_switch_sensor_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py"
-chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py"
+chmod 644 \
+    "$EXTRAS_DIR/ace.py" \
+    "$EXTRAS_DIR/ace_protocol.py" \
+    "$EXTRAS_DIR/ace_protocol_v1.py" \
+    "$EXTRAS_DIR/ace_protocol_v2.py" \
+    "$EXTRAS_DIR/filament_feed_ace.py" \
+    "$EXTRAS_DIR/filament_switch_sensor_ace.py"
 log "  Klipper extras installed"
 
 # Klipper kinematics
@@ -119,6 +131,7 @@ fi
 
 # --- Clear Python cache ---
 find "$EXTRAS_DIR/__pycache__" -name "ace*" -delete 2>/dev/null || true
+find "$EXTRAS_DIR/__pycache__" -name "ace_protocol*" -delete 2>/dev/null || true
 find "$EXTRAS_DIR/__pycache__" -name "filament_feed*" -delete 2>/dev/null || true
 find "$EXTRAS_DIR/__pycache__" -name "filament_switch_sensor*" -delete 2>/dev/null || true
 find "$KINEMATICS_DIR/__pycache__" -name "extruder*" -delete 2>/dev/null || true
