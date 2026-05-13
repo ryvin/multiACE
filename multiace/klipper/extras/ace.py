@@ -9,6 +9,8 @@ import time
 import serial
 from serial import SerialException
 
+from .ace_protocol_v1 import AceProtocolV1
+
 MULTIACE_VERSION = "0.81b"
 
 def _setup_file_logger(name, filepath, max_bytes=1048576, backup_count=3):
@@ -312,32 +314,19 @@ class BunnyAce:
         return (len(port_tuple), port_tuple, path)
 
     def _scan_ace_devices(self, context='unknown'):
-        ace_devices = []
         by_path_dir = '/dev/serial/by-path/'
         scan_start = time.monotonic()
         self._usb_stats['scans'] += 1
 
         if not os.path.exists(by_path_dir):
             self._usb_log.debug('SCAN [%s] by-path dir missing — 0 devices', context)
-            return ace_devices
+            return []
 
         all_entries = sorted(os.listdir(by_path_dir))
-        for entry in all_entries:
-            full_path = os.path.join(by_path_dir, entry)
-            real_dev = os.path.basename(os.path.realpath(full_path))
-
-            try:
-                sysfs_base = '/sys/class/tty/%s/device/../' % real_dev
-                with open(os.path.join(sysfs_base, 'idVendor'), 'r') as f:
-                    vendor = f.read().strip()
-                with open(os.path.join(sysfs_base, 'idProduct'), 'r') as f:
-                    product = f.read().strip()
-
-                if vendor == '28e9' and product == '018a':
-                    ace_devices.append(full_path)
-                    logging.info('[multiACE] Found device %s (%s) vendor=%s product=%s' % (full_path, real_dev, vendor, product))
-            except (IOError, OSError):
-                continue
+        ace_devices = AceProtocolV1.discover()
+        for path in ace_devices:
+            real_dev = os.path.basename(os.path.realpath(path))
+            logging.info('[multiACE] Found device %s (%s) vendor=%s product=%s' % (path, real_dev, '28e9', '018a'))
 
         ace_devices.sort(key=self._ace_path_sort_key)
 
