@@ -1,8 +1,13 @@
-# Hardware: BLE humidity sensor + USB Bluetooth dongle
+# Hardware: BLE humidity sensors + USB Bluetooth dongle
 
-This guide walks through wiring a Govee BLE humidity sensor into the dashboard
-end-to-end, using the Snapmaker U1 itself as the Bluetooth host (no separate
-Raspberry Pi or Home Assistant server needed).
+This guide walks through wiring one or more Govee BLE humidity sensors into
+the dashboard end-to-end, using the Snapmaker U1 itself as the Bluetooth host
+(no separate Raspberry Pi or Home Assistant server needed).
+
+The bridge supports **multiple Govee devices simultaneously** (e.g. one
+hygrometer per ACE Pro dryer); see [Multi-device setup](#multi-device-setup)
+near the end. The simpler single-device flow in the main steps is the
+recommended starting point.
 
 ## Why this setup
 
@@ -101,26 +106,36 @@ unencrypted advertisements every 2 seconds. Just power it on (insert the
 included AAA batteries) and place it inside the ACE Pro chamber. The radio
 range is plenty for ACE-to-printer distance.
 
-Verify the printer can see the broadcast:
+Verify the printer can see the broadcast. On PAXX firmware `hcitool` and
+`bluetoothctl` are usually missing, so the most reliable approach is the
+venv's `bleak`:
 
 ```bash
 ssh root@<printer-ip>
-hcitool lescan --duplicates 2>&1 | head -20  # if hcitool is present
-# OR
-# (after we install bleak in the venv)
-/userdata/multiace-web/venv/bin/python -c "
+/userdata/multiace-web/venv/bin/python3 - <<'PY'
 import asyncio
 from bleak import BleakScanner
+
+GOVEE_MFG_IDS = (0xEC88, 0x0001)
+
 async def main():
-    devices = await BleakScanner.discover(timeout=8)
-    for d in devices:
-        print(d.address, d.name, d.rssi)
+    print("scanning 20s for BLE devices...")
+    devices = await BleakScanner.discover(timeout=20, return_adv=True)
+    print("\n--- Govee candidates ---")
+    for addr, (dev, adv) in devices.items():
+        mfg = adv.manufacturer_data or {}
+        if any(k in mfg for k in GOVEE_MFG_IDS):
+            print(f"  {addr}  name={dev.name!r}  rssi={adv.rssi}")
 asyncio.run(main())
-"
-# Expected: a line for each Govee device, name like 'GVH5104_XXXX' or 'GVH5075_XXXX'
+PY
+# Expected: one line per Govee in range, name like 'GVH5104_XXXX'
+#   E8:76:C6:46:55:68  name='GVH5104_5568'  rssi=-60
+#   E8:76:C4:06:69:29  name='GVH5104_6929'  rssi=-66
 ```
 
-Note the device's MAC address — you'll plug it into the bridge config below.
+Note the MAC addresses (one per device) — you'll plug them into the bridge
+config below. Stronger signal (higher rssi, closer to 0) = closer to the
+printer; use that as the **primary** device.
 
 ### 3. Install the BLE bridge
 
@@ -135,27 +150,40 @@ The bridge ships in this repo:
 
 `install_web.sh` already copies `tools/` into the printer's app dir and
 installs the init script. After running the installer, just add `bleak`
-to the venv and configure the MAC:
+to the venv and configure the MAC(s):
 
 ```bash
 # add bleak to the venv (one-time, on the printer)
 /userdata/multiace-web/venv/bin/pip install bleak
 
 # configure (one-time): edit /userdata/multiace-web/app/.env and add:
-#   GOVEE_BRIDGE_MAC=A4:C1:38:XX:XX:XX     # your H5104's MAC
-#   GOVEE_BRIDGE_PORT=7127
+#   GOVEE_BRIDGE_MACS=E8:76:C6:46:55:68     # one or more MACs, comma-separated
+#   GOVEE_BRIDGE_PORT=7127                  # optional; default 7127
 
 /etc/init.d/S64govee-bridge restart
 ```
 
-If `GOVEE_BRIDGE_MAC` is not set, the bridge starts but never produces
-readings (no scan task launched). The dashboard tile stays offline.
+`GOVEE_BRIDGE_MACS` is the preferred form (one or many devices). The legacy
+`GOVEE_BRIDGE_MAC=A4:C1:38:XX:XX:XX` is still honored as a fallback for
+older single-device installs that haven't migrated.
 
-Verify it works:
+If neither is set, the bridge starts but never produces readings (no scan
+task launched). The dashboard tile stays offline.
+
+Verify it works (the printer typically lacks `wget` and `curl`; use the
+venv's python directly):
 
 ```bash
-wget -qO- http://127.0.0.1:7127/sensor
-# Expected: {"humidity": 47.2, "temperature": 23.4, "battery": 95, "rssi": -45, "age_s": 1.2}
+PY=/userdata/multiace-web/venv/bin/python3
+"$PY" -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:7127/sensor').read().decode())"
+# Expected: {"temperature": 23.4, "humidity": 47.2, "battery": 95,
+#            "rssi": -45, "name": "GVH5104_XXXX", "age_s": 1.2}
+
+"$PY" -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:7127/health').read().decode())"
+# Expected: {"ok": true, "scan_started": true, "configured": 1,
+#            "devices": [{"mac": "...", "name": "GVH5104_XXXX",
+#                         "have_reading": true, "age_s": 0.6}],
+#            "have_reading": true, "last_error": null}
 ```
 
 ### 4. Wire the bridge into the dashboard
@@ -183,6 +211,72 @@ ACE PRO CHAMBER
 
 Color-coded: <25% green (dry), 25–45% neutral, 45–60% amber (getting damp),
 ≥60% red (re-dry needed).
+
+## Multi-device setup
+
+The bridge exposes one humidity reading per configured device. Typical
+deployments have one Govee per ACE Pro dryer; the dashboard's environment
+strip shows the **primary** device (first MAC in `GOVEE_BRIDGE_MACS`),
+while `/sensors` exposes all of them for future dashboard tiles or
+external consumers.
+
+### Config
+
+```
+# /userdata/multiace-web/app/.env
+GOVEE_BRIDGE_MACS=E8:76:C6:46:55:68,E8:76:C4:06:69:29
+GOVEE_BRIDGE_PORT=7127
+```
+
+- Comma- or whitespace-separated. Order matters: index 0 is the primary
+  device that `/sensor` returns and the dashboard shows.
+- MACs are case-insensitive; both `:` and `-` separators work.
+- Duplicates are de-duplicated; unknown MACs that the bridge never sees
+  appear in `/sensors` with value `null` so the UI can show "warming up".
+- `GOVEE_BRIDGE_MAC=<one-mac>` is still honored as a fallback for old
+  installs; it's ignored when `GOVEE_BRIDGE_MACS` is set.
+
+### Endpoints
+
+| Endpoint | Returns |
+|---|---|
+| `GET /sensor` | Primary device's reading (the format the dashboard already consumes). 503 until it's warmed up. |
+| `GET /sensors` | All configured devices, keyed by normalized MAC. Pending devices appear with value `null`. |
+| `GET /sensor/{key}` | One device by MAC or BLE local-name (`GVH5104_5568`, case-insensitive). 404 if unknown, 503 if not yet seen. |
+| `GET /health` | `scan_started`, per-device `have_reading` + `age_s`, last bleak/dbus error. |
+
+Example `/sensors` response with two H5104s (one per dryer):
+
+```json
+{
+  "E8:76:C6:46:55:68": {
+    "temperature": 27.14, "humidity": 42.7, "battery": 66,
+    "rssi": -54, "name": "GVH5104_5568", "age_s": 1.2
+  },
+  "E8:76:C4:06:69:29": {
+    "temperature": 29.44, "humidity": 36.6, "battery": 29,
+    "rssi": -64, "name": "GVH5104_6929", "age_s": 0.8
+  }
+}
+```
+
+### Dashboard integration
+
+The existing dashboard backend reads `MULTIACE_HUMIDITY_URL=.../sensor`
+and renders a single tile. With multi-device, only the primary device is
+shown by default — backwards-compatible.
+
+To surface both readings in the UI, the multiace-web backend's humidity
+adapter would need a small change to fan out to `/sensors` instead of
+`/sensor` and emit one tile per device. That work is not in this guide;
+file an issue if you want it prioritized.
+
+### Battery monitoring
+
+Each device exposes `battery` (percent) in `/sensors`. When a Govee drops
+below ~30% the readings get noisy and eventually stop. Watch for
+`battery < 30` in `/sensors` and swap the batteries before the device
+goes dark.
 
 ## Troubleshooting
 
