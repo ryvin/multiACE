@@ -193,17 +193,18 @@ class MultiAcePoller:
             self._last_ace_data[active_idx] = {**ace_obj, "last_seen_ts": time.time()}
 
     async def _tick_idle(self) -> None:
-        # Round-robin ON by default. Without it, no per-ACE FSM ever advances
-        # out of IDLE while the printer is in standby, which is most of the
-        # time. CurrentState.swap_in_progress would otherwise stick True
-        # because the firmware emits the SWITCH audit while _swap_in_progress
-        # is still set; state.py force-clears it on every terminal
-        # SWITCH-family audit (commit 93506fe), so the UI Load buttons stay
-        # enabled. Set MULTIACE_AUTODRY_ROUND_ROBIN=0 (or false/no/off) to
-        # disable on a per-printer basis if mechanical wear from frequent
-        # idle ACE_SWITCH calls is a concern.
-        gate = os.environ.get("MULTIACE_AUTODRY_ROUND_ROBIN", "1").lower()
-        if gate in ("0", "false", "no", "off"):
+        # Round-robin OFF by default — operator must opt in via
+        # MULTIACE_AUTODRY_ROUND_ROBIN={1,true,yes,on}. The earlier rationale
+        # (firmware never emits a clear-event for autodry-driven swaps) was
+        # fixed in state.py (commit 93506fe + SERIAL_WRITE_FAILED carve-out),
+        # so the UI-side wedge no longer applies. But on hardware with the
+        # ACE Pro idle USB reset cycle (issue #70 — kernel re-enumerates the
+        # idle ACE every ~30-60s), every other round-robin tick fails with
+        # SERIAL_WRITE_FAILED and Klipper eventually shuts down with
+        # "Internal error on command: ACE_SWITCH". Enable once #70 is fixed
+        # (per-ACE keepalive or USB autosuspend disabled).
+        gate = os.environ.get("MULTIACE_AUTODRY_ROUND_ROBIN", "").lower()
+        if gate not in ("1", "true", "yes", "on"):
             return
 
         for i in range(self._n):

@@ -962,10 +962,22 @@ class AutoDryer:
         self._save_manager()
 
         # Emit events + post toast + invoke ACE_DRY when applicable.
+        # Each action wrapped in its own try/except so one failure (e.g.
+        # Moonraker transient error) doesn't silently swallow the rest of
+        # the transition handling.
         for t in transitions:
-            await self._emit_event({"action": t.event, "params": t.payload})
-            await self._maybe_announce(t, new_persisted)
-            await self._invoke_dry_if_triggered(t)
+            try:
+                await self._emit_event({"action": t.event, "params": t.payload})
+            except Exception:
+                log.exception("AutoDryer emit_event failed for %s", t.event)
+            try:
+                await self._maybe_announce(t, new_persisted)
+            except Exception:
+                log.exception("AutoDryer maybe_announce failed for %s", t.event)
+            try:
+                await self._invoke_dry_if_triggered(t)
+            except Exception:
+                log.exception("AutoDryer invoke_dry failed for %s", t.event)
 
         return transitions
 
