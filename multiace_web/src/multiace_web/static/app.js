@@ -488,6 +488,7 @@ const printState = {
   aces: [],   // /api/print returns aces:[{index, dryer, humidity, last_seen_ts, is_active}]
   cavity_temp_c: null,
   humidity: { configured: false },
+  humidity_per_ace: [], // Govee multi-MAC bridge fan-out; one entry per ACE
   _last_fetch_ok: false,
 };
 
@@ -1049,27 +1050,41 @@ function renderEnvStrip() {
     });
   }
 
-  const h = printState.humidity || {};
-  if (h.configured) {
+  const humidityTile = (h, fallbackLabel) => {
+    if (!h || !h.configured) return null;
     if (h.ok && h.humidity_pct != null) {
       let kind = "";
       if (h.humidity_pct >= 60) kind = "bad";
       else if (h.humidity_pct >= 45) kind = "warn";
       else if (h.humidity_pct < 25) kind = "ok";
-      tiles.push({
-        label: h.label || "Humidity",
+      return {
+        label: h.label || fallbackLabel,
         value: Math.round(h.humidity_pct) + "%",
         kind,
         sub: h.temp_c != null ? `${h.temp_c.toFixed(1)}°C ambient` : "humidity",
-      });
-    } else {
-      tiles.push({
-        label: h.label || "Humidity",
-        value: "—",
-        kind: "warn",
-        sub: "sensor offline",
-      });
+      };
     }
+    return {
+      label: h.label || fallbackLabel,
+      value: "—",
+      kind: "warn",
+      sub: h.warming_up ? "warming up" : "sensor offline",
+    };
+  };
+
+  // Prefer the per-ACE Govee fan-out (one tile per chamber sensor) when
+  // multi-MAC bridge is configured. Falls back to the legacy single sensor
+  // for installs with one Govee covering the whole rig.
+  const perAce = Array.isArray(printState.humidity_per_ace) ? printState.humidity_per_ace : [];
+  const perAceConfigured = perAce.filter((e) => e && e.configured);
+  if (perAceConfigured.length > 0) {
+    perAce.forEach((entry, idx) => {
+      const tile = humidityTile(entry, `ACE ${idx}`);
+      if (tile) tiles.push(tile);
+    });
+  } else {
+    const tile = humidityTile(printState.humidity, "Humidity");
+    if (tile) tiles.push(tile);
   }
 
   if (tiles.length === 0) {

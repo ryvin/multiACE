@@ -243,3 +243,173 @@ async def test_read_humidity_refetches_after_ttl(monkeypatch):
         await server._read_humidity()
         await server._read_humidity()
     assert route.call_count == 2
+
+
+# ---- _read_humidity_per_ace (Govee multi-MAC bridge fan-out) ----
+
+@pytest.fixture(autouse=True)
+def _clear_per_ace_cache():
+    """Avoid cache bleed between per-ACE humidity tests."""
+    server._HUMIDITY_PER_ACE_CACHE["data"] = None
+    server._HUMIDITY_PER_ACE_CACHE["ts"] = 0.0
+    yield
+
+
+def test_derive_sensors_url_appends_s():
+    assert server._derive_sensors_url("http://127.0.0.1:7127/sensor") \
+        == "http://127.0.0.1:7127/sensors"
+
+
+def test_derive_sensors_url_passthrough_when_not_sensor_suffix():
+    assert server._derive_sensors_url("http://homeassistant/api/states/sensor.x") \
+        == "http://homeassistant/api/states/sensor.x"
+
+
+def test_derive_sensors_url_empty():
+    assert server._derive_sensors_url("") == ""
+
+
+@pytest.mark.asyncio
+async def test_read_humidity_per_ace_returns_unconfigured_when_no_url(monkeypatch):
+    monkeypatch.delenv("MULTIACE_HUMIDITY_URL", raising=False)
+    result = await server._read_humidity_per_ace(device_count=2)
+    assert result == [{"configured": False}, {"configured": False}]
+
+
+@pytest.mark.asyncio
+async def test_read_humidity_per_ace_orders_by_bridge_response(monkeypatch):
+    monkeypatch.setenv("MULTIACE_HUMIDITY_URL", "http://127.0.0.1:7127/sensor")
+    monkeypatch.setenv("MULTIACE_HUMIDITY_LABEL", "ACE Pro")
+    sensors_payload = {
+        "E8:76:C6:46:55:68": {
+            "temperature": 27.14, "humidity": 42.7, "battery": 66,
+            "rssi": -54, "name": "GVH5104_5568", "age_s": 1.2,
+        },
+        "E8:76:C4:06:69:29": {
+            "temperature": 29.44, "humidity": 36.6, "battery": 29,
+            "rssi": -64, "name": "GVH5104_6929", "age_s": 0.8,
+        },
+    }
+    async with respx.mock(base_url="http://127.0.0.1:7127") as mock:
+        mock.get("/sensors").respond(200, json=sensors_payload)
+        result = await server._read_humidity_per_ace(device_count=2)
+    assert len(result) == 2
+    assert result[0]["humidity_pct"] == 42.7
+    assert result[0]["temp_c"] == 27.14
+    assert result[0]["mac"] == "E8:76:C6:46:55:68"
+    assert result[0]["label"] == "ACE Pro 0"
+    assert result[1]["humidity_pct"] == 36.6
+    assert result[1]["mac"] == "E8:76:C4:06:69:29"
+    assert result[1]["label"] == "ACE Pro 1"
+
+
+@pytest.mark.asyncio
+async def test_read_humidity_per_ace_pads_when_fewer_macs_than_aces(monkeypatch):
+    monkeypatch.setenv("MULTIACE_HUMIDITY_URL", "http://127.0.0.1:7127/sensor")
+    async with respx.mock(base_url="http://127.0.0.1:7127") as mock:
+        mock.get("/sensors").respond(200, json={
+            "AA:BB:CC:DD:EE:FF": {
+                "temperature": 24.0, "humidity": 40.0, "battery": 90,
+                "rssi": -50, "name": "GVH5104_ONE", "age_s": 0.5,
+            },
+        })
+        result = await server._read_humidity_per_ace(device_count=3)
+    assert len(result) == 3
+    assert result[0]["configured"] is True and result[0]["ok"] is True
+    assert result[1] == {"configured": False}
+    assert result[2] == {"configured": False}
+
+
+@pytest.mark.asyncio
+async def test_read_humidity_per_ace_handles_warming_up_device(monkeypatch):
+    """Bridge returns null payload for a MAC it hasn't seen yet — must surface
+    as configured+warming_up so the UI can render a placeholder."""
+    monkeypatch.setenv("MULTIACE_HUMIDITY_URL", "http://127.0.0.1:7127/sensor")
+    async with respx.mock(base_url="http://127.0.0.1:7127") as mock:
+        mock.get("/sensors").respond(200, json={"AA:BB:CC:DD:EE:FF": None})
+        result = await server._read_humidity_per_ace(device_count=1)
+    assert result[0]["configured"] is True
+    assert result[0]["ok"] is False
+    assert result[0].get("warming_up") is True
+
+
+@pytest.mark.asyncio
+async def test_read_humidity_per_ace_returns_error_payload_on_fetch_failure(monkeypatch):
+    monkeypatch.setenv("MULTIACE_HUMIDITY_URL", "http://127.0.0.1:7127/sensor")
+    async with respx.mock(base_url="http://127.0.0.1:7127") as mock:
+        mock.get("/sensors").respond(500, json={})
+        result = await server._read_humidity_per_ace(device_count=2)
+    assert all(e["configured"] is True and e["ok"] is False for e in result)
+
+
+@pytest.mark.asyncio
+async def test_read_humidity_per_ace_uses_explicit_sensors_url(monkeypatch):
+    """MULTIACE_HUMIDITY_SENSORS_URL overrides the /sensor → /sensors derivation."""
+    monkeypatch.setenv("MULTIACE_HUMIDITY_URL", "http://homeassistant/api/states/sensor.x")
+    monkeypatch.setenv("MULTIACE_HUMIDITY_SENSORS_URL",
+                       "http://127.0.0.1:7127/sensors")
+    async with respx.mock(base_url="http://127.0.0.1:7127") as mock:
+        mock.get("/sensors").respond(200, json={
+            "AA:BB:CC:DD:EE:FF": {
+                "temperature": 22.0, "humidity": 30.0, "battery": 80,
+                "rssi": -55, "name": "GVH5104_X", "age_s": 0.1,
+            },
+        })
+        result = await server._read_humidity_per_ace(device_count=1)
+    assert result[0]["humidity_pct"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_autodry_tick_specializes_humidity_per_ace(monkeypatch, tmp_path):
+    """tick_one_ace should override Inputs.humidity_* with per-ACE entry before
+    invoking tick_fsm — otherwise ACE 1's FSM would evaluate against ACE 0's
+    sensor reading."""
+    from pathlib import Path
+    from multiace_web.autodryer import (
+        AutoDryer, AutodryManager, PerAceConfig, FSMSnapshot, FSMState, Inputs,
+    )
+    import multiace_web.autodryer as ad_mod
+
+    captured: dict = {}
+    async def emit(_p):
+        pass
+    class AnnouncementsStub:
+        async def post(self, **kw): return None
+        async def dismiss(self, _eid): return None
+
+    def fetch_inputs():
+        return Inputs(
+            active_device=1,
+            head_source={"0": {"ace": 1, "slot": 0, "type": "PLA", "color": "000000"}},
+            swap_in_progress=False,
+            humidity_ok=True, humidity_pct=10.0,  # primary "dry" reading
+            cavity_temp_c=25.0, klipper_print_state="standby", dryer_status="stop",
+            user_profiles=None,
+            humidity_per_ace=[
+                {"configured": False},
+                {"configured": True, "ok": True, "humidity_pct": 55.0},  # ACE 1 is wet
+            ],
+        )
+
+    mgr = AutodryManager.with_defaults(device_count=2)
+    mgr.get(1).config = PerAceConfig(enabled=True, target_pct=15, hysteresis_pp=5,
+                                      default_filament_type="PLA")
+    mgr.get(1).snapshot = FSMSnapshot(state=FSMState.WATCHING)
+
+    real_tick = ad_mod.tick_fsm
+    def spy(*args, **kwargs):
+        captured["inputs"] = args[2]  # tick_fsm(persisted, eph, inputs, now_ts, ...)
+        return real_tick(*args, **kwargs)
+    monkeypatch.setattr(ad_mod, "tick_fsm", spy)
+
+    state_path = tmp_path / "autodry_state.json"
+    ad = AutoDryer(state_path=state_path,
+                   inputs_fetcher=fetch_inputs, emit_event=emit,
+                   announcements=AnnouncementsStub(), tick_sec=0,
+                   manager=mgr)
+    await ad.tick_one_ace(1, now_ts=1779_010_000.0)
+    used = captured["inputs"]
+    assert used.humidity_ok is True
+    assert used.humidity_pct == 55.0, (
+        f"tick_one_ace did not specialize humidity for ACE 1; got {used.humidity_pct}"
+    )

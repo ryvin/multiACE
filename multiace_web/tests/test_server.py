@@ -959,7 +959,6 @@ class TestAutodryPerAceEndpoint:
 class TestApiPrintMultiAce:
     def test_includes_per_ace_dryer_block(self, app) -> None:
         with TestClient(app) as client:
-            # Set last_ace_data with one cached entry for ACE 1
             app.state.last_ace_data = {
                 1: {
                     "dryer_status": {"status": "drying", "target_temp": 45, "remain_time": 3600},
@@ -967,7 +966,6 @@ class TestApiPrintMultiAce:
                     "last_seen_ts": 1760000000.0,
                 }
             }
-            # Set live state with device_count=2
             app.state.state.device_count = 2
             app.state.state.active_device = 0
             app.state.moonraker.query_objects = AsyncMock(return_value=_print_query_payload())
@@ -980,9 +978,11 @@ class TestApiPrintMultiAce:
         a1 = next(a for a in body["aces"] if a["index"] == 1)
         assert a0["is_active"] is True
         assert a1["is_active"] is False
-        # ACE 1 should have last-known cached data
-        assert a1["humidity"] == 18.0
         assert a1["dryer"]["status"] == "drying"
+        # Humidity now comes from the Govee bridge fan-out (humidity_per_ace).
+        # With no MULTIACE_HUMIDITY_URL set, every ACE falls back to the legacy
+        # single-sensor shape, which is {configured: False}.
+        assert a1["humidity"] == {"configured": False}
 
     def test_returns_aces_with_nulls_when_no_cache(self, app) -> None:
         with TestClient(app) as client:
@@ -995,7 +995,9 @@ class TestApiPrintMultiAce:
         assert "aces" in body
         a1 = next(a for a in body["aces"] if a["index"] == 1)
         assert a1["dryer"] is None
-        assert a1["humidity"] is None
+        # No Govee bridge configured → falls back to legacy single-sensor
+        # shape; no MULTIACE_HUMIDITY_URL → {configured: False} for every ACE.
+        assert a1["humidity"] == {"configured": False}
         assert a1["last_seen_ts"] is None
 
 

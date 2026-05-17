@@ -50,7 +50,19 @@ def _env(name: str, default: str) -> str:
 # If only HUMIDITY_URL is set, we attempt common shapes (HA states API, generic
 # {humidity, temperature}, SwitchBot Cloud /v1.0/devices/<id>/status, etc.).
 _HUMIDITY_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
+_HUMIDITY_PER_ACE_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
 _HUMIDITY_TTL_SEC = 30.0
+
+
+def _derive_sensors_url(single_url: str) -> str:
+    """Map a configured /sensor URL to its sibling /sensors. Returns the input
+    unchanged if it doesn't end in /sensor (caller may have explicitly set the
+    sensors URL or pointed at a non-bridge endpoint)."""
+    if not single_url:
+        return ""
+    if single_url.endswith("/sensor"):
+        return single_url[:-len("/sensor")] + "/sensors"
+    return single_url
 
 
 def _resolve_path(obj: Any, path: str) -> Any:
@@ -177,6 +189,102 @@ async def _read_humidity() -> dict:
         "fetched_at": now,
     }
     _HUMIDITY_CACHE.update(data=out, ts=now)
+    return out
+
+
+async def _read_humidity_per_ace(device_count: int) -> list[dict]:
+    """Fetch the per-ACE humidity map from the Govee bridge's /sensors endpoint.
+
+    Returns a list of length `device_count` where index N is the humidity
+    reading for ACE N. Mapping is positional: the bridge serializes /sensors
+    in GOVEE_BRIDGE_MACS config order, so the Nth MAC's reading goes to ACE N.
+
+    Each entry is shaped like _read_humidity's output:
+      {configured: True, ok: True|False, humidity_pct, temp_c, label, fetched_at}
+    Entries past the configured-MAC count are {configured: False} so the
+    dashboard can render an empty/placeholder tile rather than crash.
+
+    If MULTIACE_HUMIDITY_URL is unset, returns a list of {configured: False}
+    of length device_count (matches single-sensor "no humidity" behavior).
+    """
+    if device_count < 1:
+        return []
+    single_url = os.environ.get("MULTIACE_HUMIDITY_URL", "").strip()
+    if not single_url:
+        return [{"configured": False} for _ in range(device_count)]
+
+    sensors_url = os.environ.get("MULTIACE_HUMIDITY_SENSORS_URL", "").strip() \
+        or _derive_sensors_url(single_url)
+
+    now = time.time()
+    cached = _HUMIDITY_PER_ACE_CACHE.get("data")
+    cached_n = len(cached) if isinstance(cached, list) else 0
+    if cached is not None and cached_n == device_count and \
+            (now - _HUMIDITY_PER_ACE_CACHE["ts"]) < _HUMIDITY_TTL_SEC:
+        return cached
+
+    headers: dict[str, str] = {}
+    auth = os.environ.get("MULTIACE_HUMIDITY_AUTH", "").strip()
+    if auth:
+        headers["Authorization"] = auth
+
+    label_prefix = os.environ.get("MULTIACE_HUMIDITY_LABEL", "").strip() or "ACE"
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(sensors_url, headers=headers)
+            resp.raise_for_status()
+            body = resp.json()
+    except Exception as e:
+        # Per-ACE list also serves as the source for autodry FSMs; mark each
+        # slot as failed-but-configured so the FSM's stale guard kicks in
+        # rather than treating it as opt-out.
+        err = f"{type(e).__name__}: {e}"
+        out = [{"configured": True, "ok": False, "error": err} for _ in range(device_count)]
+        _HUMIDITY_PER_ACE_CACHE.update(data=out, ts=now)
+        return out
+
+    # Bridge /sensors returns {mac: {temperature, humidity, battery, rssi, name, age_s} | None, ...}
+    # in GOVEE_BRIDGE_MACS config order. Iterate the dict (Python 3.7+ dict
+    # preserves insertion order) and align to ACE indices positionally.
+    ordered_entries: list[tuple[str, Any]] = list(body.items()) if isinstance(body, dict) else []
+
+    def _to_float(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    out: list[dict] = []
+    for ace_idx in range(device_count):
+        if ace_idx < len(ordered_entries):
+            mac, payload = ordered_entries[ace_idx]
+            if not isinstance(payload, dict):
+                # Bridge still warming up — MAC configured, no reading yet
+                out.append({
+                    "configured": True, "ok": False, "warming_up": True,
+                    "label": f"{label_prefix} {ace_idx}",
+                    "mac": mac,
+                })
+            else:
+                out.append({
+                    "configured": True,
+                    "ok": True,
+                    "humidity_pct": _to_float(payload.get("humidity")),
+                    "temp_c": _to_float(payload.get("temperature")),
+                    "label": f"{label_prefix} {ace_idx}",
+                    "mac": mac,
+                    "name": payload.get("name"),
+                    "battery": payload.get("battery"),
+                    "rssi": payload.get("rssi"),
+                    "age_s": payload.get("age_s"),
+                    "fetched_at": now,
+                })
+        else:
+            # Fewer MACs than ACEs — pad with "not configured" for this ACE
+            out.append({"configured": False})
+
+    _HUMIDITY_PER_ACE_CACHE.update(data=out, ts=now)
     return out
 
 
@@ -423,6 +531,9 @@ async def lifespan(app: FastAPI):
 
         humidity = last_print.get("humidity") or {}
         dryer = last_print.get("dryer") or {}
+        per_ace = last_print.get("humidity_per_ace") if not is_stale else None
+        if not isinstance(per_ace, list):
+            per_ace = None
         return Inputs(
             active_device=st.get("active_device"),
             head_source=st.get("head_source") or {},
@@ -433,6 +544,7 @@ async def lifespan(app: FastAPI):
             klipper_print_state="standby" if is_stale else str(last_print.get("state") or "standby"),
             dryer_status="stop" if is_stale else str(dryer.get("status") or "stop"),
             user_profiles=None,
+            humidity_per_ace=per_ace,
         )
 
     # Expose on app.state so tests can call it directly without scraping
@@ -605,6 +717,14 @@ async def _compute_print_payload(moonraker: MoonrakerClient) -> dict:
     # External humidity is fetched lazily and cached; failures don't poison the payload.
     humidity = await _read_humidity()
 
+    # Per-ACE humidity (Govee multi-MAC bridge). Length-0 if no sensors
+    # configured. Top-level `humidity` stays as the primary for backward-compat
+    # with legacy single-sensor clients.
+    device_count_for_humidity = int((ace_obj or {}).get("device_count") or 1)
+    if device_count_for_humidity < 1:
+        device_count_for_humidity = 1
+    humidity_per_ace = await _read_humidity_per_ace(device_count_for_humidity)
+
     return {
         "state": ps.get("state") or "standby",
         "filename": ps.get("filename") or None,
@@ -620,6 +740,7 @@ async def _compute_print_payload(moonraker: MoonrakerClient) -> dict:
         "dryer": dryer,
         "cavity_temp_c": cavity_temp,
         "humidity": humidity,
+        "humidity_per_ace": humidity_per_ace,
     }
 
 
@@ -748,16 +869,28 @@ def create_app(
             device_count = 1
         active = int(getattr(s, "active_device", 0) or 0) if s else 0
         cache = getattr(request.app.state, "last_ace_data", {}) or {}
-        # payload["dryer"] / payload["humidity"] are the live data for the active ACE.
+        # payload["dryer"] is live data for the active ACE; humidity_per_ace
+        # is the Govee bridge fan-out indexed by ACE (each ACE has its own
+        # chamber sensor in multi-ACE setups). Falls back to the legacy single
+        # sensor (payload["humidity"]) for ACEs without a dedicated MAC.
         live_dryer = payload.get("dryer")
-        live_humidity = payload.get("humidity")
+        per_ace_humidity = payload.get("humidity_per_ace") or []
+        legacy_humidity = payload.get("humidity")
+
+        def _humidity_for(idx: int) -> Any:
+            if idx < len(per_ace_humidity):
+                entry = per_ace_humidity[idx]
+                if isinstance(entry, dict) and entry.get("configured"):
+                    return entry
+            return legacy_humidity
+
         aces_block = []
         for ace_idx in range(device_count):
             if ace_idx == active:
                 aces_block.append({
                     "index": ace_idx,
                     "dryer": live_dryer,
-                    "humidity": live_humidity,
+                    "humidity": _humidity_for(ace_idx),
                     "last_seen_ts": time.time(),
                     "is_active": True,
                 })
@@ -766,7 +899,7 @@ def create_app(
                 aces_block.append({
                     "index": ace_idx,
                     "dryer": cached.get("dryer_status"),
-                    "humidity": cached.get("humidity"),
+                    "humidity": _humidity_for(ace_idx),
                     "last_seen_ts": cached.get("last_seen_ts"),
                     "is_active": False,
                 })

@@ -321,6 +321,12 @@ class Inputs:
 
     All fields are snapshot values; the FSM is a pure function of these
     plus the persisted/ephemeral state plus now_ts.
+
+    ``humidity_ok`` / ``humidity_pct`` carry the *primary* sensor reading
+    used by the legacy single-FSM tick path. The per-ACE FSMs driven by
+    AutoDryer.tick_one_ace override these from ``humidity_per_ace`` before
+    calling tick_fsm, so each per-ACE FSM evaluates against its own dryer's
+    chamber sensor rather than the printer-wide primary.
     """
     active_device: int | None
     head_source: dict[str, dict[str, Any] | None]   # /api/state["head_source"]
@@ -331,6 +337,12 @@ class Inputs:
     klipper_print_state: str  # "standby" | "printing" | "paused" | "complete" | "cancelled" | "error"
     dryer_status: str         # "stop" | "drying"
     user_profiles: list[dict[str, Any]] | None  # localStorage profiles, or None to use defaults
+    # Per-ACE humidity list (Govee multi-MAC bridge). Index N is the sensor
+    # for ACE N. When None or empty, tick_one_ace falls back to the primary
+    # humidity_ok/humidity_pct so single-sensor installs work unchanged.
+    # Each entry mirrors _read_humidity_per_ace's shape:
+    # {configured, ok, humidity_pct, temp_c, ...}.
+    humidity_per_ace: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -885,6 +897,26 @@ class AutoDryer:
         except Exception:
             log.exception("AutoDryer.tick_one_ace inputs_fetcher raised; skipping ace=%d", ace_idx)
             return []
+
+        # Specialize humidity for this ACE if the per-ACE Govee map is available.
+        # Falls back to the primary sensor reading (inputs.humidity_*) if the
+        # per-ACE list is None/short/not-configured, so single-sensor setups
+        # keep behaving like the legacy single-FSM path.
+        per_ace = inputs.humidity_per_ace or []
+        if ace_idx < len(per_ace):
+            entry = per_ace[ace_idx]
+            if isinstance(entry, dict) and entry.get("configured") and entry.get("ok"):
+                inputs = dataclasses.replace(
+                    inputs,
+                    humidity_ok=True,
+                    humidity_pct=float(entry.get("humidity_pct") or 0.0),
+                )
+            elif isinstance(entry, dict) and entry.get("configured"):
+                # Configured but warming up or failed → no usable reading.
+                inputs = dataclasses.replace(
+                    inputs, humidity_ok=False, humidity_pct=0.0,
+                )
+            # else (not configured / unknown shape): keep primary fallback
 
         # Synthesize a PersistedState so we can reuse the existing pure tick_fsm.
         # mode is "active" because we already gated on config.enabled above.
