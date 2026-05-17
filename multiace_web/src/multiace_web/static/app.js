@@ -2730,6 +2730,18 @@ const CONFIG_KEY_HINTS = {
     help: "Number of ACE Pro units. Required for multi-ACE setups so multiACE waits for all of them at startup.",
     type: "number", min: 1, max: 8, step: 1,
   },
+  fa_print_disable: {
+    help: "Comma-separated 0-based ACE indices where feed-assist is suppressed during prints (e.g. '1' or '0,2'). Useful when a specific ACE has known FA issues with certain filaments. Emits FA_SUPPRESSED in the audit log. Default: empty.",
+    type: "text",
+  },
+  fa_load_disable: {
+    help: "Comma-separated 0-based ACE indices where ACE_LOAD_HEAD is refused outright (before any SWITCH/FEED_AUTO/head_source change). Emits LOAD_HEAD_REFUSED_FA_DISABLE. Useful for physically disconnected ACEs or known-bad wheel encoders. Default: empty.",
+    type: "text",
+  },
+  fa_debug: {
+    help: "Bumps FA-related lines in multiace_usb.log to DEBUG (FA_SUPPRESSED audits, _enable_feed_assist tracing). No behavior effect, only verbosity. Default: false.",
+    type: "select", options: ["true", "false"],
+  },
 };
 
 async function renderConfig() {

@@ -142,11 +142,31 @@ class BunnyAce:
         self._swap_in_progress = False
         self._auto_feed_enabled = False
         self._hotplug_gone = {}
-        # Feed-assist context: 'idle' | 'print' | 'load'. Wired to print-start
-        # / load-start transitions in Phase 3 (per-ACE FA toggles). For now,
-        # always 'idle' — emitted in audit state for forward-compat with the
-        # decay71 0.95b web protocol.
+        # Feed-assist context: 'idle' | 'print' | 'load'. Driven by
+        # _on_print_start/_end and cmd_ACE_LOAD_HEAD's try/finally so the
+        # fa_print_disable / fa_load_disable guards in _enable_feed_assist
+        # know which list to consult. Also emitted in every audit state.
         self._fa_context = 'idle'
+
+        # Phase 3: per-ACE FA disable lists (operator opt-out for specific
+        # ACE indices in specific contexts). Default empty = no
+        # suppression. Comma-separated 0-based ACE indices in ace.cfg.
+        #   fa_print_disable: 1     → ACE 1's FA suppressed during prints
+        #   fa_load_disable: 0,1    → ACE 0 & 1 refuse cmd_ACE_LOAD_HEAD
+        # fa_debug: bool → bumps multiace_usb logger to DEBUG for FA-related
+        # diagnostics (FA_SUPPRESSED audits, _enable_feed_assist tracing).
+        def _parse_idx_list(key):
+            raw = config.get(key, '').strip()
+            out = set()
+            if raw:
+                for token in raw.split(','):
+                    token = token.strip()
+                    if token.isdigit():
+                        out.add(int(token))
+            return out
+        self._fa_print_disable = _parse_idx_list('fa_print_disable')
+        self._fa_load_disable = _parse_idx_list('fa_load_disable')
+        self.fa_debug = config.getboolean('fa_debug', False)
         
         self._serial_failed = False
         self._serial_failed_at = 0.0
@@ -498,7 +518,7 @@ class BunnyAce:
         self._queue = None
 
     def _on_print_start(self, *args):
-        
+
         if self._ace_mode == 'multi':
             for head in range(4):
                 source = self._head_source.get(head)
@@ -509,7 +529,10 @@ class BunnyAce:
                     self.log_error('[multiACE] WARNING: Head %d needs ACE %d but only %d ACE(s) available!' % (
                         head, ace_idx, len(self._ace_devices)))
         self._auto_feed_enabled = True
-        logging.info('[multiACE] Print started — auto-feed enabled')
+        # Phase 3: tag context so fa_print_disable list takes effect for
+        # any FA-arming that happens during the print.
+        self._fa_context = 'print'
+        logging.info('[multiACE] Print started — auto-feed enabled (fa_context=print)')
 
         if self.print_mode == 'passive':
             try:
@@ -553,9 +576,13 @@ class BunnyAce:
                         })
 
     def _on_print_end(self, *args):
-        
+
         self._auto_feed_enabled = False
-        logging.info('[multiACE] Print ended — auto-feed disabled')
+        # Phase 3: drop the FA context back to 'idle' so any out-of-print
+        # FA-arming (e.g. manual ACE_ENABLE_FEED_ASSIST) doesn't get blocked
+        # by fa_print_disable.
+        self._fa_context = 'idle'
+        logging.info('[multiACE] Print ended — auto-feed disabled (fa_context=idle)')
         if self.print_mode == 'passive' and self._feed_assist_index != -1:
             try:
                 self._disable_feed_assist()
@@ -1378,6 +1405,35 @@ class BunnyAce:
         self.send_request(request={"method": "drying_stop"}, callback=callback)
 
     def _enable_feed_assist(self, index):
+        # Phase 3: suppress FA-arming when the active ACE is opted out for
+        # the current context. fa_print_disable / fa_load_disable are
+        # comma-separated 0-based ACE indices read from ace.cfg. Refusal
+        # leaves _feed_assist_index unchanged (no state change) and emits a
+        # FA_SUPPRESSED audit so the operator can see why FA didn't engage.
+        ace_idx = self._active_device_index
+        if self._fa_context == 'print' and ace_idx in self._fa_print_disable:
+            msg = '[multiACE] FA suppressed for ACE %d during print (fa_print_disable)' % ace_idx
+            (self._usb_log.debug if self.fa_debug else self._usb_log.info)(
+                'FA_SUPPRESSED ace=%d ctx=print slot=%d reason=fa_print_disable',
+                ace_idx, index)
+            logging.info(msg)
+            self._audit_state('FA_SUPPRESSED', {
+                'ace': ace_idx, 'slot': index, 'context': 'print',
+                'reason': 'fa_print_disable',
+            })
+            return
+        if self._fa_context == 'load' and ace_idx in self._fa_load_disable:
+            msg = '[multiACE] FA suppressed for ACE %d during load (fa_load_disable)' % ace_idx
+            (self._usb_log.debug if self.fa_debug else self._usb_log.info)(
+                'FA_SUPPRESSED ace=%d ctx=load slot=%d reason=fa_load_disable',
+                ace_idx, index)
+            logging.info(msg)
+            self._audit_state('FA_SUPPRESSED', {
+                'ace': ace_idx, 'slot': index, 'context': 'load',
+                'reason': 'fa_load_disable',
+            })
+            return
+
         def callback(self, response):
             if response.get('code', 0) != 0:
                 self.log_error(f"ACE Error: {response.get('msg')}")
@@ -1949,6 +2005,20 @@ class BunnyAce:
             return
         if slot < 0 or slot > 3:
             raise gcmd.error('[multiACE] SLOT must be 0-3')
+
+        # Phase 3: per-ACE load refusal. Operator opts ACEs into
+        # fa_load_disable via ace.cfg (comma-separated indices). Useful
+        # when a specific ACE has known feed-assist issues that make
+        # loads unreliable; the load is refused before any state changes
+        # are attempted (no SWITCH, no FEED_AUTO, no head_source update).
+        if ace_index in self._fa_load_disable:
+            self.log_always(
+                '[multiACE] Load refused: ACE %d is in fa_load_disable' % ace_index)
+            self._audit_state('LOAD_HEAD_REFUSED_FA_DISABLE', {
+                'head': head, 'ace': ace_index, 'slot': slot,
+                'reason': 'fa_load_disable',
+            })
+            return
 
         sensor = self.printer.lookup_object(
             'filament_motion_sensor e%d_filament' % head, None)
