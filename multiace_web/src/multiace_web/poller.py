@@ -225,6 +225,13 @@ class MultiAcePoller:
                 await self._mr.run_gcode(f"ACE_SWITCH TARGET={target}")
                 self._consecutive_switch_failures[target] = 0
                 self._autodry.manager.get(target).unreachable = False
+                # Re-query `ace` AFTER the switch so the cache write below
+                # reflects the just-switched-to ACE's state (dryer_status,
+                # humidity, etc.) — not the pre-switch active ACE's state.
+                # Without this, last_ace_data[target] gets populated with
+                # the wrong ACE's data, surfacing as "wrong dryer status
+                # on inactive ACEs" in the dashboard's aces[N] block.
+                ace_obj = (await self._mr.query_objects(["ace"])).get("ace") or {}
             except Exception as e:
                 self._consecutive_switch_failures[target] = (
                     self._consecutive_switch_failures.get(target, 0) + 1

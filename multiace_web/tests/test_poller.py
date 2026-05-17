@@ -269,6 +269,37 @@ async def test_idle_round_robin_explicit_on(monkeypatch, enable_value) -> None:
     assert cache, "_last_ace_data should contain at least one polled ACE entry"
 
 
+@pytest.mark.asyncio
+async def test_tick_idle_caches_post_switch_ace_obj_not_pre_switch(monkeypatch) -> None:
+    """Regression for #75: when round-robin SWITCHes to target N, the
+    cache write must use the ace_obj queried AFTER the switch — not the
+    one queried before (which still reflects the OLD active ACE's state).
+
+    Symptom of the bug: while ACE 0 was actually drying and round-robin
+    switched to ACE 1, last_ace_data[1] got populated with ACE 0's
+    dryer_status=drying — surfacing in /api/print as "ACE 1 is drying"
+    when its physical dryer was stopped.
+    """
+    monkeypatch.setenv("MULTIACE_AUTODRY_ROUND_ROBIN", "1")
+    fake_mr = _FakeMoonraker()
+    fake_mr.active_idx = 0  # before tick, active is ACE 0
+    autodry = _make_autodry_mock(2)
+    cache: dict[int, dict] = {}
+    poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2,
+                              period_s=0.0, last_ace_data=cache)
+    await poller.tick()
+    # Round-robin switched to ACE 1 (target = (0+1)%2 = 1). The cache
+    # write for index 1 must reflect ACE 1 as active — which the
+    # _FakeMoonraker reports via active_device = active_idx + 1.
+    # active_idx was updated to 1 by the run_gcode("ACE_SWITCH TARGET=1")
+    # mock; the post-switch re-query returns active_device=2 (1-based).
+    assert 1 in cache, f"expected cache[1] populated; got {cache}"
+    assert cache[1]["active_device"] == 2, (
+        f"cache[1] should reflect post-switch active_device=2 (ACE 1); "
+        f"got {cache[1]['active_device']} — likely cached pre-switch state"
+    )
+
+
 # ---- StatusPoller._probe_swap_park tests ----
 
 class _FakeMoonrakerClient:
