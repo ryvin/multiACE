@@ -472,7 +472,29 @@ class BunnyAce:
 
     def _handle_disconnect(self):
         logging.info(f'[multiACE] Closing connection to {self.serial_id}')
+        # Stop the keepalive timer first so it doesn't fire mid-teardown
+        # and write to a serial we're closing.
+        kt = getattr(self, '_keepalive_timer', None)
+        if kt is not None:
+            try:
+                self.reactor.unregister_timer(kt)
+            except Exception:
+                pass
+            self._keepalive_timer = None
         self._serial_disconnect()
+        # Close every cached inactive serial too — _serial_disconnect only
+        # handles the active one. (_serials may include entries that were
+        # opened by _open_inactive_serials but were never made active.)
+        for idx in list(self._serials.keys()):
+            if idx == self._active_device_index:
+                continue
+            ser = self._serials.pop(idx, None)
+            try:
+                if ser is not None and ser.is_open:
+                    ser.close()
+            except Exception:
+                pass
+            self._connected_per_ace[idx] = False
         self._queue = None
 
     def _on_print_start(self, *args):
@@ -675,6 +697,15 @@ class BunnyAce:
 
         # Promote the cached target.
         self._serial = self._serials[target]
+        # Per #74: while this serial was inactive, _keepalive_tick was
+        # writing get_status to it once a second; the ACE responded each
+        # time. Those response bytes are sitting in the kernel input buffer
+        # and would confuse _reader_cb's frame parser the moment we register
+        # the reactor fd. Drain before re-arming.
+        try:
+            self._serial.reset_input_buffer()
+        except Exception:
+            pass
         self._connected = True
         self._active_device_index = target
         self.serial_id = self._ace_devices[target]
@@ -716,6 +747,12 @@ class BunnyAce:
             # Cache lost or handle closed under us — nothing to promote.
             return False
         self._serial = cached
+        # Drain keepalive-generated response noise before re-arming the
+        # reactor fd (see _fast_path_switch for the full explanation).
+        try:
+            self._serial.reset_input_buffer()
+        except Exception:
+            pass
         self._active_device_index = old_device_index
         self.serial_id = old_serial_id
         self._queue = queue.Queue()
@@ -870,6 +907,12 @@ class BunnyAce:
                                   callback=lambda self, response: info_callback(self, response))
                 if self._feed_assist_index != -1:
                     self._enable_feed_assist(self._feed_assist_index)
+                # Per #74: keep every other ACE's USB alive too. The ACE Pro
+                # firmware resets its USB interface every ~5s if it sees no
+                # traffic. Without holding all serials open + pinging them,
+                # only the active ACE survives idle periods.
+                self._open_inactive_serials()
+                self._start_keepalive_timer()
                 try:
                     self.reactor.unregister_timer(self.connect_timer)
                 except Exception:
@@ -887,6 +930,96 @@ class BunnyAce:
             logging.info("ACE Error: %s" % str(e))
 
         return eventtime + 1
+
+    def _open_inactive_serials(self):
+        """Open every ACE serial that isn't the currently active one and
+        isn't already cached. Stored in self._serials so the keepalive tick
+        can keep them alive — but no reactor fd registered (the keepalive
+        drains the input buffer manually). Idempotent and resilient to
+        per-device failures.
+
+        Without this, only the active ACE has an open serial and the
+        inactive ACE Pros reset their USB interface every ~5s, invalidating
+        any subsequent fast-path swap target."""
+        for idx, path in enumerate(self._ace_devices):
+            if idx == self._active_device_index:
+                continue
+            cached = self._serials.get(idx)
+            if cached is not None and cached.is_open:
+                continue
+            try:
+                ser = serial.Serial(
+                    port=path,
+                    baudrate=self.baud,
+                    exclusive=True,
+                    rtscts=True,
+                    timeout=0,
+                    write_timeout=0,
+                )
+                if ser.is_open:
+                    self._serials[idx] = ser
+                    self._protocols[idx] = AceProtocolV1()
+                    self._connected_per_ace[idx] = True
+                    self._usb_stats['connects'] += 1
+                    self._usb_log.info(
+                        'KEEPALIVE_OPEN idx=%d serial=%s', idx, path)
+            except Exception as e:
+                self._usb_log.warning(
+                    'KEEPALIVE_OPEN idx=%d serial=%s failed: %s', idx, path, e)
+
+    def _start_keepalive_timer(self):
+        """Register the 1-Hz keepalive tick if not already running. Encodes
+        the static get_status frame once for reuse on every tick."""
+        if getattr(self, '_keepalive_timer', None) is not None:
+            return
+        proto = self._protocols.get(self._active_device_index)
+        if proto is None:
+            proto = AceProtocolV1()
+        # Static id=0; ACE Pro doesn't require unique ids across requests
+        # since we discard responses (no callback wired for keepalive).
+        try:
+            self._keepalive_frame = proto.encode_request(
+                {"id": 0, "method": "get_status"})
+        except Exception as e:
+            self._usb_log.warning('KEEPALIVE_INIT encode failed: %s', e)
+            return
+        self._keepalive_timer = self.reactor.register_timer(
+            self._keepalive_tick, self.reactor.monotonic() + 1.0)
+        self._usb_log.info(
+            'KEEPALIVE_INIT frame_bytes=%d period_s=1.0',
+            len(self._keepalive_frame))
+
+    def _keepalive_tick(self, eventtime):
+        """Every 1s, send get_status to each cached non-active ACE serial.
+        The ACE Pro firmware resets its USB interface if it sees no traffic
+        for ~5s (issue #70); the active ACE's _periodic_heartbeat_event
+        already covers itself, so we only need to ping the rest.
+
+        Drains the input buffer so the kernel-side queue doesn't fill.
+        Responses are discarded — for a true two-way per-ACE I/O lane see
+        the full decay71 port in #74 (this is the minimal version)."""
+        active = self._active_device_index
+        for idx, ser in list(self._serials.items()):
+            if idx == active:
+                continue
+            if ser is None or not ser.is_open:
+                continue
+            try:
+                ser.write(self._keepalive_frame)
+                # Drain whatever the ACE sent back (typically ~100 bytes of
+                # JSON response). Without this the kernel buffer fills in
+                # ~30s and writes start failing.
+                in_waiting = ser.in_waiting
+                if in_waiting:
+                    ser.read(in_waiting)
+            except Exception as e:
+                self._usb_log.warning(
+                    'KEEPALIVE idx=%d failed: %s — marking disconnected',
+                    idx, e)
+                self._connected_per_ace[idx] = False
+                # Don't pop from _serials yet; let the next switch attempt
+                # detect the closed state and slow-path-reopen.
+        return eventtime + 1.0
 
     def _calc_crc(self, buffer):
         
