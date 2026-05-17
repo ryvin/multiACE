@@ -631,7 +631,14 @@ class BunnyAce:
                 pass
             self.heartbeat_timer = None
         if self.ace_dev_fd:
-            self.reactor.set_fd_wake(self.ace_dev_fd, False, False)
+            # Actually unregister the fd, not just disable wake. set_fd_wake
+            # leaves the handle in the reactor; on next disconnect+failed-
+            # reconnect the kernel still flushes queued events to the dead
+            # fd, calling _reader_cb with self._serial=None and crashing.
+            try:
+                self.reactor.unregister_fd(self.ace_dev_fd)
+            except Exception:
+                pass
             self.ace_dev_fd = None
 
     def _serial_disconnect(self):
@@ -651,7 +658,14 @@ class BunnyAce:
 
         # Unregister old reactor fd + heartbeat — we're swapping the live fd.
         if self.ace_dev_fd:
-            self.reactor.set_fd_wake(self.ace_dev_fd, False, False)
+            # Actually unregister the fd, not just disable wake. set_fd_wake
+            # leaves the handle in the reactor; on next disconnect+failed-
+            # reconnect the kernel still flushes queued events to the dead
+            # fd, calling _reader_cb with self._serial=None and crashing.
+            try:
+                self.reactor.unregister_fd(self.ace_dev_fd)
+            except Exception:
+                pass
             self.ace_dev_fd = None
         if self.heartbeat_timer:
             try:
@@ -1099,6 +1113,16 @@ class BunnyAce:
         return eventtime + 1
 
     def _reader_cb(self, eventtime):
+        # Defensive null-check: the reactor may invoke this callback after
+        # the serial was disconnected (Klipper's set_fd_wake disables wake
+        # but the fd may still flush queued events, and a failed reconnect
+        # leaves self._serial=None). Without this guard the callback raised
+        # `'NoneType' object has no attribute 'in_waiting'` in a tight loop,
+        # eventually wedging klippy. Exposed by autodry round-robin which
+        # exercises the disconnect path far more often than user-driven
+        # swaps did.
+        if self._serial is None or not self._serial.is_open:
+            return
         try:
             if self._serial.in_waiting:
                 raw_bytes = self._serial.read(size=self._serial.in_waiting)

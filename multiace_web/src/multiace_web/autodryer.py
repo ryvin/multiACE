@@ -898,6 +898,20 @@ class AutoDryer:
             log.exception("AutoDryer.tick_one_ace inputs_fetcher raised; skipping ace=%d", ace_idx)
             return []
 
+        # The poller just completed an ACE_SWITCH to ace_idx before calling us
+        # (Moonraker confirmed the gcode finished, which means the firmware's
+        # _do_ace_switch finished and its `finally` cleared _swap_in_progress).
+        # But CurrentState.active_device / swap_in_progress are updated by the
+        # audit-log tailer, which is async and may not have applied the SWITCH
+        # audit yet. Without this override, target_active would be False on
+        # the inputs and the FSM would stay IDLE forever despite the swap
+        # having actually happened.
+        inputs = dataclasses.replace(
+            inputs,
+            active_device=ace_idx,
+            swap_in_progress=False,
+        )
+
         # Specialize humidity for this ACE if the per-ACE Govee map is available.
         # Falls back to the primary sensor reading (inputs.humidity_*) if the
         # per-ACE list is None/short/not-configured, so single-sensor setups

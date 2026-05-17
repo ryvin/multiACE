@@ -139,6 +139,9 @@ def test_switch_terminal_actions_force_clear_swap_in_progress():
         "SWITCH", "SWITCH_NOOP", "SWITCH_FAILED",
         "SWITCH_AUTO", "SWITCH_AUTO_NOOP", "SWITCH_AUTO_FAILED", "SWITCH_AUTO_PASSIVE",
         "SWITCH_TARGET", "SWITCH_TARGET_NOOP", "SWITCH_TARGET_FAILED",
+        # SERIAL_WRITE_FAILED is emitted mid-swap when the ACE Pro USB-resets
+        # itself while idle; the swap attempt is over by the time we see it.
+        "SERIAL_WRITE_FAILED",
     ]
     for action in terminal:
         state = CurrentState()

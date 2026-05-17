@@ -14,10 +14,18 @@ STATE_MARKER = " STATE "
 # emit sites for these are inside try blocks where _swap_in_progress is still
 # True; the finally that clears the flag emits no follow-up audit. See the
 # extended comment in CurrentState.apply_event below.
+#
+# SERIAL_WRITE_FAILED is included because the ACE Pro USB reset cycle (an
+# idle ACE re-enumerates itself, killing the kernel-side fd) trips the write
+# path mid-swap and emits SERIAL_WRITE_FAILED with swap_in_progress=True
+# baked in. By the time the firmware logs that event the swap attempt is
+# over (no retry inside _do_ace_switch); treating it as terminal unsticks
+# the UI's "tool change in progress" banner and Load buttons.
 _SWITCH_TERMINAL_ACTIONS = frozenset({
     "SWITCH", "SWITCH_NOOP", "SWITCH_FAILED",
     "SWITCH_AUTO", "SWITCH_AUTO_NOOP", "SWITCH_AUTO_FAILED", "SWITCH_AUTO_PASSIVE",
     "SWITCH_TARGET", "SWITCH_TARGET_NOOP", "SWITCH_TARGET_FAILED",
+    "SERIAL_WRITE_FAILED",
 })
 
 

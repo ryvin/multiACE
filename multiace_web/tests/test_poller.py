@@ -234,11 +234,12 @@ async def test_multi_ace_poller_no_last_ace_data_kwarg_is_noop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_idle_round_robin_disabled_by_default(monkeypatch) -> None:
-    """Without MULTIACE_AUTODRY_ROUND_ROBIN=1, _tick_idle is a no-op:
-    no ACE_SWITCH issued, no FSM ticked, no cache write. This is the default
-    because each idle-time switch wedges swap_in_progress=True in the audit
-    log without a clear-event, jamming the UI."""
+async def test_idle_round_robin_enabled_by_default(monkeypatch) -> None:
+    """With no MULTIACE_AUTODRY_ROUND_ROBIN override, _tick_idle now runs:
+    state.py force-clears swap_in_progress on terminal SWITCH-family audits
+    (commit 93506fe), so the original "swap_in_progress sticks True" reason
+    for keeping this off no longer applies. Auto-dry can't fire while idle
+    without these ticks, so default ON is the operational default."""
     monkeypatch.delenv("MULTIACE_AUTODRY_ROUND_ROBIN", raising=False)
     fake_mr = _FakeMoonraker()
     autodry = _make_autodry_mock(2)
@@ -246,11 +247,29 @@ async def test_idle_round_robin_disabled_by_default(monkeypatch) -> None:
     poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2,
                               period_s=0.0, last_ace_data=cache)
     await poller.tick()
-    # No ACE_SWITCH ever issued
+    # ACE_SWITCH issued for the round-robin target (next idx after active)
+    assert any(s.startswith("ACE_SWITCH") for s in fake_mr.gcodes_run)
+    # tick_one_ace was called for that target
+    autodry.tick_one_ace.assert_called()
+    # Per-ACE cache updated for the polled ACE
+    assert cache, "_last_ace_data should contain at least one polled ACE entry"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disable_value", ["0", "false", "FALSE", "no", "off"])
+async def test_idle_round_robin_explicit_off(monkeypatch, disable_value) -> None:
+    """Explicit off-switch: MULTIACE_AUTODRY_ROUND_ROBIN={0|false|no|off}
+    keeps _tick_idle a no-op for operators who want to suppress idle
+    ACE_SWITCH (e.g. mechanical wear concerns)."""
+    monkeypatch.setenv("MULTIACE_AUTODRY_ROUND_ROBIN", disable_value)
+    fake_mr = _FakeMoonraker()
+    autodry = _make_autodry_mock(2)
+    cache: dict[int, dict] = {}
+    poller = MultiAcePoller(moonraker=fake_mr, autodry=autodry, device_count=2,
+                              period_s=0.0, last_ace_data=cache)
+    await poller.tick()
     assert not any(s.startswith("ACE_SWITCH") for s in fake_mr.gcodes_run)
-    # tick_one_ace not called
     autodry.tick_one_ace.assert_not_called()
-    # cache untouched
     assert cache == {}
 
 

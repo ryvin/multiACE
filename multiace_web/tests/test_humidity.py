@@ -413,3 +413,62 @@ async def test_autodry_tick_specializes_humidity_per_ace(monkeypatch, tmp_path):
     assert used.humidity_pct == 55.0, (
         f"tick_one_ace did not specialize humidity for ACE 1; got {used.humidity_pct}"
     )
+
+
+@pytest.mark.asyncio
+async def test_autodry_tick_overrides_active_device_and_sip(monkeypatch, tmp_path):
+    """tick_one_ace must override Inputs.active_device + swap_in_progress to
+    reflect the post-switch state — the poller calls us right after the
+    Moonraker gcode completes but before the audit-log tailer has applied
+    the SWITCH audit, so reading those fields from CurrentState would race
+    with the tailer and leave them stale (target_active=False forever)."""
+    from multiace_web.autodryer import (
+        AutoDryer, AutodryManager, PerAceConfig, FSMSnapshot, FSMState, Inputs,
+    )
+    import multiace_web.autodryer as ad_mod
+
+    captured: dict = {}
+    async def emit(_p):
+        pass
+    class AnnouncementsStub:
+        async def post(self, **kw): return None
+        async def dismiss(self, _eid): return None
+
+    def fetch_inputs():
+        # Simulate the stale-tailer race: state still thinks we're on ACE 0
+        # with swap_in_progress True from the previous SWITCH audit.
+        return Inputs(
+            active_device=0,
+            head_source={"0": {"ace": 1, "slot": 0, "type": "PLA", "color": "000000"}},
+            swap_in_progress=True,        # stale — actual swap finished
+            humidity_ok=True, humidity_pct=42.0,
+            cavity_temp_c=25.0, klipper_print_state="standby", dryer_status="stop",
+            user_profiles=None,
+            humidity_per_ace=None,
+        )
+
+    mgr = AutodryManager.with_defaults(device_count=2)
+    mgr.get(1).config = PerAceConfig(enabled=True, target_pct=15, hysteresis_pp=5,
+                                      default_filament_type="PLA")
+    mgr.get(1).snapshot = FSMSnapshot(state=FSMState.IDLE)
+
+    real_tick = ad_mod.tick_fsm
+    def spy(*args, **kwargs):
+        captured["inputs"] = args[2]
+        return real_tick(*args, **kwargs)
+    monkeypatch.setattr(ad_mod, "tick_fsm", spy)
+
+    ad = AutoDryer(state_path=tmp_path / "autodry_state.json",
+                   inputs_fetcher=fetch_inputs, emit_event=emit,
+                   announcements=AnnouncementsStub(), tick_sec=0,
+                   manager=mgr)
+    await ad.tick_one_ace(1, now_ts=1779_010_000.0)
+    used = captured["inputs"]
+    assert used.active_device == 1, (
+        f"tick_one_ace did not override active_device; FSM sees stale value "
+        f"{used.active_device}, can_be_armed will be False and FSM stays IDLE"
+    )
+    assert used.swap_in_progress is False, (
+        "tick_one_ace did not override swap_in_progress; sip=True blocks "
+        "can_be_armed"
+    )
