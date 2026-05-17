@@ -9,6 +9,8 @@ import time
 import serial
 from serial import SerialException
 
+from .ace_protocol_v1 import AceProtocolV1
+
 MULTIACE_VERSION = "0.81b"
 
 def _setup_file_logger(name, filepath, max_bytes=1048576, backup_count=3):
@@ -40,6 +42,15 @@ class BunnyAce:
     def __init__(self, config):
         self._connected = False
         self._serial = None
+        # Per-ACE connection scaffolding (decay71 0.95b USB engine).
+        # _serial/_connected above are kept as legacy views onto the
+        # currently-active ACE; the dicts below hold per-ACE state so we
+        # don't have to close/reopen the serial port on every cross-ACE
+        # toolchange. Populated lazily in _serial_connect(); see
+        # docs/superpowers/plans/2026-05-13-decay71-feature-port.md.
+        self._serials = {}            # idx -> serial.Serial (open per ACE)
+        self._protocols = {}          # idx -> AceProtocol instance
+        self._connected_per_ace = {}  # idx -> bool
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
@@ -128,9 +139,14 @@ class BunnyAce:
 
         self._head_source = {0: None, 1: None, 2: None, 3: None}
         
-        self._swap_in_progress = False  
-        self._auto_feed_enabled = False  
-        self._hotplug_gone = {}          
+        self._swap_in_progress = False
+        self._auto_feed_enabled = False
+        self._hotplug_gone = {}
+        # Feed-assist context: 'idle' | 'print' | 'load'. Wired to print-start
+        # / load-start transitions in Phase 3 (per-ACE FA toggles). For now,
+        # always 'idle' — emitted in audit state for forward-compat with the
+        # decay71 0.95b web protocol.
+        self._fa_context = 'idle'
         
         self._serial_failed = False
         self._serial_failed_at = 0.0
@@ -312,32 +328,19 @@ class BunnyAce:
         return (len(port_tuple), port_tuple, path)
 
     def _scan_ace_devices(self, context='unknown'):
-        ace_devices = []
         by_path_dir = '/dev/serial/by-path/'
         scan_start = time.monotonic()
         self._usb_stats['scans'] += 1
 
         if not os.path.exists(by_path_dir):
             self._usb_log.debug('SCAN [%s] by-path dir missing — 0 devices', context)
-            return ace_devices
+            return []
 
         all_entries = sorted(os.listdir(by_path_dir))
-        for entry in all_entries:
-            full_path = os.path.join(by_path_dir, entry)
-            real_dev = os.path.basename(os.path.realpath(full_path))
-
-            try:
-                sysfs_base = '/sys/class/tty/%s/device/../' % real_dev
-                with open(os.path.join(sysfs_base, 'idVendor'), 'r') as f:
-                    vendor = f.read().strip()
-                with open(os.path.join(sysfs_base, 'idProduct'), 'r') as f:
-                    product = f.read().strip()
-
-                if vendor == '28e9' and product == '018a':
-                    ace_devices.append(full_path)
-                    logging.info('[multiACE] Found device %s (%s) vendor=%s product=%s' % (full_path, real_dev, vendor, product))
-            except (IOError, OSError):
-                continue
+        ace_devices = AceProtocolV1.discover()
+        for path in ace_devices:
+            real_dev = os.path.basename(os.path.realpath(path))
+            logging.info('[multiACE] Found device %s (%s) vendor=%s product=%s' % (path, real_dev, '28e9', '018a'))
 
         ace_devices.sort(key=self._ace_path_sort_key)
 
@@ -597,6 +600,13 @@ class BunnyAce:
         if self._serial is not None and self._serial.is_open:
             self._serial.close()
             self._connected = False
+        # Clear the active ACE's cache entry so a future switch back doesn't
+        # try to reuse a closed handle. Other ACE entries (if any) are left
+        # intact — they belong to inactive ACEs whose handles are still alive.
+        _idx = self._active_device_index
+        if _idx in self._serials:
+            self._serials.pop(_idx, None)
+            self._connected_per_ace[_idx] = False
         if self.heartbeat_timer:
             try:
                 self.reactor.unregister_timer(self.heartbeat_timer)
@@ -605,6 +615,142 @@ class BunnyAce:
         if self.ace_dev_fd:
             self.reactor.set_fd_wake(self.ace_dev_fd, False, False)
             self.ace_dev_fd = None
+
+    def _fast_path_switch(self, target, old_device_index):
+        # Promote a cached open serial without close+reopen. Returns True
+        # on success. The old ACE's serial stays open in the cache so a
+        # subsequent switch back is also fast.
+        self._usb_log.info('SWITCH target=%d fast-path: promoting cached serial', target)
+
+        # Stash current live handle under the old index so we can come back.
+        if self._serial is not None and self._serial.is_open:
+            self._serials[old_device_index] = self._serial
+            self._connected_per_ace[old_device_index] = True
+
+        # Unregister old reactor fd + heartbeat — we're swapping the live fd.
+        if self.ace_dev_fd:
+            self.reactor.set_fd_wake(self.ace_dev_fd, False, False)
+            self.ace_dev_fd = None
+        if self.heartbeat_timer:
+            try:
+                self.reactor.unregister_timer(self.heartbeat_timer)
+            except ValueError:
+                pass
+
+        # Promote the cached target.
+        self._serial = self._serials[target]
+        self._connected = True
+        self._active_device_index = target
+        self.serial_id = self._ace_devices[target]
+
+        # Reset per-connection request state.
+        self._queue = queue.Queue()
+        self._callback_map = {}
+        self._request_id = 0
+        self.read_buffer = bytearray()
+        self.gate_status = [GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN]
+
+        # Re-register reactor fd + heartbeat for the new live serial.
+        self.ace_dev_fd = self.reactor.register_fd(
+            self._serial.fileno(), self._reader_cb,
+        )
+        self.heartbeat_timer = self.reactor.register_timer(
+            self._periodic_heartbeat_event, self.reactor.NOW)
+
+        self.gcode.run_script_from_command(
+            "SAVE_VARIABLE VARIABLE=%s VALUE=\"'%s'\"" % (self.VARS_ACE_ACTIVE_DEVICE, self.serial_id))
+        for slot in self._info['slots']:
+            slot['rfid'] = 0
+        self.send_request(request={"method": "get_info"},
+                          callback=lambda self, response: None)
+        self.reactor.pause(self.reactor.monotonic() + 0.5)
+        self._push_rfid_info()
+        self._usb_log.info('SWITCH target=%d fast-path complete', target)
+        return True
+
+    def _slow_path_switch(self, target, old_device_index):
+        # Disconnect-then-reconnect dance. Falls back to the previous ACE on
+        # failure and emits SWITCH_FAILED audit events. Returns True on
+        # success, False if the audit-failure return path was taken.
+        old_serial_id = self.serial_id
+        self._serial_disconnect()
+        self._connected = False
+
+        self._usb_log.info('SWITCH target=%d disconnected from ACE %d, scanning for target', target, old_device_index)
+        for scan_retry in range(5):
+            self._refresh_ace_devices('switch_post_disconnect_%d' % (scan_retry + 1))
+            if self._is_ace_present(target):
+                break
+            self._usb_stats['retries'] += 1
+            self.reactor.pause(self.reactor.monotonic() + 1.0)
+        if not self._is_ace_present(target):
+            self.log_always('[multiACE] ACE %d not available (present %d). Reconnecting to previous ACE...' % (target, len(self._ace_present)))
+            self._queue = queue.Queue()
+            self._callback_map = {}
+            self._request_id = 0
+            self.read_buffer = bytearray()
+            self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
+            for _ in range(30):
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+                if self._connected:
+                    break
+            if self._connected:
+                self.log_always('[multiACE] Reconnected to ACE %d' % self._active_device_index)
+            else:
+                self.log_always('[multiACE] WARNING: Could not reconnect to previous ACE either!')
+            self._audit_state('SWITCH_FAILED', {'target': target, 'reason': 'target_not_found_after_disconnect', 'reconnected': self._connected})
+            return False
+
+        self._active_device_index = target
+        self.serial_id = self._ace_devices[target]
+
+        self.gcode.run_script_from_command(
+            "SAVE_VARIABLE VARIABLE=%s VALUE=\"'%s'\"" % (self.VARS_ACE_ACTIVE_DEVICE, self.serial_id))
+
+        for slot in self._info['slots']:
+            slot['rfid'] = 0
+
+        self.log_always('[multiACE] Connecting to ACE %d: %s' % (target, self.serial_id))
+        self._queue = queue.Queue()
+        self._callback_map = {}
+        self._request_id = 0
+        self.read_buffer = bytearray()
+        self.gate_status = [GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN]
+        self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
+
+        for _ in range(30):
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+            if self._connected:
+                break
+        if not self._connected:
+            logging.info('[multiACE] ACE_SWITCH: FAILED to connect to ACE %d at %s — falling back to ACE %d' % (
+                target, self.serial_id, old_device_index))
+            self.log_always('[multiACE] Failed to connect to ACE %d. Reconnecting to ACE %d...' % (target, old_device_index))
+            self._active_device_index = old_device_index
+            self.serial_id = old_serial_id
+            self._queue = queue.Queue()
+            self._callback_map = {}
+            self._request_id = 0
+            self.read_buffer = bytearray()
+            self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
+            for _ in range(30):
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+                if self._connected:
+                    break
+            if self._connected:
+                self.log_always('[multiACE] Reconnected to ACE %d' % old_device_index)
+            else:
+                self.log_always('[multiACE] WARNING: Could not reconnect to previous ACE either!')
+            self._audit_state('SWITCH_FAILED', {'target': target, 'reason': 'connect_failed', 'fallback_ace': old_device_index, 'reconnected': self._connected})
+            return False
+
+        logging.info('[multiACE] ACE_SWITCH: connected to ACE %d at %s (active_idx=%d)' % (
+            target, self.serial_id, self._active_device_index))
+        self.reactor.pause(self.reactor.monotonic() + 1.5)
+        logging.info('[multiACE] ACE_SWITCH: heartbeat done, info slots rfid: [%s]' % (
+            ', '.join(str(s.get('rfid', '?')) for s in self._info.get('slots', []))))
+        self._push_rfid_info()
+        return True
 
     def _connect(self, eventtime):
         
@@ -639,6 +785,12 @@ class BunnyAce:
                 self._usb_stats['connects'] += 1
                 self._usb_log.info('CONNECT success serial=%s time=%.1fms', self.serial_id, connect_ms)
                 logging.info(f'[multiACE] Connected to {self.serial_id}')
+                # Record this open serial in the per-ACE cache so a future
+                # cross-ACE switch can promote it instead of closing+reopening.
+                _idx = self._active_device_index
+                self._serials[_idx] = self._serial
+                self._protocols[_idx] = AceProtocolV1()
+                self._connected_per_ace[_idx] = True
                 self.ace_dev_fd = self.reactor.register_fd(
                     self._serial.fileno(),
                     self._reader_cb,
@@ -1298,88 +1450,19 @@ class BunnyAce:
                 self.log_always('[multiACE] Unload complete')
 
             old_device_index = self._active_device_index
-            old_serial_id = self.serial_id
-            self._serial_disconnect()
-            self._connected = False
 
-            self._usb_log.info('SWITCH target=%d disconnected from ACE %d, scanning for target', target, old_device_index)
-            for scan_retry in range(5):
-                self._refresh_ace_devices('switch_post_disconnect_%d' % (scan_retry + 1))
-                if self._is_ace_present(target):
-                    break
-                self._usb_stats['retries'] += 1
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
-            if not self._is_ace_present(target):
-                self.log_always('[multiACE] ACE %d not available (present %d). Reconnecting to previous ACE...' % (target, len(self._ace_present)))
-                
-                self._queue = queue.Queue()
-                self._callback_map = {}
-                self._request_id = 0
-                self.read_buffer = bytearray()
-                self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
-                for _ in range(30):
-                    self.reactor.pause(self.reactor.monotonic() + 0.5)
-                    if self._connected:
-                        break
-                if self._connected:
-                    self.log_always('[multiACE] Reconnected to ACE %d' % self._active_device_index)
-                else:
-                    self.log_always('[multiACE] WARNING: Could not reconnect to previous ACE either!')
-                self._audit_state('SWITCH_FAILED', {'target': target, 'reason': 'target_not_found_after_disconnect', 'reconnected': self._connected})
-                return
-            self._active_device_index = target
-            self.serial_id = self._ace_devices[target]
-
-            self.gcode.run_script_from_command(
-                "SAVE_VARIABLE VARIABLE=%s VALUE=\"'%s'\"" % (self.VARS_ACE_ACTIVE_DEVICE, self.serial_id))
-
-            for slot in self._info['slots']:
-                slot['rfid'] = 0
-
-            self.log_always('[multiACE] Connecting to ACE %d: %s' % (target, self.serial_id))
-            self._queue = queue.Queue()
-            self._callback_map = {}
-            self._request_id = 0
-            self.read_buffer = bytearray()
-            self.gate_status = [GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN]
-            self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
-
-            for _ in range(30):
-                self.reactor.pause(self.reactor.monotonic() + 0.5)
-                if self._connected:
-                    break
-            if not self._connected:
-                logging.info('[multiACE] ACE_SWITCH: FAILED to connect to ACE %d at %s — falling back to ACE %d' % (
-                    target, self.serial_id, old_device_index))
-                self.log_always('[multiACE] Failed to connect to ACE %d. Reconnecting to ACE %d...' % (target, old_device_index))
-                
-                self._active_device_index = old_device_index
-                self.serial_id = old_serial_id
-                self._queue = queue.Queue()
-                self._callback_map = {}
-                self._request_id = 0
-                self.read_buffer = bytearray()
-                self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
-                for _ in range(30):
-                    self.reactor.pause(self.reactor.monotonic() + 0.5)
-                    if self._connected:
-                        break
-                if self._connected:
-                    self.log_always('[multiACE] Reconnected to ACE %d' % old_device_index)
-                else:
-                    self.log_always('[multiACE] WARNING: Could not reconnect to previous ACE either!')
-                self._audit_state('SWITCH_FAILED', {'target': target, 'reason': 'connect_failed', 'fallback_ace': old_device_index, 'reconnected': self._connected})
-                return
-
-            logging.info('[multiACE] ACE_SWITCH: connected to ACE %d at %s (active_idx=%d)' % (
-                target, self.serial_id, self._active_device_index))
-
-            self.reactor.pause(self.reactor.monotonic() + 1.5)
-
-            logging.info('[multiACE] ACE_SWITCH: heartbeat done, info slots rfid: [%s]' % (
-                ', '.join(str(s.get('rfid', '?')) for s in self._info.get('slots', []))))
-
-            self._push_rfid_info()
+            # Fast path: target's serial is already open and cached. Promote
+            # it without close+reopen — the decay71 0.95b fix for the ACE Pro
+            # USB reset cycle bug that motivated the 0.81b start-ACE pin.
+            cached = self._serials.get(target)
+            if (cached is not None
+                    and self._connected_per_ace.get(target, False)
+                    and cached.is_open):
+                if not self._fast_path_switch(target, old_device_index):
+                    return
+            else:
+                if not self._slow_path_switch(target, old_device_index):
+                    return
 
         if autoload:
             self.log_always('[multiACE] Loading from ACE %d...' % target)
@@ -2465,6 +2548,7 @@ class BunnyAce:
                 'mode': getattr(self, '_ace_mode', 'unknown'),
                 'swap_in_progress': self._swap_in_progress,
                 'auto_feed': self._auto_feed_enabled,
+                'fa_context': getattr(self, '_fa_context', 'idle'),
                 'feed_assist': self._feed_assist_index,
                 'gate_status': self.gate_status[:],
                 'head_source': {},

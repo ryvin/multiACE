@@ -4,23 +4,38 @@ Split out from ``govee_bridge.py`` so the unit tests can verify decoding
 without pulling in fastapi/bleak. The bridge imports from this module.
 
 Decoder reference: https://github.com/wcbonner/GoveeBTTempLogger
+
+Multi-device support: ``ingest_advertisement`` accepts either a single
+target MAC string (legacy single-device API) or any iterable of MAC
+strings (new multi-device API). Each matched device is stored under
+``_state['devices'][canonical_mac]``; the most recent reading is also
+mirrored into the legacy ``_state['reading']`` / ``_state['last_seen_ts']``
+fields so older bridge endpoints and tests continue to work unchanged.
 """
+
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-# Manufacturer ID 0xEC88 (LE bytes 0x88 0xEC) — H5075/H5104/H5105.
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+# Manufacturer ID 0xEC88 (LE bytes 0x88 0xEC) - H5075/H5104/H5105.
 # 0x0001 used by some firmware revs of the same family.
 GOVEE_MFG_IDS = (0xEC88, 0x0001)
 
-# In-memory state for the bridge process. Module-private; tests reset it
-# via the autouse fixture in tests/test_govee_bridge.py.
 _state: dict[str, Any] = {
-    "reading": None,        # last decoded {temperature, humidity, battery, rssi}
-    "last_seen_ts": 0.0,    # wall-clock time of last reading
-    "scan_started": False,  # set True when the BLE scan task is running
-    "last_error": None,     # most recent exception message, if any
+    # Legacy single-device fields - mirrored from the most-recently-updated
+    # device. Kept so callers that predate multi-device support keep working.
+    "reading": None,
+    "last_seen_ts": 0.0,
+    # Shared bridge state.
+    "scan_started": False,
+    "last_error": None,
+    # New: per-device cache keyed by normalized uppercase MAC. Each value
+    # is {"reading": dict|None, "last_seen_ts": float, "name": str|None}.
+    "devices": {},
 }
 
 
@@ -50,10 +65,6 @@ def decode_govee_h5x(data: bytes) -> tuple[float, float, int] | None:
         magnitude_abs = combined & 0x7fffff
         temp_C   = sign * magnitude_abs / 10000.0
         humidity = (magnitude_abs % 1000) / 10.0
-
-    (Note: temp uses ``/10000.0`` for full precision; older revisions of
-    this decoder used integer ``// 1000 / 10`` which lost the sub-decimal
-    digit but rounded to the same display value.)
 
     Returns ``(temperature_c, humidity_pct, battery_pct)`` or ``None`` if
     the payload is too short or the decoded values are out of plausible
@@ -88,19 +99,39 @@ def normalize_mac(mac: str) -> str:
     return s
 
 
+def _coerce_targets(target: str | Iterable[str]) -> set[str]:
+    """Accept either a single MAC string (legacy API) or an iterable of
+    MACs (multi-device API). Returns a normalized set."""
+    if isinstance(target, str):
+        return {normalize_mac(target)} if target else set()
+    return {normalize_mac(m) for m in target if m}
+
+
 def ingest_advertisement(
     address: str,
     manufacturer_data: dict[int, bytes],
     rssi: int | None,
-    target_mac: str,
+    target_mac: str | Iterable[str],
     *,
+    name: str | None = None,
     now: float | None = None,
 ) -> bool:
-    """Feed an advertisement into the cache. Returns True if it matched the
-    target MAC and decoded a plausible reading. Pure function for testability
-    (the live scan loop calls this from its detection callback)."""
-    target = normalize_mac(target_mac)
-    if normalize_mac(address) != target:
+    """Feed an advertisement into the cache. Returns True if it matched
+    one of the target MAC(s) and decoded a plausible reading.
+
+    The parameter is kept named ``target_mac`` for backwards compatibility
+    with the original single-device callers and existing tests; it accepts
+    either a single MAC string or any iterable of MAC strings.
+
+    On success, updates both ``_state['devices'][canonical]`` (new per-device
+    cache) AND ``_state['reading']`` / ``_state['last_seen_ts']`` (legacy
+    single-device mirror) so older endpoints keep returning data.
+    """
+    target_set = _coerce_targets(target_mac)
+    if not target_set:
+        return False
+    canonical = normalize_mac(address)
+    if canonical not in target_set:
         return False
     for mfg_id, mfg_data in (manufacturer_data or {}).items():
         if mfg_id not in GOVEE_MFG_IDS:
@@ -109,13 +140,25 @@ def ingest_advertisement(
         if decoded is None:
             continue
         temp_c, humidity, battery = decoded
-        _state["reading"] = {
+        reading = {
             "temperature": round(temp_c, 2),
             "humidity": round(humidity, 1),
             "battery": battery,
             "rssi": rssi,
         }
-        _state["last_seen_ts"] = now if now is not None else time.time()
+        seen_ts = now if now is not None else time.time()
+        # New per-device cache.
+        device = _state["devices"].setdefault(
+            canonical,
+            {"reading": None, "last_seen_ts": 0.0, "name": name},
+        )
+        device["reading"] = reading
+        device["last_seen_ts"] = seen_ts
+        if name and not device.get("name"):
+            device["name"] = name
+        # Legacy mirror.
+        _state["reading"] = reading
+        _state["last_seen_ts"] = seen_ts
         _state["last_error"] = None
         return True
     return False

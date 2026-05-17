@@ -184,3 +184,25 @@ def test_head_source_parked_field_round_trips():
     assert state.head_source[0].get("parked") is True
     payload = state.to_dict()
     assert payload["head_source"][0]["parked"] is True
+
+
+def test_apply_event_ignores_unknown_fields():
+    # Forward-compat: when the firmware adds new top-level audit fields
+    # (e.g. fa_context from the decay71 0.95b port, or future additions),
+    # the tailer must not crash and must still apply the known fields.
+    state = CurrentState()
+    state.apply_event({
+        "action": "LOAD_HEAD",
+        "params": {},
+        "active_device": 0,
+        "connected": True,
+        "swap_in_progress": False,
+        "gate_status": [1, 1, 1, 1],
+        "head_source": {"0": None, "1": None, "2": None, "3": None},
+        "sensors": {"0": False, "1": False, "2": False, "3": False},
+        "fa_context": "print",                # new in 0.82+
+        "tip_refresh_active": True,           # hypothetical future field
+        "nested_unknown": {"a": 1, "b": [2]}, # nested unknowns must not raise
+    })
+    assert state.active_device == 0
+    assert state.connected is True

@@ -5,6 +5,7 @@ The live BLE scan loop is not exercised here — that path requires real
 tests cover the *pure* logic: payload decoding, MAC matching, and the
 in-memory cache update.
 """
+
 from __future__ import annotations
 
 import sys
@@ -33,6 +34,7 @@ def reset_state():
     _state["last_seen_ts"] = 0.0
     _state["scan_started"] = False
     _state["last_error"] = None
+    _state["devices"] = {}
     yield
 
 
@@ -64,7 +66,7 @@ def test_decode_negative_temperature():
 def test_decode_short_payload_returns_none():
     assert decode_govee_h5x(b"\x00\x03") is None
     assert decode_govee_h5x(b"") is None
-    assert decode_govee_h5x(b"\x00\x03\x93\xE8\x5F") is None  # 5 bytes
+    assert decode_govee_h5x(b"\x00\x03\x93\xe8\x5f") is None  # 5 bytes
 
 
 def test_decode_h5104_layout():
@@ -195,3 +197,120 @@ def test_ingest_implausible_payload_does_not_update():
     )
     assert matched is False
     assert _state["reading"] is None
+
+
+# ----- multi-device ingestion ------------------------------------------------
+
+
+MAC_A = "A4:C1:38:11:22:33"
+MAC_B = "A4:C1:38:99:99:99"
+
+
+def test_ingest_accepts_iterable_of_macs():
+    """ingest_advertisement accepts either a single MAC (legacy) or any
+    iterable of MACs (multi-device API)."""
+    matched = ingest_advertisement(
+        address=MAC_A,
+        manufacturer_data={0xEC88: _good_payload()},
+        rssi=-40,
+        target_mac=[MAC_A, MAC_B],
+        now=1000.0,
+    )
+    assert matched is True
+    assert MAC_A in _state["devices"]
+    assert _state["devices"][MAC_A]["reading"]["humidity"] == pytest.approx(47.2)
+    assert _state["devices"][MAC_A]["last_seen_ts"] == 1000.0
+
+
+def test_ingest_two_devices_independently_cached():
+    """A second device's reading does not clobber the first device's entry
+    in _state['devices']."""
+    ingest_advertisement(
+        address=MAC_A,
+        manufacturer_data={0xEC88: _good_payload()},
+        rssi=-40,
+        target_mac=[MAC_A, MAC_B],
+        now=1000.0,
+    )
+    # Different payload for device B — 34.6 C / 29.3% / 84% battery (H5104 layout)
+    payload_b = bytes([0x01, 0x01, 0x05, 0x48, 0xB5, 0x54])
+    ingest_advertisement(
+        address=MAC_B,
+        manufacturer_data={0xEC88: payload_b},
+        rssi=-60,
+        target_mac=[MAC_A, MAC_B],
+        now=1001.0,
+    )
+    assert _state["devices"][MAC_A]["reading"]["humidity"] == pytest.approx(47.2)
+    assert _state["devices"][MAC_A]["last_seen_ts"] == 1000.0
+    assert _state["devices"][MAC_B]["reading"]["temperature"] == pytest.approx(
+        34.63, abs=0.1
+    )
+    assert _state["devices"][MAC_B]["last_seen_ts"] == 1001.0
+
+
+def test_ingest_mirrors_most_recent_to_legacy_reading():
+    """For backwards-compat with single-device endpoints, _state['reading']
+    always reflects the LAST device that produced a reading."""
+    ingest_advertisement(
+        address=MAC_A,
+        manufacturer_data={0xEC88: _good_payload()},
+        rssi=-40,
+        target_mac=[MAC_A, MAC_B],
+        now=1000.0,
+    )
+    assert _state["reading"]["humidity"] == pytest.approx(47.2)
+    assert _state["last_seen_ts"] == 1000.0
+
+    payload_b = bytes([0x01, 0x01, 0x05, 0x48, 0xB5, 0x54])
+    ingest_advertisement(
+        address=MAC_B,
+        manufacturer_data={0xEC88: payload_b},
+        rssi=-60,
+        target_mac=[MAC_A, MAC_B],
+        now=2000.0,
+    )
+    # Legacy mirror tracks device B (latest).
+    assert _state["reading"]["temperature"] == pytest.approx(34.63, abs=0.1)
+    assert _state["last_seen_ts"] == 2000.0
+
+
+def test_ingest_records_name_when_provided():
+    """The optional ``name`` kwarg (BLE local-name) is persisted on the
+    per-device record."""
+    ingest_advertisement(
+        address=MAC_A,
+        manufacturer_data={0xEC88: _good_payload()},
+        rssi=-40,
+        target_mac=[MAC_A],
+        name="GVH5104_5568",
+        now=1000.0,
+    )
+    assert _state["devices"][MAC_A]["name"] == "GVH5104_5568"
+
+
+def test_ingest_unconfigured_mac_with_iterable_does_not_update():
+    """If the advertised MAC isn't in the iterable, no state changes."""
+    matched = ingest_advertisement(
+        address="A4:C1:38:DE:AD:BE",
+        manufacturer_data={0xEC88: _good_payload()},
+        rssi=-40,
+        target_mac=[MAC_A, MAC_B],
+        now=1000.0,
+    )
+    assert matched is False
+    assert _state["reading"] is None
+    assert _state["devices"] == {}
+
+
+def test_ingest_empty_iterable_does_not_match_anything():
+    """An empty target list never matches (defensive: misconfigured env)."""
+    matched = ingest_advertisement(
+        address=MAC_A,
+        manufacturer_data={0xEC88: _good_payload()},
+        rssi=-40,
+        target_mac=[],
+    )
+    assert matched is False
+    assert _state["reading"] is None
+    assert _state["devices"] == {}
