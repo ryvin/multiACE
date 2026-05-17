@@ -1462,7 +1462,34 @@ class BunnyAce:
         self._swap_in_progress = True
 
         try:
-            self._do_ace_switch(gcmd, target, autoload)
+            try:
+                self._do_ace_switch(gcmd, target, autoload)
+            except Exception as e:
+                # Klipper turns unhandled gcode exceptions into a printer
+                # shutdown ("Internal error on command: ACE_SWITCH"). The
+                # ACE Pro idle USB reset cycle (issue #70) hits paths in
+                # _do_ace_switch where an unexpected serial error can
+                # surface, and a single bad switch shouldn't take the
+                # whole printer offline. Swallow + emit SWITCH_FAILED so
+                # state.py force-clears swap_in_progress and the operator
+                # sees the failure in the audit log instead of having
+                # Klipper shut down.
+                self.log_always(
+                    '[multiACE] ACE_SWITCH TARGET=%d raised %s: %s — '
+                    'continuing (printer stays online)'
+                    % (target, type(e).__name__, e))
+                self._usb_log.warning(
+                    'SWITCH target=%d unhandled exception: %s',
+                    target, traceback.format_exc())
+                try:
+                    self._audit_state('SWITCH_FAILED', {
+                        'target': target,
+                        'reason': 'unhandled_exception',
+                        'error_type': type(e).__name__,
+                        'error': str(e)[:200],
+                    })
+                except Exception:
+                    pass
         finally:
             self._swap_in_progress = False
 
