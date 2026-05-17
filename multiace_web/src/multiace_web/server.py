@@ -564,6 +564,18 @@ async def lifespan(app: FastAPI):
     _boot_device_count = int(getattr(state, "device_count", 0) or 1)
     _manager = AutoDryer.load_manager(autodry_state_path, device_count=_boot_device_count)
 
+    async def autodry_run_ace_dry(ace: int, temp: int, dur: int) -> None:
+        """Fire ``ACE_DRY ACE=N TEMP=T DURATION=D`` via Moonraker when the
+        autodry FSM transitions to DRYING in mode=active. Without this hook
+        the FSM advanced state + announced but no physical dryer ever
+        started."""
+        gcode = f"ACE_DRY ACE={ace} TEMP={temp} DURATION={dur}"
+        log.info("autodry: firing %s", gcode)
+        try:
+            await moonraker.run_gcode(gcode)
+        except Exception:
+            log.exception("autodry: ACE_DRY invocation failed (%s)", gcode)
+
     autodry = AutoDryer(
         state_path=autodry_state_path,
         inputs_fetcher=autodry_inputs_fetcher,
@@ -571,6 +583,7 @@ async def lifespan(app: FastAPI):
         announcements=announcements,
         tick_sec=float(os.environ.get("MULTIACE_AUTODRY_TICK_SEC", "60")),
         manager=_manager,
+        run_ace_dry=autodry_run_ace_dry,
     )
     app.state.autodry = autodry
 

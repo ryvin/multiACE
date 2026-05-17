@@ -776,6 +776,7 @@ class AutoDryer:
         daily_duty_max_min: int = DEFAULT_DAILY_DUTY_MAX_MIN,
         min_delta_pct: float = DEFAULT_MIN_DELTA_PCT,
         manager: "AutodryManager | None" = None,
+        run_ace_dry: "Callable[[int, int, int], Awaitable[None]] | None" = None,
     ) -> None:
         self._state_path = Path(state_path)
         self._fetch_inputs = inputs_fetcher
@@ -794,6 +795,13 @@ class AutoDryer:
         self._eph = Ephemeral(debounce=DebounceBuffer(required=debounce_required))
         # Per-ACE manager. If None, the single-FSM (legacy) code path is used.
         self._manager = manager
+        # Optional callback invoked when the FSM transitions to DRYING in
+        # mode=active. server.py wires this to a Moonraker run_gcode call
+        # that issues ``ACE_DRY ACE=N TEMP=T DURATION=D``. Tests can pass a
+        # spy callable. None means the FSM still emits AUTODRY_TRIGGERED +
+        # toast but no physical dryer is started (useful for log-only setups
+        # or while diagnosing UI without committing to a real cycle).
+        self._run_ace_dry = run_ace_dry
 
     def stop(self) -> None:
         self._stop.set()
@@ -953,12 +961,40 @@ class AutoDryer:
         fsm.snapshot = new_persisted.fsm
         self._save_manager()
 
-        # Emit events (same path as legacy _tick_once).
+        # Emit events + post toast + invoke ACE_DRY when applicable.
         for t in transitions:
             await self._emit_event({"action": t.event, "params": t.payload})
             await self._maybe_announce(t, new_persisted)
+            await self._invoke_dry_if_triggered(t)
 
         return transitions
+
+    async def _invoke_dry_if_triggered(self, t: Transition) -> None:
+        """Fire ``ACE_DRY ACE=N TEMP=T DURATION=D`` via the injected callback
+        when the FSM transitions to DRYING in mode=active.
+
+        Without this hook the FSM advances to DRYING and emits
+        AUTODRY_TRIGGERED + toast but no physical dryer ever starts — the
+        FSM would sit "drying" with humidity unchanged and fault on
+        min_delta after `effective_duration_min`. The callback is optional
+        so dry-run installs (mode=log → AUTODRY_DRY_RUN) and tests can
+        leave it None and still exercise the rest of the runtime.
+        """
+        if self._run_ace_dry is None:
+            return
+        if t.event != "AUTODRY_TRIGGERED":
+            return
+        ace = t.payload.get("ace")
+        temp = t.payload.get("target_temp")
+        dur = t.payload.get("duration_min")
+        if ace is None or temp is None or dur is None:
+            log.warning("AUTODRY_TRIGGERED payload missing ace/temp/dur: %r", t.payload)
+            return
+        try:
+            await self._run_ace_dry(int(ace), int(temp), int(dur))
+        except Exception:
+            log.exception("ACE_DRY invocation failed for ace=%s temp=%s dur=%s",
+                          ace, temp, dur)
 
     def _save_manager(self) -> None:
         """Persist the AutodryManager state to self._state_path. Atomic write.

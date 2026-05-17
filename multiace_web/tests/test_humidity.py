@@ -472,3 +472,105 @@ async def test_autodry_tick_overrides_active_device_and_sip(monkeypatch, tmp_pat
         "tick_one_ace did not override swap_in_progress; sip=True blocks "
         "can_be_armed"
     )
+
+
+@pytest.mark.asyncio
+async def test_autodry_fires_ace_dry_callback_on_triggered(monkeypatch, tmp_path):
+    """When the per-ACE FSM transitions to DRYING in active mode, the runtime
+    must invoke the injected run_ace_dry callback with (ace, temp_c, dur_min).
+    Without this hook the FSM advances state but the dryer never runs and
+    the cycle FAULTs after duration on min_delta."""
+    from multiace_web.autodryer import (
+        AutoDryer, AutodryManager, PerAceConfig, FSMSnapshot, FSMState,
+        Inputs, DebounceBuffer,
+    )
+
+    fired: list[tuple[int, int, int]] = []
+    async def run_ace_dry(ace, temp, dur):
+        fired.append((ace, temp, dur))
+
+    async def emit(_p):
+        pass
+    class AnnouncementsStub:
+        async def post(self, **kw): return None
+        async def dismiss(self, _eid): return None
+
+    def fetch_inputs():
+        return Inputs(
+            active_device=0,
+            head_source={"0": {"ace": 0, "slot": 0, "type": "PLA", "color": "000000"}},
+            swap_in_progress=False,
+            humidity_ok=True, humidity_pct=55.0,   # well above wake threshold
+            cavity_temp_c=25.0, klipper_print_state="standby", dryer_status="stop",
+            user_profiles=None,
+            humidity_per_ace=None,
+        )
+
+    mgr = AutodryManager.with_defaults(device_count=1)
+    mgr.get(0).config = PerAceConfig(enabled=True, target_pct=15, hysteresis_pp=5,
+                                      default_filament_type="PLA")
+    # Pre-fill snapshot to WATCHING so the next tick can transition to DRYING
+    mgr.get(0).snapshot = FSMSnapshot(state=FSMState.WATCHING)
+
+    ad = AutoDryer(state_path=tmp_path / "autodry_state.json",
+                   inputs_fetcher=fetch_inputs, emit_event=emit,
+                   announcements=AnnouncementsStub(), tick_sec=0,
+                   manager=mgr, run_ace_dry=run_ace_dry,
+                   debounce_required=1)  # debounce of 1 so the next tick triggers
+    # Pre-fill the debounce buffer so we transition on the first tick
+    ad._eph.debounce = DebounceBuffer(required=1)
+    ad._eph.debounce.observe_above()
+
+    await ad.tick_one_ace(0, now_ts=1779_010_000.0)
+
+    assert fired, "run_ace_dry was not invoked on AUTODRY_TRIGGERED"
+    ace, temp, dur = fired[0]
+    assert ace == 0
+    assert temp == 50           # PLA default temp from DEFAULT_PROFILES
+    assert dur == 360           # PLA default duration
+
+
+@pytest.mark.asyncio
+async def test_autodry_does_not_fire_ace_dry_for_skips(monkeypatch, tmp_path):
+    """run_ace_dry must only fire on AUTODRY_TRIGGERED, never on
+    AUTODRY_SKIPPED_* or other transitions (otherwise a skip during print
+    would still start the dryer)."""
+    from multiace_web.autodryer import (
+        AutoDryer, AutodryManager, PerAceConfig, FSMSnapshot, FSMState, Inputs,
+    )
+
+    fired: list = []
+    async def run_ace_dry(ace, temp, dur):
+        fired.append((ace, temp, dur))
+
+    async def emit(_p):
+        pass
+    class AnnouncementsStub:
+        async def post(self, **kw): return None
+        async def dismiss(self, _eid): return None
+
+    def fetch_inputs():
+        return Inputs(
+            active_device=0,
+            head_source={"0": {"ace": 0, "slot": 0, "type": "PLA", "color": "000000"}},
+            swap_in_progress=False,
+            humidity_ok=True, humidity_pct=55.0,
+            cavity_temp_c=25.0,
+            klipper_print_state="printing",  # forces SKIPPED_PRINT
+            dryer_status="stop",
+            user_profiles=None,
+            humidity_per_ace=None,
+        )
+
+    mgr = AutodryManager.with_defaults(device_count=1)
+    mgr.get(0).config = PerAceConfig(enabled=True, target_pct=15, hysteresis_pp=5,
+                                      default_filament_type="PLA")
+    mgr.get(0).snapshot = FSMSnapshot(state=FSMState.WATCHING)
+
+    ad = AutoDryer(state_path=tmp_path / "autodry_state.json",
+                   inputs_fetcher=fetch_inputs, emit_event=emit,
+                   announcements=AnnouncementsStub(), tick_sec=0,
+                   manager=mgr, run_ace_dry=run_ace_dry)
+
+    await ad.tick_one_ace(0, now_ts=1779_010_000.0)
+    assert fired == [], f"run_ace_dry must not fire on skip events, got {fired}"
