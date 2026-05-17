@@ -914,10 +914,23 @@ class AutoDryer:
         # audit yet. Without this override, target_active would be False on
         # the inputs and the FSM would stay IDLE forever despite the swap
         # having actually happened.
+        #
+        # dryer_status is ALSO overridden to "stop". The global
+        # inputs.dryer_status comes from payload["dryer"] (active-ACE dryer),
+        # so when ACE 0 is drying and we tick_one_ace(1), the FSM for ACE 1
+        # incorrectly sees dryer_status="drying" (ACE 0's state) and
+        # transitions to OBSERVED_DRYING ("user manually dried this ACE while
+        # watching"). That blocks ACE 1's auto-trigger indefinitely. We lose
+        # per-ACE OBSERVED_DRYING for autodry FSMs (the state that tracks
+        # user-initiated manual dries into last_run history) — acceptable
+        # tradeoff because OBSERVED_DRYING isn't safety-critical and the
+        # alternative is autodry on the second/Nth ACE never firing.
+        # Proper fix tracked in #75: per-ACE dryer_status cache.
         inputs = dataclasses.replace(
             inputs,
             active_device=ace_idx,
             swap_in_progress=False,
+            dryer_status="stop",
         )
 
         # Specialize humidity for this ACE if the per-ACE Govee map is available.
