@@ -517,9 +517,11 @@ async def test_autodry_fires_ace_dry_callback_on_triggered(monkeypatch, tmp_path
                    announcements=AnnouncementsStub(), tick_sec=0,
                    manager=mgr, run_ace_dry=run_ace_dry,
                    debounce_required=1)  # debounce of 1 so the next tick triggers
-    # Pre-fill the debounce buffer so we transition on the first tick
-    ad._eph.debounce = DebounceBuffer(required=1)
-    ad._eph.debounce.observe_above()
+    # Pre-fill the per-ACE debounce buffer so we transition on the first
+    # tick. tick_one_ace uses fsm.eph (not ad._eph) so the pre-fill must
+    # target the per-ACE FSM's Ephemeral.
+    mgr.get(0).eph.debounce = DebounceBuffer(required=1)
+    mgr.get(0).eph.debounce.observe_above()
 
     await ad.tick_one_ace(0, now_ts=1779_010_000.0)
 
@@ -574,3 +576,113 @@ async def test_autodry_does_not_fire_ace_dry_for_skips(monkeypatch, tmp_path):
 
     await ad.tick_one_ace(0, now_ts=1779_010_000.0)
     assert fired == [], f"run_ace_dry must not fire on skip events, got {fired}"
+
+
+@pytest.mark.asyncio
+async def test_per_ace_eph_is_isolated_between_aces(tmp_path):
+    """Regression for the shared-eph bug: each PerAceFSM has its own
+    Ephemeral. Without isolation, ticking ACE 0 advanced ACE 1's debounce
+    too (and clobbered drying-cycle bookkeeping when both DRYING)."""
+    from multiace_web.autodryer import (
+        AutoDryer, AutodryManager, PerAceConfig, FSMSnapshot, FSMState, Inputs,
+        DebounceBuffer,
+    )
+    async def emit(_p): pass
+    class AnnouncementsStub:
+        async def post(self, **kw): return None
+        async def dismiss(self, _eid): return None
+
+    def fetch_inputs():
+        return Inputs(
+            active_device=0,
+            head_source={"0": {"ace": 0, "slot": 0, "type": "PLA", "color": "000000"},
+                         "1": {"ace": 1, "slot": 1, "type": "PLA", "color": "000000"}},
+            swap_in_progress=False,
+            humidity_ok=True, humidity_pct=55.0,
+            cavity_temp_c=25.0, klipper_print_state="standby", dryer_status="stop",
+            user_profiles=None,
+            humidity_per_ace=[
+                {"configured": True, "ok": True, "humidity_pct": 55.0},
+                {"configured": True, "ok": True, "humidity_pct": 55.0},
+            ],
+        )
+
+    mgr = AutodryManager.with_defaults(device_count=2)
+    for i in (0, 1):
+        mgr.get(i).config = PerAceConfig(enabled=True, target_pct=15,
+                                          hysteresis_pp=5, default_filament_type="PLA")
+        mgr.get(i).snapshot = FSMSnapshot(state=FSMState.WATCHING)
+
+    ad = AutoDryer(state_path=tmp_path / "autodry_state.json",
+                   inputs_fetcher=fetch_inputs, emit_event=emit,
+                   announcements=AnnouncementsStub(), tick_sec=0, manager=mgr)
+
+    # Each ACE has its own debounce buffer; advancing one should not advance the other.
+    assert mgr.get(0).eph is not mgr.get(1).eph, "per-ACE eph not isolated"
+    assert mgr.get(0).eph.debounce is not mgr.get(1).eph.debounce
+
+    # Tick ACE 0 a few times — should ramp its own debounce only.
+    for i in range(3):
+        await ad.tick_one_ace(0, now_ts=1779_010_000.0 + i)
+    assert len(mgr.get(0).eph.debounce) == 3, \
+        f"ACE 0 debounce should be at 3 after 3 ticks; got {len(mgr.get(0).eph.debounce)}"
+    assert len(mgr.get(1).eph.debounce) == 0, \
+        f"ACE 1 debounce must stay 0 (ACE 0 ticks must not leak); got {len(mgr.get(1).eph.debounce)}"
+
+
+@pytest.mark.asyncio
+async def test_drying_state_recovers_started_ts_after_restart(tmp_path):
+    """Regression for #76: multiace-web restart while a per-ACE FSM was in
+    DRYING produces snapshot.state=DRYING with eph.drying_started_ts=0.0
+    (eph is intentionally not serialized). Without recovery, the first
+    post-restart tick computes ran_min = (now - 0)/60 ≈ huge number and
+    trips max_run_min check → false FAULTED with absurd msg.
+
+    Fix: tick_one_ace recovers eph.drying_started_ts from snapshot.since_ts
+    (which IS persisted) when state==DRYING and eph value is 0.
+    """
+    from multiace_web.autodryer import (
+        AutoDryer, AutodryManager, PerAceConfig, FSMSnapshot, FSMState, Inputs,
+    )
+    async def emit(_p): pass
+    class AnnouncementsStub:
+        async def post(self, **kw): return None
+        async def dismiss(self, _eid): return None
+
+    NOW = 1_779_010_000.0
+    DRYING_STARTED_AT = NOW - 600.0  # entered DRYING 10 minutes ago
+
+    def fetch_inputs():
+        return Inputs(
+            active_device=0,
+            head_source={"0": {"ace": 0, "slot": 0, "type": "PLA", "color": "000000"}},
+            swap_in_progress=False,
+            humidity_ok=True, humidity_pct=50.0,  # still high; not at target
+            cavity_temp_c=25.0, klipper_print_state="standby", dryer_status="stop",
+            user_profiles=None,
+            humidity_per_ace=None,
+        )
+
+    mgr = AutodryManager.with_defaults(device_count=1)
+    mgr.get(0).config = PerAceConfig(enabled=True, target_pct=15, hysteresis_pp=5,
+                                      default_filament_type="PLA")
+    # Simulate a multiace-web restart that loaded the DRYING snapshot.
+    mgr.get(0).snapshot = FSMSnapshot(state=FSMState.DRYING,
+                                       since_ts=DRYING_STARTED_AT)
+    # eph defaulted (drying_started_ts=0.0) on construction.
+    assert mgr.get(0).eph.drying_started_ts == 0.0
+
+    ad = AutoDryer(state_path=tmp_path / "autodry_state.json",
+                   inputs_fetcher=fetch_inputs, emit_event=emit,
+                   announcements=AnnouncementsStub(), tick_sec=0, manager=mgr)
+    await ad.tick_one_ace(0, now_ts=NOW)
+
+    # Recovery should have copied since_ts into eph.
+    assert mgr.get(0).eph.drying_started_ts == DRYING_STARTED_AT
+    # FSM should stay in DRYING (humidity still above target, ran_min=10 < max_run 720).
+    assert mgr.get(0).snapshot.state == FSMState.DRYING, (
+        f"FSM faulted instead of recovering; state={mgr.get(0).snapshot.state}"
+    )
+    assert mgr.get(0).snapshot.fault is None, (
+        f"unexpected fault: {mgr.get(0).snapshot.fault}"
+    )

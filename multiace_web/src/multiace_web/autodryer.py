@@ -953,6 +953,22 @@ class AutoDryer:
                 )
             # else (not configured / unknown shape): keep primary fallback
 
+        # Recover drying-cycle bookkeeping from snapshot.since_ts after a
+        # restart. Ephemeral isn't serialized (DebounceBuffer intentionally
+        # starts fresh), so multiace-web restart during DRYING leaves
+        # fsm.eph.drying_started_ts = 0.0 while snapshot.state stays DRYING.
+        # First tick then computes ran_min = (now - 0) / 60 ≈ huge number
+        # and trips max_run_min check → false FAULTED with absurd msg like
+        # "29650870m run did not cross target 15%". snapshot.since_ts was
+        # set to wall-clock when the FSM transitioned to DRYING, so it's
+        # the right baseline. effective_temp_c / effective_duration_min
+        # stay None (we don't persist them); the min_delta check skips
+        # when duration is falsy, so no other false FAULTED branch fires.
+        if (fsm.snapshot.state == FSMState.DRYING
+                and fsm.eph.drying_started_ts == 0.0
+                and fsm.snapshot.since_ts > 0.0):
+            fsm.eph.drying_started_ts = fsm.snapshot.since_ts
+
         # Synthesize a PersistedState so we can reuse the existing pure tick_fsm.
         # mode is "active" because we already gated on config.enabled above.
         synthesized = PersistedState(
@@ -965,8 +981,12 @@ class AutoDryer:
             fsm=fsm.snapshot,
         )
 
+        # Use the per-ACE Ephemeral, not the shared self._eph. Each FSM
+        # gets its own debounce buffer + drying bookkeeping; shared eph
+        # made N>1 ACEs collide (debounce filled at Nx rate, drying-cycle
+        # bookkeeping clobbered between ACEs).
         new_persisted, transitions = tick_fsm(
-            synthesized, self._eph, inputs, now_ts,
+            synthesized, fsm.eph, inputs, now_ts,
             **self._cfg,
         )
 
@@ -1163,10 +1183,32 @@ class PerAceConfig:
 @dataclass
 class PerAceFSM:
     """One autodry FSM bound to one ACE. Holds config, persisted snapshot,
-    and runtime locks (locked-during-print, USB-unreachable)."""
+    runtime locks (locked-during-print, USB-unreachable), AND its own
+    Ephemeral.
+
+    Per-ACE eph is critical: before this field existed, every per-ACE FSM
+    shared a single AutoDryer._eph, so e.g. ACE 1's debounce buffer and
+    drying-cycle bookkeeping (drying_started_ts, drying_start_rh,
+    effective_temp_c/duration_min) clobbered ACE 0's. Symptom with N>1
+    ACEs in WATCHING simultaneously: debounce filled at N× expected rate.
+    Symptom with N>1 in DRYING: ran_min computation pulled
+    drying_started_ts from whichever ACE most recently ticked, producing
+    nonsense ran_min values that triggered false FAULTED.
+
+    Ephemeral is intentionally NOT serialized — DebounceBuffer should
+    start fresh on every restart (never auto-trigger on stale data). But
+    this means if state==DRYING when multiace-web restarts, the drying
+    bookkeeping is lost; tick_one_ace recovers drying_started_ts from
+    snapshot.since_ts (which IS persisted) before the first post-restart
+    tick. See tick_one_ace for the recovery."""
     ace: int
     config: PerAceConfig = field(default_factory=PerAceConfig)
     snapshot: FSMSnapshot = field(default_factory=FSMSnapshot)
+    eph: Ephemeral = field(
+        default_factory=lambda: Ephemeral(
+            debounce=DebounceBuffer(required=DEFAULT_DEBOUNCE_REQUIRED)
+        )
+    )
     locked: bool = False        # set when a print pins another ACE
     unreachable: bool = False   # set after 2 consecutive ACE_SWITCH failures
 
