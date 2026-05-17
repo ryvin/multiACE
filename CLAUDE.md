@@ -130,3 +130,46 @@ When local DNS is set up (e.g. `davinci-u1.local`), update the var and (optional
 ## License
 
 GPL-3.0 — all derivative works (firmware and web) must maintain GPL-3.0. License headers required in modified Python files.
+
+
+## ECC Integration
+
+**Rule packs in effect** (from `~/.claude/rules/ecc/`):
+- `common` — coding-style, code-review, security, testing, git-workflow
+- `python` — Python-specific patterns, security, testing
+- `web` — for `multiace_web` dashboard work (FastAPI + frontend)
+
+**Primary skills to lean on for this project:**
+- `verification` and `tdd` — state machine + USB lifecycle bugs hide in races; tests beat intuition
+- `documentation-lookup` — Klipper internals and Moonraker API surfaces change; look them up, don't guess
+- `python-patterns` and `python-django` adjacent patterns for async/threading
+- `frontend-slides` and UI skills for dashboard work
+- `search-first` — before changing any state-clearing logic, search audit-log call sites
+
+**ECC commands to run for this project:**
+- `/ecc:plan "<task>"` before any refactor of `state.py`, the swap-park flow, or USB reconnect logic
+- `/ecc:harness-audit` once after installing — seeds the build/test commands into project memory
+- `/ecc:quality-gate` before commits that touch `ace.py`, `state.py`, or the StatusPoller
+- `/ecc:security-scan` (AgentShield) before any change that touches printer.cfg writers
+
+**Project-specific instincts (import these once via `/ecc:instinct-import`):**
+1. **Start-ACE lock for the duration of a print** (still applies post-keepalive). v0.81b keeps a single USB connection to the ACE that was active when the print started. Other ACEs print without feed_assist. Do not introduce mid-print reconnects without an explicit redesign — this was a deliberate workaround for the ACE Pro USB reset cycle bug. (See instinct #7 for the standby-time variant that's now mitigated by the keepalive.)
+2. **Cumulative cross-slot coupling drift.** Retracting slot N mechanically drifts neighboring slots. Over many swap-park cycles, untouched slots can lose grip and need manual reseat. Any new swap logic must consider drift accumulation, not just per-operation correctness.
+3. **`default_park_retract_length_mm` is geometry-specific.** Davinci-U1 = 700mm. Too short blocks other ACEs; too long loses ACE drive grip. Never bake a default for arbitrary printers — calibrate per geometry.
+4. **State force-clears on SWITCH-family terminal audits + `SERIAL_WRITE_FAILED`.** Firmware emits these while `swap_in_progress` is still True with no matching clear event. Audit-event handlers must force-clear, not wait. `SERIAL_WRITE_FAILED` was added to the terminal list in the 2026-05-17 round-robin work because the ACE Pro USB reset trips the write path mid-swap and the audit lands with `sip=True` baked in.
+5. **Leg-2 waits on `head_source[targetHead]` update.** Smart-swap leg 2 races against the audit-log tailer. The fix is in `_waitForSwapLeg1Propagation` — do not remove without replacement.
+6. **`swap_park_available` is probed at lifespan startup**, not lazily on first chevron click. Don't move it back to lazy probing — the 5s StatusPoller tick creates a UX dead zone.
+7. **ACE Pro idle USB reset every ~5s — needs 1Hz keepalive** (issue #70, fixed in commit 47974e2). The ACE Pro firmware resets its USB interface every 4-5 seconds when it sees no host traffic, regardless of host autosuspend settings. The kernel re-enumerates the device (often with a different ttyACM name), invalidating any cached fd. Holding `serial.Serial` open with no I/O is NOT sufficient — verified 2026-05-17 with a pyserial side-process: within 1s, next `in_waiting` raised `OSError errno 5`. **Any code that caches ACE serials MUST send periodic traffic (≤3s interval).** Our `_keepalive_tick` writes encoded `get_status` every 1s + drains `in_waiting`. Without it, fast-path cached serials are useless and round-robin auto-dry crashes Klipper.
+8. **`tick_one_ace` overrides `Inputs.active_device` + `swap_in_progress`** before invoking `tick_fsm`. The poller calls `tick_one_ace(N)` right after `await moonraker.run_gcode("ACE_SWITCH TARGET=N")` returns, but `state.swap_in_progress` / `state.active_device` are updated by the audit-log tailer (async). Without the override, `target_active` would be False and the FSM never advances. Do not remove that `dataclasses.replace(inputs, active_device=ace_idx, swap_in_progress=False)` block in autodryer.py.
+9. **autodry persistence has two file shapes (v1 single-FSM, v2 per-ACE manager).** `/userdata/multiace-web/.autodry_state.json` is read by both `load_persisted_state` (legacy, returns `mode=off` if v2-shaped) and `AutoDryer.load_manager` (per-ACE). The v1 reader produces misleading "off" output on v2 files. **Always probe via `/api/autodry?ace=N` (per-ACE view)**, never the bare `/api/autodry` legacy endpoint.
+10. **uvicorn under `start-stop-daemon -b` ignores stderr redirection** (`/proc/<pid>/fd/{1,2}` → `/dev/null`). The `>>/var/log/multiace-web.log 2>&1` in S62multiace-web applies to start-stop-daemon's own output, not the daemonized child. `log.exception` is invisible. For diagnostics, either (a) configure a Python `FileHandler` in server.py startup, or (b) write directly to `/tmp/diag.log` from the suspect code path (chmod 666 so user `lava` can write). `multiace_state.log` is the only Python logging that reliably surfaces because it uses its own `RotatingFileHandler`.
+11. **Auto-dry round-robin is opt-in via `MULTIACE_AUTODRY_ROUND_ROBIN={1,true,yes,on}`** (poller.py). Per-ACE autodry FSMs only advance via round-robin during standby — so when "auto-dry never fires" comes up, check **both** the env var AND the keepalive log lines (`KEEPALIVE_OPEN`, `KEEPALIVE_INIT`) in `multiace_usb.log`. The `cmd_ACE_SWITCH` catch-all (commit 1c131ba) prevents shutdowns from failed swaps but doesn't make the dryer fire; that requires the keepalive (instinct #7) AND the `run_ace_dry` wiring in server.py.
+
+**Verification before shipping:**
+1. Run pytest suite under `multiace/` and `multiace_web/`.
+2. `/ecc:quality-gate` against the diff.
+3. Manual smoke: at least one full print with at least one cross-ACE toolchange before tagging a release.
+
+**Security notes:**
+- This plugin writes to `printer.cfg` and runs Klipper macros. Treat any change that affects file writes or macro emission as printer-safety-critical.
+- Never log raw filament profiles or printer serials in shared logs.
