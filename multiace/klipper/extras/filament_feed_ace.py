@@ -729,6 +729,60 @@ class FilamentFeed:
         else:
             return False
 
+    def _snapshot_inner_resume_state(self):
+        """Capture extruder index + per-toolhead target temps to the
+        INNER_RESUME gcode_macro just before raising a feed-fault that will
+        pause the print. INNER_RESUME (in ace.cfg) reads these variables on
+        resume to re-heat the correct extruder to its previous target before
+        motion starts — without this, a feed-fault resume cold-starts the
+        wrong extruder and either oozes or skips.
+
+        Defensive: if the active extruder lacks ``extruder_index`` (stock
+        Klipper extruders don't have it; multiACE's ``extruder_ace`` does),
+        or if any extruder lookup fails, the snapshot becomes a no-op. The
+        macro side reads default values when no SET_GCODE_VARIABLE arrives,
+        so the worst case is "resume behaves like today" — never a crash.
+
+        If the INNER_RESUME macro itself isn't defined (the Phase 2 follow-up
+        will add it to ace.cfg), each ``SET_GCODE_VARIABLE`` call logs a
+        Klipper warning and continues. The snapshot path stays harmless.
+
+        Ported from decay71 (filament_feed_ace.py:594-619).
+        """
+        try:
+            cur_extruder = self.toolhead.get_extruder()
+            extruder_index = getattr(cur_extruder, 'extruder_index', None)
+            if extruder_index is None:
+                return
+            temps = []
+            for i in range(4):
+                name = 'extruder' if i == 0 else 'extruder%d' % i
+                ext = self.printer.lookup_object(name, None)
+                if ext is None:
+                    temps.append(0)
+                    continue
+                try:
+                    t = int(ext.get_heater().target_temp)
+                except Exception:
+                    t = 0
+                temps.append(t)
+            cur_temp = temps[extruder_index] if 0 <= extruder_index < 4 else 0
+            cmds = (
+                'SET_GCODE_VARIABLE MACRO=INNER_RESUME VARIABLE=last_extruder_index VALUE=%d\n'
+                'SET_GCODE_VARIABLE MACRO=INNER_RESUME VARIABLE=last_extruder_temp VALUE=%d\n'
+                'SET_GCODE_VARIABLE MACRO=INNER_RESUME VARIABLE=extruder0_temp VALUE=%d\n'
+                'SET_GCODE_VARIABLE MACRO=INNER_RESUME VARIABLE=extruder1_temp VALUE=%d\n'
+                'SET_GCODE_VARIABLE MACRO=INNER_RESUME VARIABLE=extruder2_temp VALUE=%d\n'
+                'SET_GCODE_VARIABLE MACRO=INNER_RESUME VARIABLE=extruder3_temp VALUE=%d\n'
+                'SET_GCODE_VARIABLE MACRO=INNER_RESUME VARIABLE=is_pause_on_err VALUE=True\n'
+            ) % (extruder_index, cur_temp,
+                 temps[0], temps[1], temps[2], temps[3])
+            self.gcode.run_script_from_command(cmds)
+            logging.info('[feed] snapshot INNER_RESUME: idx=%d, cur_temp=%d, temps=%s',
+                         extruder_index, cur_temp, temps)
+        except Exception as e:
+            logging.error('[feed] snapshot INNER_RESUME failed: %s', str(e))
+
     def _do_feed(self, ch, action=None, stage=None, auto_mode=None):
         if ch < 0 or ch >= FEED_CHANNEL_NUMS or action == None:
             logging.error("[feed] parameter error!")
@@ -1237,6 +1291,7 @@ class FilamentFeed:
                         self.channel_error[ch] = FEED_ERR_MOVE_EXTRUDE
                         self.exception_code[ch] = 51
                         logging.error("[feed_loading] phase3: except rawinfo: %s", str(e))
+                        self._snapshot_inner_resume_state()
                         raise ValueError('logic error!')
                     finally:
                         self._hang_neutral(ch)
@@ -1244,6 +1299,7 @@ class FilamentFeed:
                     if extruded == False:
                         self.channel_error[ch] = FEED_ERR_MOVE_EXTRUDE
                         self.exception_code[ch] = 51
+                        self._snapshot_inner_resume_state()
                         raise ValueError('logic error!')
 
                     # flush filaments
