@@ -63,3 +63,37 @@ def test_unresolved_tool_is_skipped():
     out, decisions = pp.optimize_aliases(lines, [res0, res5_unresolved])
     assert out == lines
     assert decisions == []
+
+
+def test_repeated_tn_only_first_seen_is_loaded():
+    """T0 T0 T0 T0 T5 (all same color) → T5 aliases to T0 once."""
+    resolutions = [
+        _res(0, 0, 0, color="ff0000"),
+        _res(5, 0, 1, color="ff0000"),
+    ]
+    lines = ["T0", "T0", "T0", "T0", "T5"]
+    out, decisions = pp.optimize_aliases(lines, resolutions)
+    assert out == ["T0", "T0", "T0", "T0", "T0"]
+    assert len(decisions) == 1
+    assert decisions[0].original_tool == 5
+
+
+def test_no_tn_lines_is_noop():
+    """gcode without any T-commands round-trips unchanged."""
+    resolutions = [_res(0, 0, 0)]
+    lines = ["G28", "G1 X10", "G1 Y20", "M104 S200"]
+    out, decisions = pp.optimize_aliases(lines, resolutions)
+    assert out == lines
+    assert decisions == []
+
+
+def test_alias_preserves_trailing_args_on_tn_line():
+    """T5 A0 → T0 A0 (the 'A0' suffix Snapmaker uses must survive the rewrite)."""
+    resolutions = [
+        _res(0, 0, 0, color="ff0000"),
+        _res(5, 0, 1, color="ff0000"),
+    ]
+    lines = ["T0", "T5 A0"]
+    out, decisions = pp.optimize_aliases(lines, resolutions)
+    assert out == ["T0", "T0 A0"]
+    assert len(decisions) == 1
