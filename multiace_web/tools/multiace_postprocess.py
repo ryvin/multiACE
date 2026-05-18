@@ -448,6 +448,88 @@ def optimize_aliases(
     return out_lines, decisions
 
 
+def prelayer_reload(
+    lines: list[str],
+    resolutions: list,
+) -> tuple[list[str], list]:
+    """Insert ACE_LOAD_HEAD lines at layer start for each layer using ≤4 distinct
+    tool indices. Layers using >4 distinct tools are skipped (no improvement
+    possible from pre-load alone).
+
+    See docs/superpowers/specs/2026-05-17-swaptimizer-design.md for algorithm.
+
+    Returns (rewritten_lines, list[LayerDecision]).
+    """
+    tool_resolved: dict = {}
+    for r in resolutions:
+        if r.resolved is not None:
+            tool_resolved[r.tool.index] = (r.resolved.ace, r.resolved.slot)
+
+    layers: list = []
+    for i, ln in enumerate(lines):
+        m = _LAYER_RE_OPTIM.match(ln)
+        if m:
+            layers.append((i, int(m.group(1))))
+
+    if not layers:
+        return list(lines), []
+
+    out_lines = list(lines)
+    decisions: list = []
+    inserts: list = []
+
+    for i, (marker_idx, layer_num) in enumerate(layers):
+        end_idx = layers[i + 1][0] if i + 1 < len(layers) else len(lines)
+        distinct = []
+        seen = set()
+        for j in range(marker_idx + 1, end_idx):
+            m_tool = _TOOL_RE_OPTIM.match(lines[j])
+            if m_tool:
+                n = int(m_tool.group(1))
+                if n not in seen and n in tool_resolved:
+                    seen.add(n)
+                    distinct.append(n)
+
+        if not distinct:
+            decisions.append(LayerDecision(
+                layer=layer_num, distinct_tools=[],
+                preloads=[], skipped=False,
+                skip_reason=None,
+            ))
+            continue
+
+        if len(distinct) > 4:
+            decisions.append(LayerDecision(
+                layer=layer_num, distinct_tools=distinct,
+                preloads=[], skipped=True,
+                skip_reason=f"{len(distinct)} distinct tools > 4",
+            ))
+            continue
+
+        preloads = []
+        for head_idx, tool_idx in enumerate(distinct):
+            ace, slot = tool_resolved[tool_idx]
+            preloads.append({
+                "head": head_idx, "ace": ace, "slot": slot, "tool": tool_idx,
+            })
+
+        lines_to_insert = [
+            f"ACE_LOAD_HEAD HEAD={p['head']} ACE={p['ace']} SLOT={p['slot']}"
+            for p in preloads
+        ]
+        inserts.append((marker_idx + 1, lines_to_insert))
+
+        decisions.append(LayerDecision(
+            layer=layer_num, distinct_tools=distinct,
+            preloads=preloads, skipped=False, skip_reason=None,
+        ))
+
+    for insert_at, new_lines in reversed(inserts):
+        out_lines[insert_at:insert_at] = new_lines
+
+    return out_lines, decisions
+
+
 # ---------------------------------------------------------------------------
 # Atomic JSON writer
 # ---------------------------------------------------------------------------
