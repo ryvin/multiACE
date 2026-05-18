@@ -715,3 +715,79 @@ def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
     sidecar_path = Path(str(gcode_path) + ".multiace.json")
     _atomic_write_json(sidecar_path, data)
     _info(f"Sidecar written: {sidecar_path}")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry
+# ---------------------------------------------------------------------------
+
+def main(argv: Optional[list] = None) -> int:
+    """Process a gcode file end-to-end.
+
+    Usage (Orca Slicer "Post-processing scripts" field):
+        python3 /path/to/multiace_postprocess.py [--optimize] [--layer] {output_filepath}
+
+    Returns 0 on success, non-zero on error.
+    """
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="multiACE / Snapmaker U1 8-color gcode post-processor",
+    )
+    parser.add_argument(
+        "--optimize", action="store_true",
+        help=("Tn aliasing: rewrite Tn->Tm when (color, type) match and Tm "
+              "is already loaded. Assumes spool interchangeability; users "
+              "requiring per-spool identity (compliance, batch matching) "
+              "should leave this off. Default: off."),
+    )
+    parser.add_argument(
+        "--layer", action="store_true",
+        help=("Pre-layer reload: for each layer using <=4 distinct tools, "
+              "insert ACE_LOAD_HEAD at layer start so the printer doesn't "
+              "pause for slot-change mid-extrusion. Layers with >4 tools "
+              "are skipped. Default: off."),
+    )
+    parser.add_argument(
+        "gcode_path",
+        help="Path to the gcode file to process (in-place modification).",
+    )
+    args = parser.parse_args(argv)
+
+    gcode_path = Path(args.gcode_path)
+    if not gcode_path.exists():
+        _warn(f"gcode file not found: {gcode_path}")
+        return 1
+
+    lines = gcode_path.read_text().splitlines()
+    tools = parse_header(lines)
+    if tools is None:
+        _warn("no Orca filament header found; nothing to do")
+        write_sidecar(gcode_path, [], [], status="skipped", reason="no_header")
+        return 0
+
+    printer_url = os.environ.get("DAVINCI_U1_HOST", "")
+    slots_response = query_slots(f"http://{printer_url}") if printer_url else {"slots": []}
+    resolutions = match_tools(tools, slots_response)
+
+    alias_decisions = None
+    if args.optimize:
+        lines, alias_decisions = optimize_aliases(lines, resolutions)
+
+    layer_decisions = None
+    if args.layer:
+        lines, layer_decisions = prelayer_reload(lines, resolutions)
+
+    swaps = plan_swaps(resolutions, lines)
+    lines = rewrite_gcode(lines, resolutions, swaps)
+
+    gcode_path.write_text("\n".join(lines) + "\n")
+    write_sidecar(
+        gcode_path, resolutions, swaps, status="ok",
+        optimize_decisions=alias_decisions,
+        layer_decisions=layer_decisions,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
