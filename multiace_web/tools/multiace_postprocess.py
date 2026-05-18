@@ -766,7 +766,14 @@ def main(argv: Optional[list] = None) -> int:
         return 0
 
     printer_url = os.environ.get("DAVINCI_U1_HOST", "")
-    slots_response = query_slots(f"http://{printer_url}") if printer_url else {"slots": []}
+    if printer_url:
+        try:
+            slots_response = query_slots(f"http://{printer_url}")
+        except Exception as e:
+            _warn(f"query_slots failed ({e}); proceeding without slot info")
+            slots_response = {"slots": []}
+    else:
+        slots_response = {"slots": []}
     resolutions = match_tools(tools, slots_response)
 
     alias_decisions = None
