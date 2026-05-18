@@ -386,6 +386,7 @@ def plan_swaps(resolutions: list[ToolResolution], gcode_lines: list[str]) -> lis
 # optimize_aliases uses permissive Tn matching (accepts T5 F300, T5 ; comment, etc.) — plan_swaps's stricter _TOOL_RE rejects those
 _TOOL_RE_OPTIM = re.compile(r"^T(\d+)\b")
 _LAYER_RE_OPTIM = re.compile(r"^;\s*---\s*layer\s+(\d+)\s*---")
+_LOAD_HEAD_RE_OPTIM = re.compile(r"^ACE_LOAD_HEAD\s+HEAD=(\d+)\s+ACE=(\d+)\s+SLOT=(\d+)")
 
 
 def optimize_aliases(
@@ -508,10 +509,9 @@ def prelayer_reload(
 
         # Scan the layer's existing lines for ACE_LOAD_HEAD entries already
         # present (slicer or prior pass) so we don't double-emit.
-        _LOAD_RE = re.compile(r"^ACE_LOAD_HEAD\s+HEAD=(\d+)\s+ACE=(\d+)\s+SLOT=(\d+)")
-        already_loaded: set = set()
+        already_loaded: set[tuple[int, int, int]] = set()
         for j in range(marker_idx + 1, end_idx):
-            m = _LOAD_RE.match(lines[j])
+            m = _LOAD_HEAD_RE_OPTIM.match(lines[j])
             if m:
                 already_loaded.add((int(m.group(1)), int(m.group(2)), int(m.group(3))))
 
