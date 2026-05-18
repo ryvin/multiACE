@@ -106,6 +106,26 @@ class SwapEvent:
     to_slot: int
 
 
+@dataclass
+class AliasDecision:
+    """One Tn → Tm rewrite recorded by optimize_aliases() for the sidecar."""
+    line: int                # 0-based line index in the original gcode
+    layer: Optional[int]     # layer N from preceding `; --- layer N ---`, or None
+    original_tool: int       # Tn (the slicer-emitted index that got rewritten)
+    alias_tool: int          # Tm (the existing loaded tool that absorbed it)
+    reason: str              # human-readable, e.g. "color+type match, T0 already loaded"
+
+
+@dataclass
+class LayerDecision:
+    """One layer's pre-load plan recorded by prelayer_reload() for the sidecar."""
+    layer: int               # layer N (0-based)
+    distinct_tools: list[int]  # tool indices that appear within the layer
+    preloads: list[dict]     # [{"head": h, "ace": a, "slot": s, "tool": n}, ...]
+    skipped: bool            # True if layer was >4 distinct tools and skipped
+    skip_reason: Optional[str]
+
+
 # ---------------------------------------------------------------------------
 # Header parser
 # ---------------------------------------------------------------------------
