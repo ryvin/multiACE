@@ -638,7 +638,9 @@ def rewrite_gcode(lines: list[str], resolutions: list[ToolResolution],
 
 def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
                   swaps: list[SwapEvent], status: str,
-                  reason: Optional[str] = None, errors: Optional[list] = None) -> None:
+                  reason: Optional[str] = None, errors: Optional[list] = None,
+                  optimize_decisions: Optional[list[AliasDecision]] = None,
+                  layer_decisions: Optional[list[LayerDecision]] = None) -> None:
     """Write <gcode_path>.multiace.json atomically."""
     tools_dict: dict[str, dict] = {}
     for r in resolutions:
@@ -668,7 +670,7 @@ def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
         for s in swaps
     ]
     data = {
-        "schema": 1,
+        "schema": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "gcode_path": str(gcode_path),
         "status": status,
@@ -677,6 +679,39 @@ def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
         "swaps": swaps_list,
         "errors": errors or [],
     }
+
+    # Add optimize decisions if provided
+    if optimize_decisions is not None:
+        data["optimize"] = {
+            "count": len(optimize_decisions),
+            "aliases": [
+                {
+                    "line": d.line,
+                    "layer": d.layer,
+                    "original_tool": d.original_tool,
+                    "alias_tool": d.alias_tool,
+                    "reason": d.reason,
+                }
+                for d in optimize_decisions
+            ],
+        }
+
+    # Add layer decisions if provided
+    if layer_decisions is not None:
+        data["layer"] = {
+            "count": len(layer_decisions),
+            "layers": [
+                {
+                    "layer": d.layer,
+                    "distinct_tools": d.distinct_tools,
+                    "preloads": d.preloads,
+                    "skipped": d.skipped,
+                    "skip_reason": d.skip_reason,
+                }
+                for d in layer_decisions
+            ],
+        }
+
     sidecar_path = Path(str(gcode_path) + ".multiace.json")
     _atomic_write_json(sidecar_path, data)
     _info(f"Sidecar written: {sidecar_path}")

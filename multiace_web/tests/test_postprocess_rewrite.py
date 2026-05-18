@@ -79,7 +79,7 @@ def test_sidecar_round_trip(tmp_path):
     sidecar_path = tmp_path / "test.gcode.multiace.json"
     assert sidecar_path.exists()
     data = json.loads(sidecar_path.read_text())
-    assert data["schema"] == 1
+    assert data["schema"] == 2
     assert data["status"] == "ready"
     assert data["reason"] is None
     assert "0" in data["tools"]
