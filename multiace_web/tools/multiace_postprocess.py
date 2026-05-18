@@ -106,6 +106,26 @@ class SwapEvent:
     to_slot: int
 
 
+@dataclass
+class AliasDecision:
+    """One Tn → Tm rewrite recorded by optimize_aliases() for the sidecar."""
+    line: int                # 0-based line index in the original gcode
+    layer: Optional[int]     # layer N from preceding `; --- layer N ---`, or None
+    original_tool: int       # Tn (the slicer-emitted index that got rewritten)
+    alias_tool: int          # Tm (the existing loaded tool that absorbed it)
+    reason: str              # human-readable, e.g. "color+type match, T0 already loaded"
+
+
+@dataclass
+class LayerDecision:
+    """One layer's pre-load plan recorded by prelayer_reload() for the sidecar."""
+    layer: int               # layer N (0-based)
+    distinct_tools: list[int]  # tool indices that appear within the layer
+    preloads: list[dict]     # [{"head": h, "ace": a, "slot": s, "tool": n}, ...]
+    skipped: bool            # True if layer was >4 distinct tools and skipped
+    skip_reason: Optional[str]
+
+
 # ---------------------------------------------------------------------------
 # Header parser
 # ---------------------------------------------------------------------------
@@ -363,6 +383,167 @@ def plan_swaps(resolutions: list[ToolResolution], gcode_lines: list[str]) -> lis
     return swaps
 
 
+# optimize_aliases uses permissive Tn matching (accepts T5 F300, T5 ; comment, etc.) — plan_swaps's stricter _TOOL_RE rejects those
+_TOOL_RE_OPTIM = re.compile(r"^T(\d+)\b")
+_LAYER_RE_OPTIM = re.compile(r"^;\s*---\s*layer\s+(\d+)\s*---")
+_LOAD_HEAD_RE_OPTIM = re.compile(r"^ACE_LOAD_HEAD\s+HEAD=(\d+)\s+ACE=(\d+)\s+SLOT=(\d+)")
+
+
+def optimize_aliases(
+    lines: list[str],
+    resolutions: list,
+) -> tuple[list[str], list]:
+    """Single linear pass over gcode. When a Tn line appears and a different
+    Tm (already encountered) shares the same (color, type), rewrite Tn → Tm.
+
+    See docs/superpowers/specs/2026-05-17-swaptimizer-design.md for the
+    full algorithm and correctness assumptions.
+
+    Returns (rewritten_lines, list[AliasDecision]).
+    Unresolved tools (match_quality='none') are skipped — no color to alias against.
+    """
+    # Build tool index → (color, type) map, skipping unresolved
+    tool_meta: dict = {}
+    for r in resolutions:
+        if r.match_quality == "none":
+            continue
+        tool_meta[r.tool.index] = (r.tool.color, r.tool.type)
+
+    seen_tools: set = set()       # tools we've already issued (proxy for "loaded somewhere")
+    out_lines = list(lines)
+    decisions: list = []
+    current_layer = None
+
+    for line_idx, line in enumerate(lines):
+        m_layer = _LAYER_RE_OPTIM.match(line)
+        if m_layer:
+            current_layer = int(m_layer.group(1))
+            continue
+        m_tool = _TOOL_RE_OPTIM.match(line)
+        if not m_tool:
+            continue
+        n = int(m_tool.group(1))
+        if n not in tool_meta:
+            continue   # unresolved — skip
+        n_color, n_type = tool_meta[n]
+        alias = None
+        for m in seen_tools:
+            if m == n:
+                continue
+            m_color, m_type = tool_meta[m]
+            if m_color == n_color and m_type == n_type:
+                alias = m
+                break
+        if alias is not None:
+            # Rewrite the Tn keyword (preserve any trailing args after T<digits>)
+            out_lines[line_idx] = f"T{alias}" + line[m_tool.end():]
+            decisions.append(AliasDecision(
+                line=line_idx,
+                layer=current_layer,
+                original_tool=n,
+                alias_tool=alias,
+                reason=f"color+type match, T{alias} already loaded",
+            ))
+        else:
+            seen_tools.add(n)
+    return out_lines, decisions
+
+
+def prelayer_reload(
+    lines: list[str],
+    resolutions: list,
+) -> tuple[list[str], list]:
+    """Insert ACE_LOAD_HEAD lines at layer start for each layer using ≤4 distinct
+    tool indices. Layers using >4 distinct tools are skipped (no improvement
+    possible from pre-load alone).
+
+    See docs/superpowers/specs/2026-05-17-swaptimizer-design.md for algorithm.
+
+    Returns (rewritten_lines, list[LayerDecision]).
+    """
+    tool_resolved: dict = {}
+    for r in resolutions:
+        if r.resolved is not None:
+            tool_resolved[r.tool.index] = (r.resolved.ace, r.resolved.slot)
+
+    layers: list = []
+    for i, ln in enumerate(lines):
+        m = _LAYER_RE_OPTIM.match(ln)
+        if m:
+            layers.append((i, int(m.group(1))))
+
+    if not layers:
+        return list(lines), []
+
+    out_lines = list(lines)
+    decisions: list = []
+    inserts: list = []
+
+    for i, (marker_idx, layer_num) in enumerate(layers):
+        end_idx = layers[i + 1][0] if i + 1 < len(layers) else len(lines)
+        distinct = []
+        seen = set()
+        for j in range(marker_idx + 1, end_idx):
+            m_tool = _TOOL_RE_OPTIM.match(lines[j])
+            if m_tool:
+                n = int(m_tool.group(1))
+                if n not in seen and n in tool_resolved:
+                    seen.add(n)
+                    distinct.append(n)
+
+        if not distinct:
+            decisions.append(LayerDecision(
+                layer=layer_num, distinct_tools=[],
+                preloads=[], skipped=False,
+                skip_reason=None,
+            ))
+            continue
+
+        if len(distinct) > 4:
+            decisions.append(LayerDecision(
+                layer=layer_num, distinct_tools=distinct,
+                preloads=[], skipped=True,
+                skip_reason=f"{len(distinct)} distinct tools > 4",
+            ))
+            continue
+
+        # Scan the layer's existing lines for ACE_LOAD_HEAD entries already
+        # present (slicer or prior pass) so we don't double-emit.
+        already_loaded: set[tuple[int, int, int]] = set()
+        for j in range(marker_idx + 1, end_idx):
+            m = _LOAD_HEAD_RE_OPTIM.match(lines[j])
+            if m:
+                already_loaded.add((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+
+        # Assign each distinct tool to a head 0..3. Lowest-head-index first
+        # (matches plan_swaps' greedy first-fit tie-breaking). Skip preloads
+        # already present in the layer.
+        preloads = []
+        for head_idx, tool_idx in enumerate(distinct):
+            ace, slot = tool_resolved[tool_idx]
+            if (head_idx, ace, slot) in already_loaded:
+                continue
+            preloads.append({
+                "head": head_idx, "ace": ace, "slot": slot, "tool": tool_idx,
+            })
+
+        lines_to_insert = [
+            f"ACE_LOAD_HEAD HEAD={p['head']} ACE={p['ace']} SLOT={p['slot']}"
+            for p in preloads
+        ]
+        inserts.append((marker_idx + 1, lines_to_insert))
+
+        decisions.append(LayerDecision(
+            layer=layer_num, distinct_tools=distinct,
+            preloads=preloads, skipped=False, skip_reason=None,
+        ))
+
+    for insert_at, new_lines in reversed(inserts):
+        out_lines[insert_at:insert_at] = new_lines
+
+    return out_lines, decisions
+
+
 # ---------------------------------------------------------------------------
 # Atomic JSON writer
 # ---------------------------------------------------------------------------
@@ -457,7 +638,9 @@ def rewrite_gcode(lines: list[str], resolutions: list[ToolResolution],
 
 def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
                   swaps: list[SwapEvent], status: str,
-                  reason: Optional[str] = None, errors: Optional[list] = None) -> None:
+                  reason: Optional[str] = None, errors: Optional[list] = None,
+                  optimize_decisions: Optional[list[AliasDecision]] = None,
+                  layer_decisions: Optional[list[LayerDecision]] = None) -> None:
     """Write <gcode_path>.multiace.json atomically."""
     tools_dict: dict[str, dict] = {}
     for r in resolutions:
@@ -487,7 +670,7 @@ def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
         for s in swaps
     ]
     data = {
-        "schema": 1,
+        "schema": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "gcode_path": str(gcode_path),
         "status": status,
@@ -496,6 +679,122 @@ def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
         "swaps": swaps_list,
         "errors": errors or [],
     }
+
+    # Add optimize decisions if provided
+    if optimize_decisions is not None:
+        data["optimize"] = {
+            "count": len(optimize_decisions),
+            "aliases": [
+                {
+                    "line": d.line,
+                    "layer": d.layer,
+                    "original_tool": d.original_tool,
+                    "alias_tool": d.alias_tool,
+                    "reason": d.reason,
+                }
+                for d in optimize_decisions
+            ],
+        }
+
+    # Add layer decisions if provided
+    if layer_decisions is not None:
+        data["layer"] = {
+            "count": len(layer_decisions),
+            "layers": [
+                {
+                    "layer": d.layer,
+                    "distinct_tools": d.distinct_tools,
+                    "preloads": d.preloads,
+                    "skipped": d.skipped,
+                    "skip_reason": d.skip_reason,
+                }
+                for d in layer_decisions
+            ],
+        }
+
     sidecar_path = Path(str(gcode_path) + ".multiace.json")
     _atomic_write_json(sidecar_path, data)
     _info(f"Sidecar written: {sidecar_path}")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry
+# ---------------------------------------------------------------------------
+
+def main(argv: Optional[list] = None) -> int:
+    """Process a gcode file end-to-end.
+
+    Usage (Orca Slicer "Post-processing scripts" field):
+        python3 /path/to/multiace_postprocess.py [--optimize] [--layer] {output_filepath}
+
+    Returns 0 on success, non-zero on error.
+    """
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="multiACE / Snapmaker U1 8-color gcode post-processor",
+    )
+    parser.add_argument(
+        "--optimize", action="store_true",
+        help=("Tn aliasing: rewrite Tn->Tm when (color, type) match and Tm "
+              "is already loaded. Assumes spool interchangeability; users "
+              "requiring per-spool identity (compliance, batch matching) "
+              "should leave this off. Default: off."),
+    )
+    parser.add_argument(
+        "--layer", action="store_true",
+        help=("Pre-layer reload: for each layer using <=4 distinct tools, "
+              "insert ACE_LOAD_HEAD at layer start so the printer doesn't "
+              "pause for slot-change mid-extrusion. Layers with >4 tools "
+              "are skipped. Default: off."),
+    )
+    parser.add_argument(
+        "gcode_path",
+        help="Path to the gcode file to process (in-place modification).",
+    )
+    args = parser.parse_args(argv)
+
+    gcode_path = Path(args.gcode_path)
+    if not gcode_path.exists():
+        _warn(f"gcode file not found: {gcode_path}")
+        return 1
+
+    lines = gcode_path.read_text().splitlines()
+    tools = parse_header(lines)
+    if tools is None:
+        _warn("no Orca filament header found; nothing to do")
+        write_sidecar(gcode_path, [], [], status="skipped", reason="no_header")
+        return 0
+
+    printer_url = os.environ.get("DAVINCI_U1_HOST", "")
+    if printer_url:
+        try:
+            slots_response = query_slots(f"http://{printer_url}")
+        except Exception as e:
+            _warn(f"query_slots failed ({e}); proceeding without slot info")
+            slots_response = {"slots": []}
+    else:
+        slots_response = {"slots": []}
+    resolutions = match_tools(tools, slots_response)
+
+    alias_decisions = None
+    if args.optimize:
+        lines, alias_decisions = optimize_aliases(lines, resolutions)
+
+    layer_decisions = None
+    if args.layer:
+        lines, layer_decisions = prelayer_reload(lines, resolutions)
+
+    swaps = plan_swaps(resolutions, lines)
+    lines = rewrite_gcode(lines, resolutions, swaps)
+
+    gcode_path.write_text("\n".join(lines) + "\n")
+    write_sidecar(
+        gcode_path, resolutions, swaps, status="ok",
+        optimize_decisions=alias_decisions,
+        layer_decisions=layer_decisions,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
