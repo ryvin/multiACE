@@ -347,6 +347,20 @@ GPL-3.0 — same as the parent multiACE project.
 
 ## Changelog
 
+## 0.8.0 — 2026-05-17
+
+- Swaptimizer (Phase 4) — two opt-in flags on `multiace_postprocess.py`
+  that reduce filament swaps on the Snapmaker U1:
+  - `--optimize`: Tn aliasing. When two tool indices share `(color, type)`
+    and one is already loaded, rewrite occurrences of the other so the
+    printer reuses the already-loaded head.
+  - `--layer`: pre-layer reload. For each layer using ≤4 distinct tool
+    indices, insert `ACE_LOAD_HEAD` lines at the layer boundary so
+    slot-changes happen between layers instead of mid-extrusion.
+  Default behavior unchanged when flags absent. Sidecar schema bumped
+  to v2 with new `optimize` and `layer` sections. See
+  `docs/superpowers/specs/2026-05-17-swaptimizer-design.md`.
+
 ## 0.7.2 — 2026-05-05
 
 - Auto-dry: new "Default filament" dropdown in the Dryer-tab panel.
