@@ -383,6 +383,11 @@ def plan_swaps(resolutions: list[ToolResolution], gcode_lines: list[str]) -> lis
     return swaps
 
 
+# optimize_aliases uses permissive Tn matching (accepts T5 F300, T5 ; comment, etc.) — plan_swaps's stricter _TOOL_RE rejects those
+_TOOL_RE_OPTIM = re.compile(r"^T(\d+)\b")
+_LAYER_RE_OPTIM = re.compile(r"^;\s*---\s*layer\s+(\d+)\s*---")
+
+
 def optimize_aliases(
     lines: list[str],
     resolutions: list,
@@ -409,11 +414,11 @@ def optimize_aliases(
     current_layer = None
 
     for line_idx, line in enumerate(lines):
-        m_layer = _LAYER_RE.match(line)
+        m_layer = _LAYER_RE_OPTIM.match(line)
         if m_layer:
             current_layer = int(m_layer.group(1))
             continue
-        m_tool = _TOOL_RE.match(line)
+        m_tool = _TOOL_RE_OPTIM.match(line)
         if not m_tool:
             continue
         n = int(m_tool.group(1))
