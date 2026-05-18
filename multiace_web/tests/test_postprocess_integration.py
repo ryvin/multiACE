@@ -43,3 +43,30 @@ def test_sidecar_includes_optimize_and_layer_sections():
     assert "layer" in sidecar
     assert sidecar["layer"]["count"] == 1
     assert sidecar["layer"]["layers"][0]["layer"] == 0
+
+
+def test_optimize_and_layer_compose_on_5_color_layer():
+    """A layer with 5 distinct tools where two share (color, type):
+       after --optimize collapses it to 4 distinct, --layer can pre-load."""
+    resolutions = [
+        _res(0, 0, 0, color="ff0000"),    # red
+        _res(1, 0, 1, color="00ff00"),    # green
+        _res(2, 0, 2, color="0000ff"),    # blue
+        _res(3, 0, 3, color="ffff00"),    # yellow
+        _res(5, 1, 0, color="ff0000"),    # red again (alias target T0)
+    ]
+    lines = [
+        "; --- layer 0 ---",
+        "T0", "T1", "T2", "T3", "T5",
+    ]
+    # --optimize first
+    lines, alias_decisions = pp.optimize_aliases(lines, resolutions)
+    assert "T5" not in lines
+    assert len(alias_decisions) == 1
+    # --layer second
+    lines, layer_decisions = pp.prelayer_reload(lines, resolutions)
+    assert len(layer_decisions) == 1
+    assert layer_decisions[0].skipped is False
+    assert len(layer_decisions[0].preloads) == 4
+    inserts = [ln for ln in lines if ln.startswith("ACE_LOAD_HEAD")]
+    assert len(inserts) == 4
