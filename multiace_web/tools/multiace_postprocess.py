@@ -506,9 +506,23 @@ def prelayer_reload(
             ))
             continue
 
+        # Scan the layer's existing lines for ACE_LOAD_HEAD entries already
+        # present (slicer or prior pass) so we don't double-emit.
+        _LOAD_RE = re.compile(r"^ACE_LOAD_HEAD\s+HEAD=(\d+)\s+ACE=(\d+)\s+SLOT=(\d+)")
+        already_loaded: set = set()
+        for j in range(marker_idx + 1, end_idx):
+            m = _LOAD_RE.match(lines[j])
+            if m:
+                already_loaded.add((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+
+        # Assign each distinct tool to a head 0..3. Lowest-head-index first
+        # (matches plan_swaps' greedy first-fit tie-breaking). Skip preloads
+        # already present in the layer.
         preloads = []
         for head_idx, tool_idx in enumerate(distinct):
             ace, slot = tool_resolved[tool_idx]
+            if (head_idx, ace, slot) in already_loaded:
+                continue
             preloads.append({
                 "head": head_idx, "ace": ace, "slot": slot, "tool": tool_idx,
             })

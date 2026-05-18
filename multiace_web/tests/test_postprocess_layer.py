@@ -93,3 +93,21 @@ def test_multiple_layers_handled_independently():
     assert decisions[1].layer == 1
     assert decisions[0].distinct_tools == [0, 1]
     assert decisions[1].distinct_tools == [2, 3]
+
+
+def test_does_not_double_emit_when_load_head_already_present():
+    """If the slicer or a prior pass already inserted ACE_LOAD_HEAD for a
+    (head, ace, slot) at layer start, we don't emit a duplicate."""
+    resolutions = [_res(i, 0, i) for i in range(2)]
+    lines = [
+        "; --- layer 0 ---",
+        "ACE_LOAD_HEAD HEAD=0 ACE=0 SLOT=0",   # pre-existing
+        "T0", "T1",
+    ]
+    out, decisions = pp.prelayer_reload(lines, resolutions)
+    head1_inserts = [ln for ln in out if ln == "ACE_LOAD_HEAD HEAD=1 ACE=0 SLOT=1"]
+    head0_inserts = [ln for ln in out if ln == "ACE_LOAD_HEAD HEAD=0 ACE=0 SLOT=0"]
+    assert len(head1_inserts) == 1
+    assert len(head0_inserts) == 1, "must not double-emit the pre-existing one"
+    assert len(decisions[0].preloads) == 1
+    assert decisions[0].preloads[0]["head"] == 1
