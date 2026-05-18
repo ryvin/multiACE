@@ -384,6 +384,74 @@ def plan_swaps(resolutions: list[ToolResolution], gcode_lines: list[str]) -> lis
 
 
 # ---------------------------------------------------------------------------
+# Optimization passes (--optimize, --layer)
+# ---------------------------------------------------------------------------
+
+_TOOL_RE_OPTIM = re.compile(r"^T(\d+)\b")
+_LAYER_RE_OPTIM = re.compile(r"^;\s*---\s*layer\s+(\d+)\s*---")
+
+
+def optimize_aliases(
+    lines: list[str],
+    resolutions: list,
+) -> tuple[list[str], list]:
+    """Single linear pass over gcode. When a Tn line appears and a different
+    Tm (already encountered) shares the same (color, type), rewrite Tn → Tm.
+
+    See docs/superpowers/specs/2026-05-17-swaptimizer-design.md for the
+    full algorithm and correctness assumptions.
+
+    Returns (rewritten_lines, list[AliasDecision]).
+    Unresolved tools (match_quality='none') are skipped — no color to alias against.
+    """
+    # Build tool index → (color, type) map, skipping unresolved
+    tool_meta: dict = {}
+    for r in resolutions:
+        if r.match_quality == "none":
+            continue
+        tool_meta[r.tool.index] = (r.tool.color, r.tool.type)
+
+    seen_tools: set = set()       # tools we've already issued (proxy for "loaded somewhere")
+    out_lines = list(lines)
+    decisions: list = []
+    current_layer = None
+
+    for line_idx, line in enumerate(lines):
+        m_layer = _LAYER_RE_OPTIM.match(line)
+        if m_layer:
+            current_layer = int(m_layer.group(1))
+            continue
+        m_tool = _TOOL_RE_OPTIM.match(line)
+        if not m_tool:
+            continue
+        n = int(m_tool.group(1))
+        if n not in tool_meta:
+            continue   # unresolved — skip
+        n_color, n_type = tool_meta[n]
+        alias = None
+        for m in seen_tools:
+            if m == n:
+                continue
+            m_color, m_type = tool_meta[m]
+            if m_color == n_color and m_type == n_type:
+                alias = m
+                break
+        if alias is not None:
+            # Rewrite the Tn keyword (preserve any trailing args after T<digits>)
+            out_lines[line_idx] = f"T{alias}" + line[m_tool.end():]
+            decisions.append(AliasDecision(
+                line=line_idx,
+                layer=current_layer,
+                original_tool=n,
+                alias_tool=alias,
+                reason=f"color+type match, T{alias} already loaded",
+            ))
+        else:
+            seen_tools.add(n)
+    return out_lines, decisions
+
+
+# ---------------------------------------------------------------------------
 # Atomic JSON writer
 # ---------------------------------------------------------------------------
 
