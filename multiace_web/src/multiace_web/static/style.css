@@ -1435,6 +1435,29 @@ body.multiace-embed { background: transparent; }
   margin-top: .15rem;
   flex-shrink: 0;
 }
+/* FAULTED banner inside the per-ACE auto-maintenance section (#77) */
+.dryer-auto-fault {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .35rem .55rem;
+  border: 1px solid var(--bad);
+  background: var(--bad-soft);
+  border-radius: var(--radius-sm);
+  font-size: .82rem;
+}
+.dryer-auto-fault-msg { color: var(--bad); flex: 1; }
+.dryer-auto-fault-reset {
+  padding: .2rem .55rem;
+  border: 1px solid var(--bad);
+  background: transparent;
+  color: var(--bad);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+.dryer-auto-fault-reset:hover { background: var(--bad); color: #ffffff; }
 
 /* Activity tab — ACE filter chips + per-row tag */
 .activity-chips {

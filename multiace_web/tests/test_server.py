@@ -950,6 +950,85 @@ class TestAutodryPerAceEndpoint:
                                 json={"default_filament_type": "PEEK"})
         assert r.status_code == 400
 
+    # ---- per-ACE reset_fault + fault surfacing in GET (#77) ----
+
+    def test_post_with_ace_action_reset_fault_clears_faulted_to_idle(
+        self, autodry_client, app
+    ) -> None:
+        from multiace_web.autodryer import FSMState, Fault
+        mgr = app.state.autodry.manager
+        f = mgr.get(0)
+        f.snapshot.state = FSMState.FAULTED
+        f.snapshot.fault = Fault(code="max_run_exceeded", since_ts=1.0,
+                                 msg="capped at 180min")
+        r = autodry_client.post("/api/autodry?ace=0",
+                                json={"action": "reset_fault"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["ace"] == 0
+        assert body["state"] == "IDLE"
+        assert body["fault"] is None
+        # In-memory FSM is updated
+        assert mgr.get(0).snapshot.state == FSMState.IDLE
+        assert mgr.get(0).snapshot.fault is None
+
+    def test_post_with_ace_action_reset_fault_persists_to_disk(
+        self, autodry_client, app
+    ) -> None:
+        from multiace_web.autodryer import FSMState, Fault, AutodryManager
+        import json as _json
+        mgr = app.state.autodry.manager
+        mgr.get(0).snapshot.state = FSMState.FAULTED
+        mgr.get(0).snapshot.fault = Fault(code="min_delta_not_met",
+                                          since_ts=2.0, msg="rh decay slow")
+        r = autodry_client.post("/api/autodry?ace=0",
+                                json={"action": "reset_fault"})
+        assert r.status_code == 200
+        # Round-trip through disk
+        state_path = app.state.autodry._state_path
+        on_disk = _json.loads(state_path.read_text())
+        mgr2 = AutodryManager.deserialize(on_disk, device_count=2)
+        assert mgr2.get(0).snapshot.state == FSMState.IDLE
+        assert mgr2.get(0).snapshot.fault is None
+
+    def test_post_with_ace_action_reset_fault_404_for_out_of_range(
+        self, autodry_client
+    ) -> None:
+        r = autodry_client.post("/api/autodry?ace=9",
+                                json={"action": "reset_fault"})
+        assert r.status_code == 404
+
+    def test_get_with_ace_includes_fault_details_when_faulted(
+        self, autodry_client, app
+    ) -> None:
+        from multiace_web.autodryer import FSMState, Fault
+        mgr = app.state.autodry.manager
+        mgr.get(0).snapshot.state = FSMState.FAULTED
+        mgr.get(0).snapshot.fault = Fault(
+            code="max_run_exceeded", since_ts=1747900000.5,
+            msg="capped at 180min without crossing target",
+        )
+        r = autodry_client.get("/api/autodry?ace=0")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["state"] == "FAULTED"
+        assert body["fault"] is not None
+        assert body["fault"]["code"] == "max_run_exceeded"
+        assert body["fault"]["since_ts"] == 1747900000.5
+        assert body["fault"]["msg"] == "capped at 180min without crossing target"
+
+    def test_get_with_ace_fault_is_null_when_not_faulted(
+        self, autodry_client, app
+    ) -> None:
+        from multiace_web.autodryer import FSMState
+        # Fresh FSMs default to IDLE with fault=None
+        r = autodry_client.get("/api/autodry?ace=0")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["state"] == FSMState.IDLE.value
+        assert body["fault"] is None
+
 
 # ---------------------------------------------------------------------------
 # Task 7 — /api/print per-ACE block + /api/command 409 preflight

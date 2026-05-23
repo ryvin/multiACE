@@ -167,6 +167,35 @@ async function refreshDryerAutoSection(ace) {
                 : cfg.state || "?";
       stateLbl.textContent = `· state: ${tag}`;
     }
+    // FAULTED → surface fault.msg + "Reset fault" button so the user can recover
+    // without SSHing in. Cleared automatically once state leaves FAULTED.
+    const section = document.querySelector(`.dryer-auto-section[data-ace="${ace}"]`);
+    if (section) {
+      let faultBox = section.querySelector(".dryer-auto-fault");
+      if (cfg.state === "FAULTED") {
+        if (!faultBox) {
+          faultBox = document.createElement("div");
+          faultBox.className = "dryer-auto-fault";
+          section.appendChild(faultBox);
+        }
+        const msg = (cfg.fault && cfg.fault.msg) || "Auto-dry faulted (no detail available)";
+        const code = (cfg.fault && cfg.fault.code) || "fault";
+        faultBox.innerHTML = "";
+        const msgSpan = document.createElement("span");
+        msgSpan.className = "dryer-auto-fault-msg";
+        msgSpan.textContent = `⚠ ${code}: ${msg}`;
+        const resetBtn = document.createElement("button");
+        resetBtn.type = "button";
+        resetBtn.className = "dryer-auto-fault-reset";
+        resetBtn.textContent = "Reset fault";
+        resetBtn.addEventListener("click",
+          () => postAutodryAce(ace, { action: "reset_fault" }));
+        faultBox.appendChild(msgSpan);
+        faultBox.appendChild(resetBtn);
+      } else if (faultBox) {
+        faultBox.remove();
+      }
+    }
   } catch (_) { /* non-fatal */ }
 }
 

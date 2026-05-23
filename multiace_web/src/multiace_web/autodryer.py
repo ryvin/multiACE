@@ -1229,6 +1229,19 @@ class AutodryManager:
             raise KeyError(f"ace index {ace} out of range (have {len(self.fsms)})")
         return self.fsms[ace]
 
+    def reset_fault(self, ace: int) -> PerAceFSM:
+        """Clear fault metadata on the per-ACE FSM and demote FAULTED→IDLE.
+
+        Mirrors AutoDryer.reset_fault (legacy single-FSM path) but operates on
+        one entry of the per-ACE manager. Non-FAULTED states are preserved
+        (only `fault` is cleared). Caller is responsible for persisting via
+        AutoDryer._save_manager() — this method only mutates the in-memory FSM."""
+        f = self.get(ace)
+        f.snapshot.fault = None
+        if f.snapshot.state == FSMState.FAULTED:
+            f.snapshot.state = FSMState.IDLE
+        return f
+
     def serialize(self) -> dict[str, Any]:
         return {
             "schema": 2,
