@@ -1,0 +1,110 @@
+#!/bin/sh
+#
+# Govee BLE → HTTP bridge watchdog
+# Polls S64govee-bridge every WATCHDOG_INTERVAL seconds; if the daemon is
+# stopped, restarts it. Without this, a govee-bridge crash silently breaks
+# auto-dry: multiace-web's humidity reads fall back to ConnectError, the
+# per-ACE FSMs stay IDLE forever, and the only symptom is the dryer never
+# firing. Mirrors S63multiace-web-watchdog one-for-one.
+#
+
+TARGET=/etc/init.d/S64govee-bridge
+PIDFILE=/var/run/govee-bridge-watchdog.pid
+LOGFILE=/var/log/govee-bridge-watchdog.log
+INTERVAL=60
+
+log()
+{
+	echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] $1" >>"$LOGFILE"
+}
+
+watchdog_loop()
+{
+	# Record our own pid so `stop` can find us.
+	echo $$ >"$PIDFILE"
+	log "watchdog started (pid $$, interval ${INTERVAL}s)"
+	while :; do
+		if ! "$TARGET" status >/dev/null 2>&1; then
+			log "S64govee-bridge stopped — starting"
+			"$TARGET" start >>"$LOGFILE" 2>&1 || log "start failed (exit $?)"
+		fi
+		sleep "$INTERVAL"
+	done
+}
+
+case "$1" in
+  start)
+	if [ ! -x "$TARGET" ]; then
+		echo "ERROR: $TARGET missing — run install_web.sh first"
+		exit 1
+	fi
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "watchdog already running (pid $(cat "$PIDFILE"))"
+		exit 0
+	fi
+	# Detach from any controlling tty so we survive the install/SSH shell
+	# closing — same reasoning as S62multiace-web's setsid wrapper.
+	setsid sh -c "$0 _loop" </dev/null >/dev/null 2>&1 &
+	# Give the loop a moment to write the pidfile.
+	sleep 0.5
+	echo "watchdog started"
+	;;
+  stop)
+	if [ -f "$PIDFILE" ]; then
+		PID=$(cat "$PIDFILE")
+		kill "$PID" 2>/dev/null || true
+		for i in $(seq 1 25); do
+			kill -0 "$PID" 2>/dev/null || break
+			sleep 0.2
+		done
+		kill -KILL "$PID" 2>/dev/null || true
+		rm -f "$PIDFILE"
+		echo "watchdog stopped"
+	else
+		echo "watchdog not running"
+	fi
+	;;
+  restart)
+	"$0" stop
+	sleep 0.2
+	"$0" start
+	;;
+  status)
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "running (pid $(cat "$PIDFILE"))"
+		exit 0
+	else
+		echo "stopped"
+		exit 1
+	fi
+	;;
+  _loop)
+	# Internal entry point — invoked via setsid in the start case.
+	watchdog_loop
+	;;
+  _supervise)
+	# Foreground entry point — invoked by init via an inittab respawn line
+	# if one is installed. Init holds this process and respawns it if it
+	# exits, so the watchdog itself becomes crash-resistant. No setsid /
+	# no daemonization: init owns lifecycle.
+	#
+	# Defensive: if a stale pidfile points at a still-running watchdog
+	# (possibly the previous setsid-detached `start` invocation from a
+	# legacy install), reap it before claiming the pidfile ourselves.
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		OLD_PID=$(cat "$PIDFILE")
+		if [ "$OLD_PID" != "$$" ]; then
+			kill "$OLD_PID" 2>/dev/null || true
+			# Wait briefly for it to exit so the pidfile-write below isn't racy.
+			for i in 1 2 3 4 5; do
+				kill -0 "$OLD_PID" 2>/dev/null || break
+				sleep 0.2
+			done
+		fi
+	fi
+	watchdog_loop
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart|status}"
+	exit 1
+esac

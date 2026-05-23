@@ -347,6 +347,18 @@ GPL-3.0 — same as the parent multiACE project.
 
 ## Changelog
 
+## 0.8.2 — 2026-05-23
+
+- Govee bridge watchdog (`S65govee-bridge-watchdog`). Polls
+  `S64govee-bridge` every 60s and restarts it if `status` is `stopped`.
+  Closes a real silent-failure mode: when govee-bridge had been stopped
+  since May 3, multiace-web's humidity reads returned
+  `ConnectError: All connection attempts failed`, per-ACE autodry FSMs
+  stayed IDLE forever, and the dashboard offered no indication of why.
+  Mirrors the existing `S63multiace-web-watchdog` structure (start /
+  stop / restart / status / `_loop` / `_supervise`). Installer adds it
+  to `/etc/init.d/`, uninstaller removes it.
+
 ## 0.8.1 — 2026-05-23
 
 - Per-ACE auto-dry fault recovery from the web UI. Closes a real gap where

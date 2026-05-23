@@ -6,6 +6,7 @@ INSTALL_BASE="/userdata/multiace-web"
 INIT_SCRIPT="/etc/init.d/S62multiace-web"
 WATCHDOG_SCRIPT="/etc/init.d/S63multiace-web-watchdog"
 GOVEE_SCRIPT="/etc/init.d/S64govee-bridge"
+GOVEE_WATCHDOG_SCRIPT="/etc/init.d/S65govee-bridge-watchdog"
 NGINX_SNIPPET="/etc/nginx/fluidd.d/multiace.conf"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE-web] $1"; }
@@ -27,6 +28,10 @@ fi
 [ -x "$WATCHDOG_SCRIPT" ] && "$WATCHDOG_SCRIPT" stop || true
 rm -f "$WATCHDOG_SCRIPT"
 log "Watchdog removed"
+
+[ -x "$GOVEE_WATCHDOG_SCRIPT" ] && "$GOVEE_WATCHDOG_SCRIPT" stop || true
+rm -f "$GOVEE_WATCHDOG_SCRIPT"
+log "Govee bridge watchdog removed"
 
 [ -x "$GOVEE_SCRIPT" ] && "$GOVEE_SCRIPT" stop || true
 rm -f "$GOVEE_SCRIPT"
