@@ -11,6 +11,7 @@ VENV_DIR="$INSTALL_BASE/venv"
 INIT_SCRIPT="/etc/init.d/S62multiace-web"
 WATCHDOG_SCRIPT="/etc/init.d/S63multiace-web-watchdog"
 GOVEE_SCRIPT="/etc/init.d/S64govee-bridge"
+GOVEE_WATCHDOG_SCRIPT="/etc/init.d/S65govee-bridge-watchdog"
 NGINX_SNIPPET="/etc/nginx/fluidd.d/multiace.conf"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE-web] $1"; }
@@ -27,8 +28,9 @@ fi
 log "Source: $SOURCE_DIR"
 log "Target: $INSTALL_BASE"
 
-# Stop existing service + watchdog if running (watchdog first so it can't
-# resurrect the daemon mid-install).
+# Stop existing service + watchdog if running (watchdogs first so they can't
+# resurrect their daemons mid-install).
+[ -x "$GOVEE_WATCHDOG_SCRIPT" ] && "$GOVEE_WATCHDOG_SCRIPT" stop || true
 [ -x "$WATCHDOG_SCRIPT" ] && "$WATCHDOG_SCRIPT" stop || true
 [ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" stop || true
 
@@ -74,6 +76,12 @@ log "Watchdog installed at $WATCHDOG_SCRIPT"
 cp "$SCRIPT_DIR/S64govee-bridge" "$GOVEE_SCRIPT"
 chmod +x "$GOVEE_SCRIPT"
 log "Govee bridge installed at $GOVEE_SCRIPT (no-op until GOVEE_BRIDGE_MAC is set in .env)"
+# Govee bridge watchdog — polls S64 every 60s and restarts on stop. Without
+# this, a silent govee-bridge crash breaks per-ACE autodry (no humidity → FSMs
+# stuck IDLE) with no visible indicator. Mirrors S63multiace-web-watchdog.
+cp "$SCRIPT_DIR/S65govee-bridge-watchdog" "$GOVEE_WATCHDOG_SCRIPT"
+chmod +x "$GOVEE_WATCHDOG_SCRIPT"
+log "Govee bridge watchdog installed at $GOVEE_WATCHDOG_SCRIPT"
 
 # Install nginx snippet into the fluidd include dir (loaded inside fluidd's server{})
 mkdir -p /etc/nginx/fluidd.d
@@ -109,6 +117,14 @@ else
   sleep 1
   log "Watchdog status: $("$WATCHDOG_SCRIPT" status)"
 fi
+
+# Start the Govee bridge watchdog (no inittab respawn for now — the daemon
+# itself is non-critical; if the watchdog crashes the user can restart it
+# manually or a reboot brings it back via the S65 init.d sweep). The watchdog
+# will start the govee-bridge daemon on its first poll cycle.
+"$GOVEE_WATCHDOG_SCRIPT" start
+sleep 1
+log "Govee watchdog status: $("$GOVEE_WATCHDOG_SCRIPT" status)"
 
 log ""
 log "=== Install complete ==="
