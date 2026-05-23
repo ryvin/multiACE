@@ -800,6 +800,50 @@ class TestAutodryManager:
         assert any("target_ace=5" in rec.getMessage() and "device_count=2" in rec.getMessage()
                    for rec in caplog.records)
 
+    # ---- per-ACE reset_fault (#77) ----
+
+    def test_manager_reset_fault_clears_fault_and_demotes_faulted_to_idle(self) -> None:
+        from multiace_web.autodryer import AutodryManager, FSMState, Fault
+        mgr = AutodryManager.with_defaults(device_count=2)
+        f = mgr.get(0)
+        f.snapshot.state = FSMState.FAULTED
+        f.snapshot.fault = Fault(code="max_run_exceeded", since_ts=1000.0,
+                                 msg="exceeded 180min cap")
+        returned = mgr.reset_fault(0)
+        assert returned is f
+        assert f.snapshot.state == FSMState.IDLE
+        assert f.snapshot.fault is None
+
+    def test_manager_reset_fault_clears_fault_object_even_when_state_is_not_faulted(self) -> None:
+        """Stale fault metadata on a non-FAULTED FSM (e.g. left over after a
+        crash recovered the state but not the fault) should still get cleared."""
+        from multiace_web.autodryer import AutodryManager, FSMState, Fault
+        mgr = AutodryManager.with_defaults(device_count=1)
+        f = mgr.get(0)
+        f.snapshot.state = FSMState.WATCHING
+        f.snapshot.fault = Fault(code="x", since_ts=0.0, msg="stale")
+        mgr.reset_fault(0)
+        assert f.snapshot.state == FSMState.WATCHING  # not demoted
+        assert f.snapshot.fault is None
+
+    def test_manager_reset_fault_does_not_touch_other_aces(self) -> None:
+        from multiace_web.autodryer import AutodryManager, FSMState, Fault
+        mgr = AutodryManager.with_defaults(device_count=2)
+        mgr.get(0).snapshot.state = FSMState.FAULTED
+        mgr.get(0).snapshot.fault = Fault(code="a", since_ts=1.0, msg="a")
+        mgr.get(1).snapshot.state = FSMState.FAULTED
+        mgr.get(1).snapshot.fault = Fault(code="b", since_ts=2.0, msg="b")
+        mgr.reset_fault(0)
+        assert mgr.get(1).snapshot.state == FSMState.FAULTED
+        assert mgr.get(1).snapshot.fault is not None
+        assert mgr.get(1).snapshot.fault.code == "b"
+
+    def test_manager_reset_fault_raises_for_out_of_range_ace(self) -> None:
+        from multiace_web.autodryer import AutodryManager
+        mgr = AutodryManager.with_defaults(device_count=2)
+        with pytest.raises(KeyError):
+            mgr.reset_fault(9)
+
 
 class TestAutoDryerPerAce:
     """Tests for per-ACE entry points added to AutoDryer (Task 4)."""

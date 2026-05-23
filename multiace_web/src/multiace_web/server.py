@@ -997,6 +997,12 @@ def create_app(
             "state": fsm.snapshot.state.value,
             "locked": fsm.locked,
             "unreachable": fsm.unreachable,
+            "fault": (
+                {"code": fsm.snapshot.fault.code,
+                 "since_ts": fsm.snapshot.fault.since_ts,
+                 "msg": fsm.snapshot.fault.msg}
+                if fsm.snapshot.fault else None
+            ),
         }
 
     @app.post("/api/autodry")
@@ -1043,6 +1049,17 @@ def create_app(
             fsm = ad.manager.get(ace)
         except (KeyError, AttributeError):
             return JSONResponse(status_code=404, content={"error": f"no FSM for ace={ace}"})
+        # Per-ACE actions (handled before pydantic config-update validation
+        # because "action" is not a valid AutodryConfigUpdate field).
+        if isinstance(body, dict) and body.get("action") == "reset_fault":
+            ad.manager.reset_fault(ace)
+            ad._save_manager()
+            return {
+                "ok": True,
+                "ace": ace,
+                "state": fsm.snapshot.state.value,
+                "fault": None,
+            }
         # Validate via pydantic
         try:
             update = AutodryConfigUpdate(**body)

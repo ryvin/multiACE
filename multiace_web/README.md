@@ -347,6 +347,24 @@ GPL-3.0 — same as the parent multiACE project.
 
 ## Changelog
 
+## 0.8.1 — 2026-05-23
+
+- Per-ACE auto-dry fault recovery from the web UI. Closes a real gap where
+  any per-ACE FSM that landed in `FAULTED` (max-run exceeded or min-delta
+  not met) was stuck forever — the legacy `POST /api/autodry {action:
+  reset_fault}` only reset the legacy single-FSM, not the per-ACE manager.
+  Changes:
+  - `AutodryManager.reset_fault(ace)` — clears `snapshot.fault` and demotes
+    `FAULTED → IDLE` on the specified ACE only.
+  - `POST /api/autodry?ace=N {action: "reset_fault"}` — persists via
+    `_save_manager()` and returns the new state.
+  - `GET /api/autodry?ace=N` now includes `fault: {code, since_ts, msg} |
+    null` so the UI can surface *why* the FSM faulted.
+  - Dryer tab — each ACE's auto-maintenance subsection shows a red
+    fault banner with the fault message and a "Reset fault" button when
+    the per-ACE FSM is `FAULTED`. The banner is removed automatically
+    once state leaves `FAULTED`.
+
 ## 0.8.0 — 2026-05-17
 
 - Swaptimizer (Phase 4) — two opt-in flags on `multiace_postprocess.py`
