@@ -1,3 +1,4 @@
+import copy
 import logging
 import logging.handlers
 import json
@@ -10,6 +11,7 @@ import serial
 from serial import SerialException
 
 from .ace_protocol_v1 import AceProtocolV1
+from .ace_status import build_multiace_status
 
 MULTIACE_VERSION = "0.81b"
 
@@ -136,6 +138,7 @@ class BunnyAce:
         self._callback_map = {}
         self._feed_assist_index = -1
         self._request_id = 0
+        self._last_status = {}  # ace_index -> {"result": frame, "recv_ts": float}; snapshot-on-active (non-active ACEs go stale until next active — intentional per SP1 spec; freshness gap deferred to SP3)
 
         self._head_source = {0: None, 1: None, 2: None, 3: None}
         
@@ -1262,6 +1265,10 @@ class BunnyAce:
                                         spool_inf.get('brand', 'Generic')))
                     self.gate_status[i] = GATE_EMPTY if response['result']['slots'][i]['status'] == 'empty'                        else GATE_AVAILABLE
                 self._info = response['result']
+                self._last_status[self._active_device_index] = {
+                    "result": copy.deepcopy(response['result']),
+                    "recv_ts": self.reactor.monotonic(),
+                }
 
         if self._serial_failed:
             return eventtime + 1
@@ -2945,7 +2952,9 @@ class BunnyAce:
             self._state_log.error('STATE audit error: %s', str(e))
 
     def get_status(self, eventtime=None):
-        return {
+        # Legacy flat keys — the web console poller spreads this whole object
+        # into its per-ACE cache (poller.py), so these shapes MUST be preserved.
+        status = {
             'status': self._info['status'],
             'temp': self._info['temp'],
             'dryer_status': self._info['dryer_status'],
@@ -2955,6 +2964,29 @@ class BunnyAce:
             'head_source': self._head_source,
             'slots': self._info.get('slots', []),
         }
+        # SP1: add the multi-unit HelixScreen contract WITHOUT touching the
+        # legacy keys above. Guarded so the additions can never break the
+        # legacy object that existing consumers depend on. SP2 reads units[].
+        try:
+            now = self.reactor.monotonic() if eventtime is None else eventtime
+            multi = build_multiace_status(
+                devices=self._ace_devices,
+                active_index=self._active_device_index,
+                head_source=self._head_source,
+                last_status=self._last_status,
+                now=now,
+                firmware_version=MULTIACE_VERSION,
+            )
+            # device_count/head_source/slots/humidity from the builder are
+            # intentionally NOT copied: the legacy dict above already has
+            # single-ACE-semantics versions that consumers depend on. SP2
+            # readers use units[n] for per-ACE data.
+            for key in ('model', 'firmware', 'type_name', 'units',
+                        'active_unit', 'current_tool', 'current_slot', 'total_slots'):
+                status[key] = multi.get(key)
+        except Exception:
+            pass
+        return status
 
 def load_config(config):
     return BunnyAce(config)
