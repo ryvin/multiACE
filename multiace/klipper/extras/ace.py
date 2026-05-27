@@ -10,6 +10,7 @@ import serial
 from serial import SerialException
 
 from .ace_protocol_v1 import AceProtocolV1
+from .ace_status import build_multiace_status
 
 MULTIACE_VERSION = "0.81b"
 
@@ -136,6 +137,7 @@ class BunnyAce:
         self._callback_map = {}
         self._feed_assist_index = -1
         self._request_id = 0
+        self._last_status = {}  # ace_index -> {"result": frame, "recv_ts": float} (HelixScreen status)
 
         self._head_source = {0: None, 1: None, 2: None, 3: None}
         
@@ -1262,6 +1264,10 @@ class BunnyAce:
                                         spool_inf.get('brand', 'Generic')))
                     self.gate_status[i] = GATE_EMPTY if response['result']['slots'][i]['status'] == 'empty'                        else GATE_AVAILABLE
                 self._info = response['result']
+                self._last_status[self._active_device_index] = {
+                    "result": response['result'],
+                    "recv_ts": self.reactor.monotonic(),
+                }
 
         if self._serial_failed:
             return eventtime + 1
