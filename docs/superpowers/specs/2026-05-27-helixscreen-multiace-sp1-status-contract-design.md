@@ -54,19 +54,30 @@ multi-unit conventions HelixScreen's AFC/CFS backends already use.
   evaluated and rejected on USB-path safety grounds (#70/#74 stabilized that path). The
   freshness gap for never-activated units is closed by a **guarded, idle-only refresh deferred
   to SP3**.
-- **No FilamentHub/Spoolman resolution logic.** The ACE frame carries no UID/SKU — only an
-  `rfid` presence code (`0`/`2`) plus brand/type/color. SP1 passes those through; resolving a
-  spool against Spoolman/FilamentHub is HelixScreen's existing Spoolman integration (downstream,
-  keyed on brand+type+color or a future UID path).
+- **No FilamentHub/Spoolman resolution logic.** The ACE frame carries `sku` (a spool SKU
+  string, often empty) and an `rfid` presence code (`0`/`2`) plus brand/type/color. SP1 passes
+  these through unchanged; resolving a spool against Spoolman/FilamentHub is HelixScreen's
+  existing Spoolman integration (downstream, keyed on `sku`/brand+type+color).
 
 ---
 
-## Background: why a new object is needed
+## Background: extending the existing `ace` object
 
-`ace.py` exposes state **only** through the `ACE_HEAD_STATUS` *gcode command* (a
-human-readable log dump) and the `multiace_state.log` audit log. It has **no
-`get_status()` method on the controller**, so nothing appears in Moonraker
-`objects/query`/`subscribe` for a touchscreen UI to read.
+> **Correction (found during implementation):** `BunnyAce` **already has** a
+> `get_status` (ace.py ~2947) publishing the `ace` Klipper object with a flat legacy
+> shape — `status, temp, dryer_status, gate_status, active_device, device_count,
+> head_source, slots` — and the web console poller (`poller.py`) consumes it (it spreads
+> the whole object into its per-ACE cache). So SP1 does **not** create a new object; it
+> **extends the existing `get_status` as a backwards-compatible superset**: every legacy
+> key is preserved unchanged, and the multi-unit keys (`model, firmware, type_name, units,
+> active_unit, current_tool, current_slot, total_slots`) are appended under a guarded
+> `try/except`. The builder's own top-level `slots`/`head_source` are **not** copied in
+> (legacy single-ACE versions win — the poller depends on them); SP2 reads `units[]` for
+> the multi-unit view. (The original spec premise — "no `get_status` exists" — was wrong;
+> this corrects it.)
+
+Aside from the `ace` object, `ace.py` also exposes state through the `ACE_HEAD_STATUS`
+*gcode command* (a human-readable log dump) and the `multiace_state.log` audit log.
 
 HelixScreen's ACE backend (`src/printer/ams_backend_ace.cpp`) **subscribes to a Klipper
 object** and runs `parse_ace_object(data)` on every update (with a REST `/server/ace/`
