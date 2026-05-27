@@ -101,9 +101,9 @@ ace.py in-memory state:
   build_multiace_status(...)  ── pure module-level function, no I/O ──► dict
         │
         ▼
-  Ace.get_status(eventtime)   ── thin wrapper ──► Klipper status object "multiace"
+  BunnyAce.get_status(eventtime) ─ thin wrapper ─► Klipper status object "ace" ([ace] section)
         │
-        ▼  Moonraker objects/query?multiace  /  objects/subscribe
+        ▼  Moonraker objects/query?ace  /  objects/subscribe
   HelixScreen ACE backend (SP2 consumes units[]; unmodified backend consumes flat slots[])
 ```
 
@@ -144,11 +144,23 @@ ace.py in-memory state:
 
    No Klipper objects, no I/O, no exceptions raised — fully unit-testable without hardware.
 
-3. **`Ace.get_status(self, eventtime)`** — a thin wrapper that snapshots the in-memory
+3. **`BunnyAce.get_status(self, eventtime)`** — a thin wrapper that snapshots the in-memory
    references and calls `build_multiace_status(...)`, wrapped so it can **never raise**
-   (returns a minimal valid frame on any internal error).
+   (returns a minimal valid frame on any internal error). The class registered for the `[ace]`
+   config section is `BunnyAce` (`ace.py:37`, `load_config` returns `BunnyAce(config)`).
 
-### Data contract (the published `multiace` object)
+### Object name: `ace` (not `multiace`)
+
+Klipper names a status object after its config section, so adding `get_status` to `BunnyAce`
+publishes the object as **`ace`** — which is **exactly what HelixScreen's ACE backend already
+subscribes to**. This is strictly better than a separate `multiace` object: (1) no second
+Klipper object to register, (2) no SP2 subscription change, and (3) it preserves the **interim
+win** — HelixScreen's *unmodified* parser reads the flat `slots[]` from the `ace` object and
+renders all 16 slots before any C++ is written. There is no other ACE driver on this printer
+(multiACE *is* the `[ace]` section), so there is no collision to avoid. The web console reads
+state via the `ACE_HEAD_STATUS` gcode + log, not this object, so nothing conflicts.
+
+### Data contract (the published `ace` object)
 
 ```jsonc
 {
@@ -330,7 +342,7 @@ Targets `build_multiace_status(...)` (pure, no Klipper). Cases:
 
 ```bash
 export DAVINCI_U1_HOST=192.168.1.136
-curl -s "$DAVINCI_U1_HOST:7125/printer/objects/query?multiace" | jq .
+curl -s "$DAVINCI_U1_HOST:7125/printer/objects/query?ace" | jq '.result.status.ace'
 # expect: units[] with correct first_slot_global_index / connected / environment,
 #         flat slots[] of length total_slots, mapped_tool sparse from head_source.
 ```
@@ -347,7 +359,7 @@ interim win that proves the contract before SP2 begins.
 
 ## Acceptance criteria
 
-1. Moonraker `objects/query?multiace` returns the documented shape against the live Davinci-U1.
+1. Moonraker `objects/query?ace` returns the documented shape against the live Davinci-U1.
 2. `units[]` follows AFC conventions: correct `first_slot_global_index`, `global_index`,
    `slot_count`, `connected`; `environment` per unit.
 3. `mapped_tool` is sparse and sourced from `head_source` (not the AFC identity default).
@@ -368,8 +380,12 @@ interim win that proves the contract before SP2 begins.
 
 ## Open questions for SP2 (not blocking SP1)
 
-- Does HelixScreen's ACE backend subscribe by the literal object name `ace`? If so, SP2 reads
-  `multiace` (new subscription) or we alias. SP1 publishes `multiace` to avoid colliding with
-  any single-ACE driver; SP2 decides the subscription name.
+- **Object name — RESOLVED.** HelixScreen's ACE backend subscribes to the literal Klipper
+  object `ace`, and multiACE's section is `[ace]`, so SP1 publishes as `ace` (add `get_status`
+  to `BunnyAce`). SP2 needs no subscription change, and the flat-`slots[]` interim view renders
+  on the unmodified parser. (See "Object name: `ace`" above.)
 - `current_tool`/`current_slot` exact derivation from multiACE's active-toolchange state —
-  refine in SP2 against HelixScreen's `AmsSystemInfo` usage.
+  refine in SP2 against HelixScreen's `AmsSystemInfo` usage. SP1 populates them best-effort
+  from `_head_source` + `_active_device_index`; SP2 confirms the semantics HelixScreen expects.
+- The guarded, idle-only all-ACE refresh (closes the snapshot-on-active freshness gap) is an
+  **SP3** concern, gated on `print_stats.state` and reusing the tested decode path.
