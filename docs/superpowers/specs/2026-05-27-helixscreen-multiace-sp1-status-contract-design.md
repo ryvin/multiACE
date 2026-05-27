@@ -396,6 +396,25 @@ interim win that proves the contract before SP2 begins.
 
 ---
 
+## Live verification — DONE (Davinci-U1, 2026-05-27)
+
+Deployed to the live printer and verified via `objects/query?ace` after a full klippy
+**process** restart (`/etc/init.d/S60klipper restart` — this printer is BusyBox sysvinit, not
+systemd; Moonraker's `RESTART`/`/printer/restart` only reloads config and does NOT re-import
+Python modules):
+
+- All 8 legacy keys preserved **and** all 8 new keys present (`model=ACE Pro`, `firmware=0.81b`,
+  `device_count=2`, `total_slots=8`, `active_unit=0`).
+- `units[]`: ACE A `first_global=0 slot_count=4 connected=true status=ready temp=50.0`; ACE B
+  `first_global=4 connected=false status=error` (not active since restart → snapshot-on-active
+  shows it stale, exactly as designed).
+- `mapped_tool` sparse & correct: live `head_source={0:0,1:0,2:1,3:0}` → ACE A slots map tools
+  0/1/3, ACE B slot 2 (global 6) maps tool 2.
+- **Humidity question RESOLVED:** the live ACE frame has **no `humidity` key** — `has_humidity=false`
+  on every unit (only `temp` is present). Govee external humidity remains web-console-side / out of SP1.
+- No klippy.log tracebacks from the new code after restart; ACE detection healthy; web console
+  poller unaffected (legacy keys intact).
+
 ## Acceptance criteria
 
 1. Moonraker `objects/query?ace` returns the documented shape against the live Davinci-U1.
