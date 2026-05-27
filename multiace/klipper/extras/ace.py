@@ -2951,7 +2951,9 @@ class BunnyAce:
             self._state_log.error('STATE audit error: %s', str(e))
 
     def get_status(self, eventtime=None):
-        return {
+        # Legacy flat keys — the web console poller spreads this whole object
+        # into its per-ACE cache (poller.py), so these shapes MUST be preserved.
+        status = {
             'status': self._info['status'],
             'temp': self._info['temp'],
             'dryer_status': self._info['dryer_status'],
@@ -2961,6 +2963,25 @@ class BunnyAce:
             'head_source': self._head_source,
             'slots': self._info.get('slots', []),
         }
+        # SP1: add the multi-unit HelixScreen contract WITHOUT touching the
+        # legacy keys above. Guarded so the additions can never break the
+        # legacy object that existing consumers depend on. SP2 reads units[].
+        try:
+            now = self.reactor.monotonic() if eventtime is None else eventtime
+            multi = build_multiace_status(
+                devices=self._ace_devices,
+                active_index=self._active_device_index,
+                head_source=self._head_source,
+                last_status=self._last_status,
+                now=now,
+                firmware_version=MULTIACE_VERSION,
+            )
+            for key in ('model', 'firmware', 'type_name', 'units',
+                        'active_unit', 'current_tool', 'current_slot', 'total_slots'):
+                status[key] = multi.get(key)
+        except Exception:
+            pass
+        return status
 
 def load_config(config):
     return BunnyAce(config)
