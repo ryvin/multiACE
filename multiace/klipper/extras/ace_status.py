@@ -4,6 +4,7 @@
 # License: GPL-3.0
 
 DEFAULT_SLOT_COUNT = 4
+DEFAULT_HEAD_COUNT = 4
 DEFAULT_STALE_AFTER_S = 5.0
 
 
@@ -45,7 +46,7 @@ def _build_mapped_tool_index(head_source):
 def _build_head_source_out(head_source):
     """Emit exactly four head entries; empty heads carry unit/slot = None."""
     out = []
-    for head in range(4):
+    for head in range(DEFAULT_HEAD_COUNT):
         source = head_source.get(head) if head_source else None
         if (source and source.get("ace_index") is not None
                 and source.get("slot") is not None):
@@ -76,7 +77,7 @@ def _build_slot(slot_index, global_index, slot_frame, mapped_tool):
         "mapped_tool": mapped_tool,
     }
     if "color" in sf:
-        slot["color"] = _coerce_color(sf.get("color"))
+        slot["color"] = _coerce_color(sf["color"])
     if sf.get("type"):
         slot["type"] = sf["type"]
     if sf.get("brand"):
@@ -85,7 +86,7 @@ def _build_slot(slot_index, global_index, slot_frame, mapped_tool):
         slot["sku"] = sf["sku"]
     if "rfid" in sf:
         try:
-            slot["rfid"] = int(sf.get("rfid"))
+            slot["rfid"] = int(sf["rfid"])
         except (TypeError, ValueError):
             pass
     return slot
@@ -147,7 +148,7 @@ def _build_unit(idx, entry, now, stale_after_s, first_global, mapped_index,
         return _offline_unit(idx, first_global, mapped_index, default_slot_count)
 
     frame_slots = frame.get("slots") or []
-    slot_count = len(frame_slots) if frame_slots else default_slot_count
+    slot_count = len(frame_slots) or default_slot_count
     slots = []
     for s in range(slot_count):
         sf = frame_slots[s] if s < len(frame_slots) else {}
@@ -176,7 +177,7 @@ def _derive_current(head_source, active_index, units):
     Exact semantics deferred to SP2 (see spec open questions)."""
     if not head_source:
         return -1, -1
-    for head in range(4):
+    for head in range(DEFAULT_HEAD_COUNT):
         source = head_source.get(head)
         if (source and source.get("ace_index") == active_index
                 and source.get("slot") is not None):
@@ -217,6 +218,7 @@ def build_multiace_status(devices, active_index, head_source, last_status, now,
             "total_slots": running_global,
             "head_source": _build_head_source_out(head_source),
             "units": units, "slots": flat_slots,
+            # legacy top-level aggregate; per-unit humidity lives in units[n]["environment"]
             "humidity": 0.0, "status": top_status,
         }
     except Exception:

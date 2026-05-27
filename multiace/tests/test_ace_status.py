@@ -193,3 +193,19 @@ def test_build_status_never_raises_on_malformed_frame():
         now=100.0, firmware_version="0.81b")
     assert out["device_count"] == 1
     assert len(out["units"]) == 1
+
+
+def test_build_status_active_index_out_of_range_is_minus_one():
+    out = ace_status.build_multiace_status(
+        devices=["a", "b"], active_index=5, head_source=None,
+        last_status=_two_device_last_status(), now=100.0, firmware_version="0.81b")
+    assert out["active_unit"] == -1
+    assert out["current_tool"] == -1
+    assert out["current_slot"] == -1
+
+
+def test_build_slot_invalid_rfid_is_dropped():
+    sf = {"status": "ready", "rfid": "not-an-int", "color": [1, 2, 3]}
+    slot = ace_status._build_slot(0, 0, sf, mapped_tool=-1)
+    assert "rfid" not in slot
+    assert slot["color"] == [1, 2, 3]
