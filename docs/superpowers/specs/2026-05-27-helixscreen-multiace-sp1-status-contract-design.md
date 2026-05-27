@@ -46,9 +46,16 @@ multi-unit conventions HelixScreen's AFC/CFS backends already use.
   **is** in scope; the Govee external sensor is not.
 - **No new C++ in HelixScreen.** That is SP2.
 - **No `printer.cfg` writes.** SP1 only reads in-memory state and publishes it.
-- **No new serial traffic.** SP1 retains a frame the existing 1 Hz keepalive already fetches.
-- **No FilamentHub/Spoolman resolution logic.** SP1 carries the slot's RFID/`sku`; resolving
-  it against Spoolman/FilamentHub is HelixScreen's existing Spoolman integration (downstream).
+- **No new serial traffic and no change to the USB/framing path.** SP1 snapshots the frame
+  the active device's response path already decodes (`self._info`); it does **not** modify
+  `_keepalive_tick`, decode the keepalive drain, or poll non-active ACEs mid-print. Those were
+  evaluated and rejected on USB-path safety grounds (#70/#74 stabilized that path). The
+  freshness gap for never-activated units is closed by a **guarded, idle-only refresh deferred
+  to SP3**.
+- **No FilamentHub/Spoolman resolution logic.** The ACE frame carries no UID/SKU — only an
+  `rfid` presence code (`0`/`2`) plus brand/type/color. SP1 passes those through; resolving a
+  spool against Spoolman/FilamentHub is HelixScreen's existing Spoolman integration (downstream,
+  keyed on brand+type+color or a future UID path).
 
 ---
 
@@ -80,14 +87,15 @@ single-unit parser via the flat `slots[]` aggregate (interim win, de-risks SP2),
 ## Architecture
 
 ```
-ACE hardware ──get_status frame (RFID, humidity, temp)──┐
-   ▲  (existing 1 Hz keepalive, instinct #7)            │  SP1: retain last frame
-   └── _keepalive_tick sends get_status, drains reply ──┘  → self._last_status[ace_index]
+ACE hardware ──get_status frame (slots, rfid, humidity, temp)──┐
+   active device's response path: _process_response → self._info │ SP1: snapshot-on-active
+   (ace.py:1264 self._info = response['result'])                  ┘ → self._last_status[idx]
+   [keepalive (#7) keeps idle serials warm but DISCARDS their replies — unchanged by SP1]
 
 ace.py in-memory state:
   _ace_devices, _active_device_index   (device map, locked path→index)
   _head_source[0..3]                   (tool → {ace_index, slot, brand, type, color})
-  _last_status[ace_index]              (NEW: last decoded ACE status frame per unit)
+  _last_status[ace_index]              (NEW: {"result": frame, "recv_ts": t} per unit)
         │
         ▼
   build_multiace_status(...)  ── pure module-level function, no I/O ──► dict
@@ -102,9 +110,23 @@ ace.py in-memory state:
 ### Components
 
 1. **`self._last_status` cache** (new in-memory state). A `dict[int, dict]` keyed by
-   `ace_index`, holding the last *decoded* `get_status` response per ACE plus the wall-clock
-   time it was received. Written by the existing keepalive response handler — **no new
-   serial traffic**. This is the only new mutable state SP1 introduces.
+   `ace_index`, each value `{"result": <decoded frame>, "recv_ts": <monotonic time>}`.
+   Populated via **snapshot-on-active**: whenever a device's `get_status` frame is processed
+   (the active device's response path already sets `self._info = response['result']` at
+   `ace.py:1264`), SP1 also stores that frame under the device's index with a timestamp.
+   **No change to the keepalive/USB drain path** (`_keepalive_tick` continues to discard
+   non-active responses) and **no new serial traffic**. This is the only new mutable state
+   SP1 introduces.
+
+   *Slot-freshness rationale:* a non-active ACE's slot contents are **static while idle**
+   (nothing loads/unloads it), so last-known slot data is *accurate*, not merely stale, until
+   the unit is next activated or a human manually swaps a spool on it. `connected` reflects
+   frame age. Humidity/temp on a non-active unit may be stale — irrelevant to the two priority
+   screens (Loadout Check, Recovery). Closing the freshness gap for a never-activated unit (or
+   a manual idle swap) is a **guarded, idle-only refresh** gated on `print_stats.state`,
+   reusing the tested `_send_request`/`_process_response` decode path, **deferred to SP3
+   (Loadout Check)** — the only consumer that needs it. Mid-print polling of non-active ACEs
+   and decoding the keepalive drain are explicitly rejected (USB-path safety; see Non-goals).
 
 2. **`build_multiace_status(...)`** — a module-level **pure function**:
 
@@ -140,8 +162,8 @@ ace.py in-memory state:
   "total_slots": 8,                 // Σ slot_count over units
 
   "head_source": [                  // multiACE tool→ACE+slot map (4 heads), pass-through
-    {"head": 0, "unit": 0, "slot": 0, "brand": "Polymaker", "type": "PLA", "color": "0CA02C"},
-    {"head": 1, "unit": 1, "slot": 2, "brand": "eSUN",      "type": "PETG", "color": "1F77B4"},
+    {"head": 0, "unit": 0, "slot": 0, "brand": "Polymaker", "type": "PLA",  "color": [12, 160, 44]},
+    {"head": 1, "unit": 1, "slot": 2, "brand": "eSUN",      "type": "PETG", "color": [31, 119, 180]},
     {"head": 2, "unit": null, "slot": null},                // empty head
     {"head": 3, "unit": null, "slot": null}
   ],
@@ -168,7 +190,7 @@ ace.py in-memory state:
           "color": [12, 160, 44],   // [r,g,b]; parse_slot_color also accepts "RRGGBB"
           "type": "PLA",            // material (HelixScreen field: material)
           "brand": "Polymaker",
-          "sku": "FH-1234",         // RFID/Spoolman key (downstream lookup)
+          "rfid": 2,                // ACE frame code: 0=none, 2=recognized (NOT a UID/SKU)
           "mapped_tool": 0          // from head_source; -1 when no head references this slot
         },
         { "slot_index": 1, "global_index": 1, "status": "empty",  "mapped_tool": -1 },
@@ -185,7 +207,7 @@ ace.py in-memory state:
         {"slot_index": 0, "global_index": 4, "status": "empty", "mapped_tool": -1},
         {"slot_index": 1, "global_index": 5, "status": "empty", "mapped_tool": -1},
         {"slot_index": 2, "global_index": 6, "status": "available", "type": "PETG",
-         "color": [31,119,180], "sku": "FH-5678", "mapped_tool": 1},
+         "color": [31,119,180], "rfid": 2, "mapped_tool": 1},
         {"slot_index": 3, "global_index": 7, "status": "empty", "mapped_tool": -1}
       ]
     }
@@ -205,19 +227,19 @@ ace.py in-memory state:
 | `units[].first_slot_global_index` | `Σ slot_count` of all prior units (AFC line 1980) | computed |
 | `slots[].global_index` | `first_slot_global_index + slot_index` (AFC line 2020) | computed |
 | `units[].connected` | canonical per-unit offline flag; `false` ⇒ keep unit, mark slots `unknown` | derived |
-| `units[].environment` | `EnvironmentData{temperature_c, humidity_pct, has_humidity}`; CFS does per-unit | `_last_status[i]` |
+| `units[].environment` | `EnvironmentData{temperature_c, humidity_pct, has_humidity}`; CFS does per-unit | `_last_status[i].result` |
 | `slots[].mapped_tool` | **multiACE-specific:** from `head_source` only; `-1` otherwise (NOT the AFC `=global_index` default) | `_head_source` |
-| `slots[].color` | `[r,g,b]` array (ValgACE form `parse_slot_color` accepts) | `_last_status[i]` |
-| `slots[].sku` | RFID / Spoolman key, flows into HelixScreen's existing Spoolman lookup | `_last_status[i]` |
+| `slots[].color` | `[r,g,b]` array (ValgACE form `parse_slot_color` accepts); frame's `color` tuple | `_last_status[i].result` |
+| `slots[].rfid` | ACE frame code: `0`=none, `2`=recognized. **Not** a UID/SKU — no unique id exists in the frame; downstream Spoolman/FilamentHub matches on brand+type+color | `_last_status[i].result` |
 | `active_unit` | start-ACE pin during a print; **no AFC analog** | `_active_device_index` |
-
-> **Color format note (deliberate, not a contradiction):** `head_source[].color` is
-> multiACE's *native* form — the hex string already stored in `_head_source` and printed by
-> `ACE_HEAD_STATUS` (e.g. `"0CA02C"`) — passed through unchanged. `slots[].color` is the
-> ValgACE `[r,g,b]` array that HelixScreen's `parse_slot_color` consumes. The builder converts
-> the cached frame's color into the `[r,g,b]` array for `slots[]`; `head_source[]` stays as
-> stored. Consumers read `slots[].color`; `head_source[].color` is informational pass-through.
 | flat `slots[]`, top `humidity`/`status` | interim render path for HelixScreen's unmodified parser | aggregate |
+
+> **Color format note:** both `head_source[].color` and the ACE frame's per-slot `color` are
+> already `[r, g, b]` lists in `ace.py` (`_head_source` entries init `'color': [0, 0, 0]` at
+> `ace.py:215`; the frame's `color` is the tuple `rgb2hex(*color)` consumes). The builder
+> passes them through as `[r, g, b]`, which is exactly what HelixScreen's `parse_slot_color`
+> accepts. No hex-string conversion is involved. (`ACE_HEAD_STATUS` only `str()`-formats the
+> list for its human log line; that is display-only, not the stored form.)
 
 **The `mapped_tool` distinction is the one deliberate divergence from AFC.** AFC/Box Turtle
 defaults `mapped_tool = global_index` because N lanes = N tools. multiACE has **4 toolheads
@@ -234,15 +256,21 @@ tools.
 | `model`, `firmware`, `device_count`, `units[].name/display_name` | `_ace_devices`, version const | none |
 | `active_unit` | `_active_device_index` | none |
 | `head_source[]`, `slots[].mapped_tool` | `_head_source` (invert tool→slot to slot→tool) | inversion only |
-| `units[].slots[]` status/color/type/brand/sku | `_last_status[i]` decoded frame | **cache the frame** |
-| `units[].environment` (humidity/temp) | `_last_status[i]` decoded frame | **cache the frame** |
+| `units[].slots[]` status/color/type/brand/rfid | `_last_status[i]["result"]["slots"]` | **snapshot the frame on-active** |
+| `units[].environment` (humidity/temp) | `_last_status[i]["result"]` | **snapshot the frame on-active** |
 | `units[].status`, `current_tool`, `current_slot` | derived from swap/active/load state | derivation |
-| `units[].connected` | `now - _last_status[i].recv_ts <= stale_after_s` | derivation |
+| `units[].connected` | `now - _last_status[i]["recv_ts"] <= stale_after_s` | derivation |
 | flat `slots[]`, top `humidity`/`status` | aggregate of `units[]` | computation |
 
-The **only** new mutable state is `self._last_status`, populated by the existing keepalive
-response handler (instinct #7: the 1 Hz `get_status` already runs and is drained). SP1 adds a
-single assignment in that handler to retain the decoded frame + timestamp.
+The **snapshot-on-active** write happens at the existing `self._info = response['result']`
+assignment (`ace.py:1264`): SP1 adds `self._last_status[idx] = {"result": response['result'],
+"recv_ts": self.reactor.monotonic()}` for the device whose frame was just processed. No other
+code path or serial traffic is added (see Components §1 and Non-goals).
+
+The **only** new mutable state is `self._last_status`, populated by **snapshot-on-active** at
+the existing `self._info = response['result']` assignment (`ace.py:1264`) on the active
+device's response path. SP1 adds a single dict assignment there; it does **not** touch the
+keepalive (`_keepalive_tick` still discards idle-device replies) and adds no serial traffic.
 
 ---
 
@@ -251,10 +279,10 @@ single assignment in that handler to retain the decoded frame + timestamp.
 - `get_status(eventtime)` performs **pure in-memory assembly — zero serial I/O**, mandatory
   under Klipper's reactor model. It reads `_ace_devices`, `_active_device_index`,
   `_head_source`, and `_last_status` and returns a dict.
-- `_last_status` is written by the async keepalive response handler and read by
-  `get_status`. Both run on the Klipper reactor (single-threaded for callbacks), so a plain
-  dict assignment is safe; the builder snapshots references at entry and does not mutate
-  shared state.
+- `_last_status` is written on the active device's response-processing path (`ace.py:1264`)
+  and read by `get_status`. Both run on the Klipper reactor (single-threaded for callbacks),
+  so a plain dict assignment is safe; the builder snapshots references at entry and does not
+  mutate shared state.
 - `get_status` is **defensive**: any internal error returns a minimal valid frame
   (`{"model": "ACE Pro", "device_count": 0, "units": [], "slots": [], "status": "error"}`)
   rather than raising — `ace.py` is printer-safety-critical and `get_status` is called
@@ -292,7 +320,9 @@ Targets `build_multiace_status(...)` (pure, no Klipper). Cases:
   `status="error"`, slots `unknown`, unit still present at its index.
 - **environment** — humidity/temp present ⇒ `environment.has_humidity=true`; absent ⇒ key
   omitted or `has_humidity=false`.
-- **color formatting** — RGB tuple → `[r,g,b]`.
+- **color formatting** — frame `color` tuple `(r,g,b)` → `[r,g,b]` list.
+- **rfid passthrough** — frame `rfid` int (`0`/`2`) carried verbatim to `slots[].rfid`;
+  brand/type carried; no `sku` key emitted.
 - **empty device list** — returns minimal frame, no exception.
 - **never raises** — malformed `last_status` frame returns a degraded-but-valid dict.
 
