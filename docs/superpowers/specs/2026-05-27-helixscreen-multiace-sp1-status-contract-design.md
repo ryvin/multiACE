@@ -42,8 +42,10 @@ multi-unit conventions HelixScreen's AFC/CFS backends already use.
 
 - **No web-console-sourced state.** The autodry FSM phase, Govee *external* humidity, and
   `fault.msg` live in `multiace_web` (`autodryer.py`), a separate process. SP1 is a
-  single-process firmware change. ACE-*internal* humidity (reported by the ACE hardware)
-  **is** in scope; the Govee external sensor is not.
+  single-process firmware change. The ACE `get_status` frame carries **`temp`** (in scope →
+  `environment.temperature_c`) but **no `humidity` key** (per `ace_protocol_v1.py:107`), so
+  `environment.has_humidity` is `false` unless a live frame proves a `humidity` field exists.
+  Govee external humidity is out of scope.
 - **No new C++ in HelixScreen.** That is SP2.
 - **No `printer.cfg` writes.** SP1 only reads in-memory state and publishes it.
 - **No new serial traffic and no change to the USB/framing path.** SP1 snapshots the frame
@@ -81,6 +83,28 @@ status, color_rgb, material, brand, mapped_tool, spoolman_id, … }`.
 **SP1 publishes a superset** that (a) renders immediately on HelixScreen's *unmodified*
 single-unit parser via the flat `slots[]` aggregate (interim win, de-risks SP2), and
 (b) carries the full multi-unit structure SP2 maps onto the canonical model.
+
+### Canonical ACE `get_status` frame (the builder's input)
+
+Per `multiace/klipper/extras/ace_protocol_v1.py:107`, a per-device `get_status` result is:
+
+```python
+{
+  "status": "ready",                 # device action: ready | loading | unloading | ...
+  "dryer_status": {"status": "stop", "target_temp": 0, "duration": 0, "remain_time": 0},
+  "temp": 0,                          # device temperature (°C) → environment.temperature_c
+  "enable_rfid": 1, "fan_speed": 7000, "feed_assist_count": 0, "cont_assist_time": 0.0,
+  "slots": [                          # one entry per physical slot (typically 4)
+    {"index": 0, "status": "empty1", "sku": "", "type": "", "rfid": 0, "brand": "", "color": [0,0,0]},
+    # ...
+  ]
+  # NOTE: no "humidity" key in this schema. Verify live whether real firmware adds one.
+}
+```
+
+`ace.py:1264` stores this as `self._info = response['result']`; SP1 snapshots it per device
+into `_last_status[idx]`. Slot `status` is compared against `"empty"` in `ace.py` (line 1263),
+but the stub shows `"empty1"`, so the builder maps `status.startswith("empty")` → `empty`.
 
 ---
 
@@ -189,10 +213,10 @@ state via the `ACE_HEAD_STATUS` gcode + log, not this object, so nothing conflic
       "first_slot_global_index": 0, // Σ slot_count of prior units
       "connected": true,            // false when last frame stale/missing
       "status": "ready",            // ready | loading | unloading | drying | error
-      "environment": {              // ACE-internal sensor; omit / has_humidity=false if absent
+      "environment": {              // from frame 'temp'; humidity only if frame carries it
         "temperature_c": 24.0,
-        "humidity_pct": 28.0,
-        "has_humidity": true
+        "humidity_pct": 0.0,        // 0 + has_humidity:false — frame has no humidity key (verify live)
+        "has_humidity": false
       },
       "slots": [
         {
@@ -202,7 +226,8 @@ state via the `ACE_HEAD_STATUS` gcode + log, not this object, so nothing conflic
           "color": [12, 160, 44],   // [r,g,b]; parse_slot_color also accepts "RRGGBB"
           "type": "PLA",            // material (HelixScreen field: material)
           "brand": "Polymaker",
-          "rfid": 2,                // ACE frame code: 0=none, 2=recognized (NOT a UID/SKU)
+          "sku": "PM-PLA-GRN",      // frame 'sku' string (RFID spool SKU; "" when none)
+          "rfid": 2,                // frame 'rfid' int code: 0=none, 2=recognized
           "mapped_tool": 0          // from head_source; -1 when no head references this slot
         },
         { "slot_index": 1, "global_index": 1, "status": "empty",  "mapped_tool": -1 },
@@ -214,12 +239,12 @@ state via the `ACE_HEAD_STATUS` gcode + log, not this object, so nothing conflic
     {
       "unit_index": 1, "name": "ace_1", "display_name": "ACE B",
       "slot_count": 4, "first_slot_global_index": 4, "connected": true, "status": "ready",
-      "environment": {"temperature_c": 25.0, "humidity_pct": 31.0, "has_humidity": true},
+      "environment": {"temperature_c": 25.0, "humidity_pct": 0.0, "has_humidity": false},
       "slots": [
         {"slot_index": 0, "global_index": 4, "status": "empty", "mapped_tool": -1},
         {"slot_index": 1, "global_index": 5, "status": "empty", "mapped_tool": -1},
         {"slot_index": 2, "global_index": 6, "status": "available", "type": "PETG",
-         "color": [31,119,180], "rfid": 2, "mapped_tool": 1},
+         "color": [31,119,180], "sku": "ES-PETG-BLU", "rfid": 2, "mapped_tool": 1},
         {"slot_index": 3, "global_index": 7, "status": "empty", "mapped_tool": -1}
       ]
     }
@@ -239,10 +264,11 @@ state via the `ACE_HEAD_STATUS` gcode + log, not this object, so nothing conflic
 | `units[].first_slot_global_index` | `Σ slot_count` of all prior units (AFC line 1980) | computed |
 | `slots[].global_index` | `first_slot_global_index + slot_index` (AFC line 2020) | computed |
 | `units[].connected` | canonical per-unit offline flag; `false` ⇒ keep unit, mark slots `unknown` | derived |
-| `units[].environment` | `EnvironmentData{temperature_c, humidity_pct, has_humidity}`; CFS does per-unit | `_last_status[i].result` |
+| `units[].environment` | `EnvironmentData{temperature_c, humidity_pct, has_humidity}` (CFS does per-unit). `temperature_c` ← frame `temp`; `has_humidity=false` (frame has no humidity key — verify live) | `_last_status[i].result` |
 | `slots[].mapped_tool` | **multiACE-specific:** from `head_source` only; `-1` otherwise (NOT the AFC `=global_index` default) | `_head_source` |
 | `slots[].color` | `[r,g,b]` array (ValgACE form `parse_slot_color` accepts); frame's `color` tuple | `_last_status[i].result` |
-| `slots[].rfid` | ACE frame code: `0`=none, `2`=recognized. **Not** a UID/SKU — no unique id exists in the frame; downstream Spoolman/FilamentHub matches on brand+type+color | `_last_status[i].result` |
+| `slots[].sku` | frame `sku` string (RFID spool SKU; `""` when none) — HelixScreen's `parse_slot_color` reads `sku`; feeds downstream Spoolman/FilamentHub lookup | `_last_status[i].result` |
+| `slots[].rfid` | frame `rfid` int code: `0`=none, `2`=recognized (presence flag, complements `sku`) | `_last_status[i].result` |
 | `active_unit` | start-ACE pin during a print; **no AFC analog** | `_active_device_index` |
 | flat `slots[]`, top `humidity`/`status` | interim render path for HelixScreen's unmodified parser | aggregate |
 
@@ -268,7 +294,7 @@ tools.
 | `model`, `firmware`, `device_count`, `units[].name/display_name` | `_ace_devices`, version const | none |
 | `active_unit` | `_active_device_index` | none |
 | `head_source[]`, `slots[].mapped_tool` | `_head_source` (invert tool→slot to slot→tool) | inversion only |
-| `units[].slots[]` status/color/type/brand/rfid | `_last_status[i]["result"]["slots"]` | **snapshot the frame on-active** |
+| `units[].slots[]` status/color/type/brand/sku/rfid | `_last_status[i]["result"]["slots"]` | **snapshot the frame on-active** |
 | `units[].environment` (humidity/temp) | `_last_status[i]["result"]` | **snapshot the frame on-active** |
 | `units[].status`, `current_tool`, `current_slot` | derived from swap/active/load state | derivation |
 | `units[].connected` | `now - _last_status[i]["recv_ts"] <= stale_after_s` | derivation |
@@ -330,11 +356,13 @@ Targets `build_multiace_status(...)` (pure, no Klipper). Cases:
   number (0–3); all others are `-1`; an empty head maps no slot.
 - **offline unit** — frame older than `stale_after_s` ⇒ `connected=false`, unit
   `status="error"`, slots `unknown`, unit still present at its index.
-- **environment** — humidity/temp present ⇒ `environment.has_humidity=true`; absent ⇒ key
-  omitted or `has_humidity=false`.
-- **color formatting** — frame `color` tuple `(r,g,b)` → `[r,g,b]` list.
-- **rfid passthrough** — frame `rfid` int (`0`/`2`) carried verbatim to `slots[].rfid`;
-  brand/type carried; no `sku` key emitted.
+- **environment** — `temperature_c` ← frame `temp`; with no `humidity` key in the frame,
+  `has_humidity=false` and `humidity_pct=0.0`. If a fixture includes a `humidity` key,
+  `has_humidity=true` and the value is carried (forward-compat).
+- **color formatting** — frame `color` list `[r,g,b]` carried as `[r,g,b]`.
+- **slot passthrough** — frame `sku` (string) → `slots[].sku`; frame `rfid` (int `0`/`2`) →
+  `slots[].rfid`; `brand`/`type` carried; slot `status` `startswith("empty")` → `empty`, else
+  `available`; missing frame ⇒ `unknown`.
 - **empty device list** — returns minimal frame, no exception.
 - **never raises** — malformed `last_status` frame returns a degraded-but-valid dict.
 
