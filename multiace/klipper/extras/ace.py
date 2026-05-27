@@ -1,3 +1,4 @@
+import copy
 import logging
 import logging.handlers
 import json
@@ -137,7 +138,7 @@ class BunnyAce:
         self._callback_map = {}
         self._feed_assist_index = -1
         self._request_id = 0
-        self._last_status = {}  # ace_index -> {"result": frame, "recv_ts": float} (HelixScreen status)
+        self._last_status = {}  # ace_index -> {"result": frame, "recv_ts": float}; snapshot-on-active (non-active ACEs go stale until next active — intentional per SP1 spec; freshness gap deferred to SP3)
 
         self._head_source = {0: None, 1: None, 2: None, 3: None}
         
@@ -1265,7 +1266,7 @@ class BunnyAce:
                     self.gate_status[i] = GATE_EMPTY if response['result']['slots'][i]['status'] == 'empty'                        else GATE_AVAILABLE
                 self._info = response['result']
                 self._last_status[self._active_device_index] = {
-                    "result": response['result'],
+                    "result": copy.deepcopy(response['result']),
                     "recv_ts": self.reactor.monotonic(),
                 }
 
@@ -2976,6 +2977,10 @@ class BunnyAce:
                 now=now,
                 firmware_version=MULTIACE_VERSION,
             )
+            # device_count/head_source/slots/humidity from the builder are
+            # intentionally NOT copied: the legacy dict above already has
+            # single-ACE-semantics versions that consumers depend on. SP2
+            # readers use units[n] for per-ACE data.
             for key in ('model', 'firmware', 'type_name', 'units',
                         'active_unit', 'current_tool', 'current_slot', 'total_slots'):
                 status[key] = multi.get(key)
