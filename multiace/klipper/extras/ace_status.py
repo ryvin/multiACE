@@ -43,8 +43,10 @@ def _build_mapped_tool_index(head_source):
     return rev
 
 
-def _build_head_source_out(head_source):
-    """Emit exactly four head entries; empty heads carry unit/slot = None."""
+def _build_head_source_out(head_source, sensors_per_head=None):
+    """Emit exactly four head entries; empty heads carry unit/slot = None.
+    Every entry carries `sensor: bool` (SP3) — defaults False when not provided."""
+    sensors = sensors_per_head or {}
     out = []
     for head in range(DEFAULT_HEAD_COUNT):
         source = head_source.get(head) if head_source else None
@@ -57,9 +59,10 @@ def _build_head_source_out(head_source):
                     entry[key] = source[key]
             if "color" in source:
                 entry["color"] = _coerce_color(source.get("color"))
-            out.append(entry)
         else:
-            out.append({"head": head, "unit": None, "slot": None})
+            entry = {"head": head, "unit": None, "slot": None}
+        entry["sensor"] = bool(sensors.get(head, False))
+        out.append(entry)
     return out
 
 
@@ -188,7 +191,8 @@ def _derive_current(head_source, active_index, units):
 
 
 def build_multiace_status(devices, active_index, head_source, last_status, now,
-                          firmware_version, stale_after_s=DEFAULT_STALE_AFTER_S):
+                          firmware_version, stale_after_s=DEFAULT_STALE_AFTER_S,
+                          sensors_per_head=None):
     """Assemble the `ace` Klipper status object. Pure; never raises."""
     try:
         device_count = len(devices) if devices else 0
@@ -216,7 +220,7 @@ def build_multiace_status(devices, active_index, head_source, last_status, now,
             "device_count": device_count, "active_unit": active_unit,
             "current_tool": current_tool, "current_slot": current_slot,
             "total_slots": running_global,
-            "head_source": _build_head_source_out(head_source),
+            "head_source": _build_head_source_out(head_source, sensors_per_head),
             "units": units, "slots": flat_slots,
             # legacy top-level aggregate; per-unit humidity lives in units[n]["environment"]
             "humidity": 0.0, "status": top_status,

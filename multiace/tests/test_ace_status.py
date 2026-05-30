@@ -47,8 +47,8 @@ def test_head_source_out_emits_four_heads_with_nulls():
     out = ace_status._build_head_source_out(_head_source_fixture())
     assert len(out) == 4
     assert out[0] == {"head": 0, "unit": 0, "slot": 0, "brand": "Polymaker",
-                      "type": "PLA", "color": [12, 160, 44]}
-    assert out[2] == {"head": 2, "unit": None, "slot": None}
+                      "type": "PLA", "color": [12, 160, 44], "sensor": False}
+    assert out[2] == {"head": 2, "unit": None, "slot": None, "sensor": False}
 
 
 def test_build_slot_full_frame():
@@ -209,3 +209,29 @@ def test_build_slot_invalid_rfid_is_dropped():
     slot = ace_status._build_slot(0, 0, sf, mapped_tool=-1)
     assert "rfid" not in slot
     assert slot["color"] == [1, 2, 3]
+
+
+def test_head_source_out_includes_sensor_when_provided():
+    out = ace_status._build_head_source_out(
+        _head_source_fixture(), sensors_per_head={0: True, 1: False, 2: False, 3: False})
+    assert out[0]["sensor"] is True
+    assert out[1]["sensor"] is False
+    assert out[2] == {"head": 2, "unit": None, "slot": None, "sensor": False}
+
+
+def test_head_source_out_defaults_sensor_false_when_omitted():
+    out = ace_status._build_head_source_out(_head_source_fixture())
+    assert all(entry["sensor"] is False for entry in out)
+
+
+def test_build_status_passes_sensors_through_to_head_source():
+    now = 100.0
+    last_status = {0: {"recv_ts": now, "result": {"slots": [], "temp": 21}}}
+    head_source = {0: {"ace_index": 0, "slot": 0, "brand": "x", "type": "PLA", "color": [1, 2, 3]}}
+    sensors = {0: True, 1: False, 2: False, 3: False}
+    out = ace_status.build_multiace_status(
+        devices=["/dev/x"], active_index=0, head_source=head_source,
+        last_status=last_status, now=now, firmware_version="0.81b",
+        sensors_per_head=sensors)
+    assert out["head_source"][0]["sensor"] is True
+    assert out["head_source"][1]["sensor"] is False
