@@ -12,6 +12,48 @@
 
 ---
 
+## Correction (2026-05-30, post Task 4 audit)
+
+After Task 3 deployed firmware tasks 1+2+contract-fix to Davinci-U1, the Task 4 subagent went to add the C++ sensor parse and discovered the plan had **assumed C++ scaffolding that SP2 never built**. Auditing Tasks 5–11 against the actual helixscreen codebase surfaced four additional issues. Findings persisted to memory at `sp3-plan-defects-2026-05-30.md`. The corrections below take effect for any resumption of Tasks 4+.
+
+### Task 0 (NEW — prerequisite for Tasks 4, 5, 7-9): C++ HeadSource scaffolding
+
+The SP3 plan body assumed `AmsSystemInfo.head_source[]` existed as a length-4 `std::array<HeadSource, 4>` projection of `units[].slots[].mapped_tool` markers. SP2 only built `units[]` itself; no head→source projection. Before any SP3 C++ task lands, add:
+
+1. **`struct HeadSource`** in `helixscreen/include/ams_types.h`:
+   ```cpp
+   struct HeadSource {
+       int unit{-1};                // ACE unit index (-1 = unmapped)
+       int slot{-1};                // slot within unit (-1 = unmapped)
+       std::string brand;
+       std::string type;
+       uint32_t color{0};
+       bool sensor{false};          // SP3: filament-at-gate from ace.sensors[h]
+   };
+   ```
+2. **`std::array<HeadSource, 4> head_source{}`** member on `AmsSystemInfo` in the same header.
+3. **Projection in `parse_units_array`** (`helixscreen/src/printer/ams_backend_ace.cpp`): after `system_info_.units` is populated, walk each unit's slots; for each slot where `mapped_tool >= 0 && mapped_tool < 4`, project into `system_info_.head_source[mapped_tool]` (set `unit`, `slot`, `brand`, `type`, `color` from the slot fields). Multi-unit only — single-unit and offline paths leave `head_source[]` default-constructed (the SP3 panels are behind `is_multi_unit()` guards).
+
+THEN Task 4 (sensor parse) becomes a small additive change that reads `ace.sensors[h]` at top-level and assigns to `head_source[h].sensor`, exactly as the plan body describes.
+
+### Task 5 amendment: `swap_in_progress` source
+
+The plan's `classify_loadout_row(hs, swap_in_progress)` parameter has no obvious source. `AmsSystemInfo` does NOT have a `swap_in_progress: bool`. It has `action: AmsAction` (enum; verify exact value names at Task 5 implementation time — likely `IDLE`, `CHANGING`, etc., in `ams_types.h`). Derive the predicate at the classifier call site:
+```cpp
+const bool swap_in_progress = (system_info_.action == AmsAction::CHANGING);
+```
+Or add a helper getter `bool AmsSystemInfo::is_changing() const` for readability.
+
+### Task 7 amendment: backend member name
+
+Plan body says `moonraker_->gcode_script(...)`. The `AmsBackendAce` constructor is `AmsBackendAce(MoonrakerAPI* api, MoonrakerClient* client)`. The member is `client_`, not `moonraker_`. Search-replace at Task 7 implementation time.
+
+### Task 10 amendment: slot-tap handler location
+
+Plan body says "Replace SP2's neutered slot-tap handler with `request_slot_action`." SP2's neutering lives on `change_tool(int tool_number)` at `src/printer/ams_backend_ace.cpp:386-395` — but that takes a tool number, not `(unit, slot)`. The actual LVGL slot tile tap handler (the user-touch entry point) lives in an unaudited UI file. Locate it before authoring Task 10's wire-in. Grep candidates: `src/ui/ams_multi_unit*.cpp`, `src/printer/ui_ams*.cpp`.
+
+---
+
 ## Correction (2026-05-30, post Task 3)
 
 The original brainstorm proposed inlining `sensor` on each `head_source[i]` entry. Task 3 live-deploy verification revealed `BunnyAce.get_status` (`ace.py:~3000`) deliberately excludes the SP1 builder's `head_source` list shape from the keys it copies onto the wire — only `units[]`, `active_unit`, etc. get copied; the legacy `self._head_source` dict (a different shape that `poller.py` cache depends on) stays canonical at `status["head_source"]`. The builder's enriched `head_source` is computed and discarded.
