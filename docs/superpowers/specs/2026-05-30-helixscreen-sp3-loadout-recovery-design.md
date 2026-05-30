@@ -40,35 +40,27 @@ Out:
 - No automatic recovery. Recovery requires an explicit user tap — the panel surfaces and proposes, the human commits.
 - No SP4 install/uninstall scaffolding.
 
-## SP1 contract extension: `head_source[i].sensor`
+## SP1 contract extension: top-level `sensors` array
 
-The SP1 builder in `multiace/klipper/extras/ace_status.py` emits one entry per head in `head_source` (length 4). Each loaded head is `{head, unit, slot, brand, type, color}`; each unloaded head is `{head, unit: null, slot: null}` (see `_build_head_source_out`).
+> **Correction (2026-05-30):** The original brainstorm proposed inlining `sensor` on each `head_source[i]` entry. Plan-time investigation revealed `BunnyAce.get_status` deliberately excludes the SP1 builder's `head_source` list shape from the keys it copies onto the wire (so the legacy `self._head_source` dict that `poller.py` cache et al depend on stays canonical). The SP1 builder's `head_source` list shape NEVER reaches HelixScreen today. Embedding `sensor` on it would have been invisible. Fix: put the new field at top-level instead.
 
-SP3 adds an additive field:
+The `ace` Klipper status object gains a new top-level field:
 
 ```jsonc
 {
-  "head": 1,
-  "unit": 1,
-  "slot": 2,
-  "brand": "eSUN",
-  "type": "PETG",
-  "color": [31, 119, 180],
-  "sensor": true            // NEW: live filament-at-gate reading for head 1
+  // existing SP1 fields unchanged: model, firmware, type_name, units[],
+  // active_unit, current_tool, current_slot, total_slots, ...
+  "sensors": [true, false, false, true]    // NEW: per-head filament-at-gate, length 4
 }
 ```
 
-`sensor` is also present on the null-source entries:
+`sensors[h]` is the live `filament_motion_sensor e<h>_filament.get_status(0)["filament_detected"]` reading for head `h`, normalized to strict `bool` (False when sensor missing or lookup raises).
 
-```jsonc
-{"head": 3, "unit": null, "slot": null, "sensor": false}
-```
+The HelixScreen ACE backend reads `head_source[h].unit/slot` from `units[i].slots[j].mapped_tool` (already proven by SP2) AND `sensors[h]` independently, then combines them in C++ inside `classify_loadout_row` and `request_slot_action`. No JSON denormalization needed — matches the web console's existing model where `state.head_source[h]` and `state.sensors[h]` are independent dicts.
 
-Source of truth: the same dict the web console state model already keeps in `multiace_web/src/multiace_web/state.py` as `sensors: dict[int, bool]`, populated from `multiace_state.log` "sensors" events. SP1's `ace_status.py` builder runs inside Klipper and reads directly from the live `BunnyAce` instance — confirm the attribute name (likely `_sensors_per_head`) at plan time and add a small accessor if needed; do not synthesize from `head_source` alone.
+Source of truth: `BunnyAce.get_status` builds the dict via `printer.lookup_object('filament_motion_sensor e%d_filament' % h)` — same lookup the audit-log path at `ace.py:~2894` already uses. Strict bool semantics differ from the audit path (which keeps `None` for missing); SP3 needs strict bool for type safety on the C++ side.
 
-Why: the Loadout Check and Recovery panels need to distinguish "head H is mapped to unit U slot S **and** filament is actually at the gate" from "head H is mapped but the gate sensor is empty." Without this field the screen has to extrapolate from `head_source[h] != null`, which falsely confirms an unloaded head.
-
-This is purely additive — SP2's backend ignores unknown fields per its own contract, so the SP2-stable case keeps working until SP3 ships.
+This is purely additive — SP2's backend ignores unknown top-level keys per its own contract, so the SP2-stable case keeps working until SP3 ships. Tests in `multiace/tests/test_ace_status.py` cover the four contract corners (provided/omitted/partial/minimal-frame).
 
 ## Smart-swap state machine (C++)
 

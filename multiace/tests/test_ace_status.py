@@ -47,8 +47,8 @@ def test_head_source_out_emits_four_heads_with_nulls():
     out = ace_status._build_head_source_out(_head_source_fixture())
     assert len(out) == 4
     assert out[0] == {"head": 0, "unit": 0, "slot": 0, "brand": "Polymaker",
-                      "type": "PLA", "color": [12, 160, 44], "sensor": False}
-    assert out[2] == {"head": 2, "unit": None, "slot": None, "sensor": False}
+                      "type": "PLA", "color": [12, 160, 44]}
+    assert out[2] == {"head": 2, "unit": None, "slot": None}
 
 
 def test_build_slot_full_frame():
@@ -211,20 +211,21 @@ def test_build_slot_invalid_rfid_is_dropped():
     assert slot["color"] == [1, 2, 3]
 
 
-def test_head_source_out_includes_sensor_when_provided():
-    out = ace_status._build_head_source_out(
-        _head_source_fixture(), sensors_per_head={0: True, 1: False, 2: False, 3: False})
-    assert out[0]["sensor"] is True
-    assert out[1]["sensor"] is False
-    assert out[2] == {"head": 2, "unit": None, "slot": None, "sensor": False}
+def test_sensors_out_emits_list_of_four_bools_when_provided():
+    out = ace_status._build_sensors_out({0: True, 1: False, 2: True, 3: False})
+    assert out == [True, False, True, False]
 
 
-def test_head_source_out_defaults_sensor_false_when_omitted():
-    out = ace_status._build_head_source_out(_head_source_fixture())
-    assert all(entry["sensor"] is False for entry in out)
+def test_sensors_out_defaults_false_for_missing_heads():
+    out = ace_status._build_sensors_out(None)
+    assert out == [False, False, False, False]
+    out = ace_status._build_sensors_out({})
+    assert out == [False, False, False, False]
+    out = ace_status._build_sensors_out({0: True})
+    assert out == [True, False, False, False]
 
 
-def test_build_status_passes_sensors_through_to_head_source():
+def test_build_status_exposes_top_level_sensors_array():
     now = 100.0
     last_status = {0: {"recv_ts": now, "result": {"slots": [], "temp": 21}}}
     head_source = {0: {"ace_index": 0, "slot": 0, "brand": "x", "type": "PLA", "color": [1, 2, 3]}}
@@ -233,5 +234,13 @@ def test_build_status_passes_sensors_through_to_head_source():
         devices=["/dev/x"], active_index=0, head_source=head_source,
         last_status=last_status, now=now, firmware_version="0.81b",
         sensors_per_head=sensors)
-    assert out["head_source"][0]["sensor"] is True
-    assert out["head_source"][1]["sensor"] is False
+    assert out["sensors"] == [True, False, False, False]
+    # head_source entries do NOT carry sensor field — that lives at top-level
+    assert "sensor" not in out["head_source"][0]
+
+
+def test_minimal_frame_includes_empty_sensors_array():
+    out = ace_status.build_multiace_status(
+        devices=[], active_index=-1, head_source={}, last_status={}, now=0.0,
+        firmware_version="0.81b")
+    assert out["sensors"] == [False, False, False, False]

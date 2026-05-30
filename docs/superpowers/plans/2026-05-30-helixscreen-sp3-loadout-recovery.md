@@ -12,6 +12,21 @@
 
 ---
 
+## Correction (2026-05-30, post Task 3)
+
+The original brainstorm proposed inlining `sensor` on each `head_source[i]` entry. Task 3 live-deploy verification revealed `BunnyAce.get_status` (`ace.py:~3000`) deliberately excludes the SP1 builder's `head_source` list shape from the keys it copies onto the wire — only `units[]`, `active_unit`, etc. get copied; the legacy `self._head_source` dict (a different shape that `poller.py` cache depends on) stays canonical at `status["head_source"]`. The builder's enriched `head_source` is computed and discarded.
+
+**Corrected contract:** the new field lives at top-level on the `ace` status object as `sensors: list[bool]` (length 4), NOT inlined on `head_source[i]`. The C++ side's `head_source[h].sensor` struct field stays the same — only the JSON parse target moves from `data["head_source"][h]["sensor"]` to `data["sensors"][h]`.
+
+**Shipped in tasks 1+2+ contract-fix commit** with corrected `ace_status._build_sensors_out` helper, `'sensors'` in the `get_status` copy-out tuple, and tests asserting on `out["sensors"]`. Spec doc updated to match.
+
+This affects only **Task 4** below (parse target) — Tasks 5-11 reference `hs.sensor` on the C++ side, which is unchanged. The plan body retains its original task text below; treat Task 4 Step 5 as the only modified instruction:
+
+> Replace: `hs.sensor = entry.value("sensor", false);` inside the head_source parse loop
+> With: read `data.value("sensors", nlohmann::json::array())` ONCE before the head_source loop, then assign `hs.sensor = sensors_arr.is_array() && h < sensors_arr.size() ? sensors_arr[h].get<bool>() : false;` per head — or equivalently a small helper. The struct field name stays `bool sensor`.
+
+---
+
 ## File Structure
 
 ### Firmware (Python, `multiace/`)

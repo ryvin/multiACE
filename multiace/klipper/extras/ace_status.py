@@ -43,10 +43,8 @@ def _build_mapped_tool_index(head_source):
     return rev
 
 
-def _build_head_source_out(head_source, sensors_per_head=None):
-    """Emit exactly four head entries; empty heads carry unit/slot = None.
-    Every entry carries `sensor: bool` (SP3) — defaults False when not provided."""
-    sensors = sensors_per_head or {}
+def _build_head_source_out(head_source):
+    """Emit exactly four head entries; empty heads carry unit/slot = None."""
     out = []
     for head in range(DEFAULT_HEAD_COUNT):
         source = head_source.get(head) if head_source else None
@@ -59,11 +57,19 @@ def _build_head_source_out(head_source, sensors_per_head=None):
                     entry[key] = source[key]
             if "color" in source:
                 entry["color"] = _coerce_color(source.get("color"))
+            out.append(entry)
         else:
-            entry = {"head": head, "unit": None, "slot": None}
-        entry["sensor"] = bool(sensors.get(head, False))
-        out.append(entry)
+            out.append({"head": head, "unit": None, "slot": None})
     return out
+
+
+def _build_sensors_out(sensors_per_head):
+    """SP3: emit list-of-4 bools for per-head filament-at-gate sensor truth.
+    Lives at top-level on the ace status object — head_source[] is intentionally
+    NOT exposed on the wire (ace.py:get_status excludes it to preserve the
+    legacy self._head_source dict shape that poller.py et al depend on)."""
+    sensors = sensors_per_head or {}
+    return [bool(sensors.get(h, False)) for h in range(DEFAULT_HEAD_COUNT)]
 
 
 def _build_slot(slot_index, global_index, slot_frame, mapped_tool):
@@ -171,6 +177,7 @@ def _minimal_frame(firmware_version, status="error"):
         "model": "ACE Pro", "firmware": firmware_version, "type_name": "multiACE",
         "device_count": 0, "active_unit": -1, "current_tool": -1, "current_slot": -1,
         "total_slots": 0, "head_source": [], "units": [], "slots": [],
+        "sensors": [False] * DEFAULT_HEAD_COUNT,
         "humidity": 0.0, "status": status,
     }
 
@@ -220,8 +227,9 @@ def build_multiace_status(devices, active_index, head_source, last_status, now,
             "device_count": device_count, "active_unit": active_unit,
             "current_tool": current_tool, "current_slot": current_slot,
             "total_slots": running_global,
-            "head_source": _build_head_source_out(head_source, sensors_per_head),
+            "head_source": _build_head_source_out(head_source),
             "units": units, "slots": flat_slots,
+            "sensors": _build_sensors_out(sensors_per_head),
             # legacy top-level aggregate; per-unit humidity lives in units[n]["environment"]
             "humidity": 0.0, "status": top_status,
         }

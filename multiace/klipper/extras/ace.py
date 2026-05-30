@@ -2996,8 +2996,10 @@ class BunnyAce:
             # device_count/head_source/slots/humidity from the builder are
             # intentionally NOT copied: the legacy dict above already has
             # single-ACE-semantics versions that consumers depend on. SP2
-            # readers use units[n] for per-ACE data.
-            for key in ('model', 'firmware', 'type_name', 'units',
+            # readers use units[n] for per-ACE data. SP3 adds 'sensors'
+            # (list[4] bool) at top-level so HelixScreen can read per-head
+            # filament-at-gate truth without reshaping the legacy head_source.
+            for key in ('model', 'firmware', 'type_name', 'units', 'sensors',
                         'active_unit', 'current_tool', 'current_slot', 'total_slots'):
                 status[key] = multi.get(key)
         except Exception:
