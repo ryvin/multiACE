@@ -11,6 +11,7 @@ import serial
 from serial import SerialException
 
 from .ace_protocol_v1 import AceProtocolV1
+from .ace_keepalive import attempt_keepalive
 from .ace_status import build_multiace_status
 
 MULTIACE_VERSION = "0.81b"
@@ -1025,30 +1026,32 @@ class BunnyAce:
         for ~5s (issue #70); the active ACE's _periodic_heartbeat_event
         already covers itself, so we only need to ping the rest.
 
-        Drains the input buffer so the kernel-side queue doesn't fill.
-        Responses are discarded — for a true two-way per-ACE I/O lane see
-        the full decay71 port in #74 (this is the minimal version)."""
+        On write/read failure the helper reopens the by-path device,
+        because pyserial's `is_open` keeps returning True after the kernel
+        re-enumerates the ACE — left unhandled, the loop would keep
+        writing to a dead fd (errno 5 EIO) every tick. See ace_keepalive
+        for the per-handle logic; task #88 (extends #70) for the bug
+        history."""
         active = self._active_device_index
         for idx, ser in list(self._serials.items()):
             if idx == active:
                 continue
-            if ser is None or not ser.is_open:
-                continue
-            try:
-                ser.write(self._keepalive_frame)
-                # Drain whatever the ACE sent back (typically ~100 bytes of
-                # JSON response). Without this the kernel buffer fills in
-                # ~30s and writes start failing.
-                in_waiting = ser.in_waiting
-                if in_waiting:
-                    ser.read(in_waiting)
-            except Exception as e:
-                self._usb_log.warning(
-                    'KEEPALIVE idx=%d failed: %s — marking disconnected',
-                    idx, e)
-                self._connected_per_ace[idx] = False
-                # Don't pop from _serials yet; let the next switch attempt
-                # detect the closed state and slow-path-reopen.
+            path = (self._ace_devices[idx]
+                    if 0 <= idx < len(self._ace_devices) else None)
+            new_ser, connected = attempt_keepalive(
+                idx=idx, ser=ser, path=path, baud=self.baud,
+                frame=self._keepalive_frame, usb_log=self._usb_log)
+            self._connected_per_ace[idx] = connected
+            if new_ser is None:
+                # Terminal — drop the cache slot so the next switch
+                # attempt slow-path-reopens through the normal connect
+                # flow, and the next keepalive tick simply skips this idx.
+                self._serials.pop(idx, None)
+            elif new_ser is not ser:
+                # Fresh fd — swap into cache and refresh protocol state
+                # (no per-ACE protocol counters cross re-enumeration).
+                self._serials[idx] = new_ser
+                self._protocols[idx] = AceProtocolV1()
         return eventtime + 1.0
 
     def _calc_crc(self, buffer):
