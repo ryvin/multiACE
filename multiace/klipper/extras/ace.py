@@ -2970,6 +2970,18 @@ class BunnyAce:
         # SP1: add the multi-unit HelixScreen contract WITHOUT touching the
         # legacy keys above. Guarded so the additions can never break the
         # legacy object that existing consumers depend on. SP2 reads units[].
+        sensors_per_head = {}
+        for h in range(4):
+            sensor = self.printer.lookup_object(
+                'filament_motion_sensor e%d_filament' % h, None)
+            if sensor is None:
+                sensors_per_head[h] = False
+            else:
+                try:
+                    sensors_per_head[h] = bool(
+                        sensor.get_status(0).get('filament_detected', False))
+                except Exception:
+                    sensors_per_head[h] = False
         try:
             now = self.reactor.monotonic() if eventtime is None else eventtime
             multi = build_multiace_status(
@@ -2979,6 +2991,7 @@ class BunnyAce:
                 last_status=self._last_status,
                 now=now,
                 firmware_version=MULTIACE_VERSION,
+                sensors_per_head=sensors_per_head,
             )
             # device_count/head_source/slots/humidity from the builder are
             # intentionally NOT copied: the legacy dict above already has
