@@ -142,7 +142,14 @@ class BunnyAce:
         self._last_status = {}  # ace_index -> {"result": frame, "recv_ts": float}; snapshot-on-active (non-active ACEs go stale until next active — intentional per SP1 spec; freshness gap deferred to SP3)
 
         self._head_source = {0: None, 1: None, 2: None, 3: None}
-        
+
+        # Heads whose stock `filament_entangle_detect` has been disabled for
+        # the current print because their source ACE is not the start-ACE
+        # (no feed_assist on non-start ACE → wheel won't rotate → false
+        # tangle every ~9mm of pull-through extrusion). Populated by
+        # _on_print_start, cleared by _on_print_end.
+        self._entangle_skipped_heads = set()
+
         self._swap_in_progress = False
         self._auto_feed_enabled = False
         self._hotplug_gone = {}
@@ -538,6 +545,15 @@ class BunnyAce:
         self._fa_context = 'print'
         logging.info('[multiACE] Print started — auto-feed enabled (fa_context=print)')
 
+        # Suppress stock filament_entangle_detect on heads sourced from
+        # non-start ACEs. Per start-ACE pinning (only the active ACE gets
+        # feed_assist during a print), other ACEs' wheels won't rotate
+        # during pull-through extrusion, so the stock detector watching
+        # those wheels false-positives ~every 9mm. The start-ACE head
+        # keeps its detector active — wheel will rotate, real tangles
+        # still caught.
+        self._apply_entangle_skip_for_print()
+
         if self.print_mode == 'passive':
             try:
                 extruder = self.toolhead.get_extruder()
@@ -587,6 +603,7 @@ class BunnyAce:
         # by fa_print_disable.
         self._fa_context = 'idle'
         logging.info('[multiACE] Print ended — auto-feed disabled (fa_context=idle)')
+
         if self.print_mode == 'passive' and self._feed_assist_index != -1:
             try:
                 self._disable_feed_assist()
@@ -595,6 +612,59 @@ class BunnyAce:
                 })
             except Exception as e:
                 logging.info('[multiACE] passive print-end feed_assist disable failed: %s' % e)
+
+        # Re-enable stock entangle detection on any heads we suppressed
+        # at print start.
+        self._release_entangle_skip_after_print()
+
+    def _apply_entangle_skip_for_print(self):
+        # Single-ACE mode: every head sources from the only ACE, so the
+        # active ACE always feeds whatever is extruding — skip not needed.
+        if self._ace_mode != 'multi':
+            return
+        start_ace = self._active_device_index
+        for head in range(4):
+            source = self._head_source.get(head)
+            if source is None:
+                continue
+            src_ace = source.get('ace_index')
+            if src_ace is None or src_ace == start_ace:
+                continue
+            detector = self.printer.lookup_object(
+                'filament_entangle_detect e%d_filament' % head, None)
+            if detector is None:
+                continue
+            try:
+                detector.skip_entangle_check(True)
+            except Exception as e:
+                logging.info('[multiACE] entangle skip enable failed head=%d: %s' % (head, e))
+                continue
+            self._entangle_skipped_heads.add(head)
+            self._audit_state('ENTANGLE_SKIP_ENABLED', {
+                'head': head,
+                'src_ace': src_ace,
+                'start_ace': start_ace,
+                'reason': 'non_start_ace_source',
+            })
+
+    def _release_entangle_skip_after_print(self):
+        if not self._entangle_skipped_heads:
+            return
+        for head in sorted(self._entangle_skipped_heads):
+            detector = self.printer.lookup_object(
+                'filament_entangle_detect e%d_filament' % head, None)
+            if detector is None:
+                continue
+            try:
+                detector.skip_entangle_check(False)
+            except Exception as e:
+                logging.info('[multiACE] entangle skip disable failed head=%d: %s' % (head, e))
+                continue
+            self._audit_state('ENTANGLE_SKIP_DISABLED', {
+                'head': head,
+                'reason': 'print_ended',
+            })
+        self._entangle_skipped_heads.clear()
 
     def _color_message(self, msg):
         try:
