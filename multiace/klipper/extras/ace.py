@@ -11,6 +11,7 @@ import serial
 from serial import SerialException
 
 from .ace_protocol_v1 import AceProtocolV1
+from .ace_keepalive import attempt_keepalive
 from .ace_status import build_multiace_status
 
 MULTIACE_VERSION = "0.81b"
@@ -141,7 +142,14 @@ class BunnyAce:
         self._last_status = {}  # ace_index -> {"result": frame, "recv_ts": float}; snapshot-on-active (non-active ACEs go stale until next active — intentional per SP1 spec; freshness gap deferred to SP3)
 
         self._head_source = {0: None, 1: None, 2: None, 3: None}
-        
+
+        # Heads whose stock `filament_entangle_detect` has been disabled for
+        # the current print because their source ACE is not the start-ACE
+        # (no feed_assist on non-start ACE → wheel won't rotate → false
+        # tangle every ~9mm of pull-through extrusion). Populated by
+        # _on_print_start, cleared by _on_print_end.
+        self._entangle_skipped_heads = set()
+
         self._swap_in_progress = False
         self._auto_feed_enabled = False
         self._hotplug_gone = {}
@@ -537,6 +545,15 @@ class BunnyAce:
         self._fa_context = 'print'
         logging.info('[multiACE] Print started — auto-feed enabled (fa_context=print)')
 
+        # Suppress stock filament_entangle_detect on heads sourced from
+        # non-start ACEs. Per start-ACE pinning (only the active ACE gets
+        # feed_assist during a print), other ACEs' wheels won't rotate
+        # during pull-through extrusion, so the stock detector watching
+        # those wheels false-positives ~every 9mm. The start-ACE head
+        # keeps its detector active — wheel will rotate, real tangles
+        # still caught.
+        self._apply_entangle_skip_for_print()
+
         if self.print_mode == 'passive':
             try:
                 extruder = self.toolhead.get_extruder()
@@ -586,6 +603,7 @@ class BunnyAce:
         # by fa_print_disable.
         self._fa_context = 'idle'
         logging.info('[multiACE] Print ended — auto-feed disabled (fa_context=idle)')
+
         if self.print_mode == 'passive' and self._feed_assist_index != -1:
             try:
                 self._disable_feed_assist()
@@ -594,6 +612,59 @@ class BunnyAce:
                 })
             except Exception as e:
                 logging.info('[multiACE] passive print-end feed_assist disable failed: %s' % e)
+
+        # Re-enable stock entangle detection on any heads we suppressed
+        # at print start.
+        self._release_entangle_skip_after_print()
+
+    def _apply_entangle_skip_for_print(self):
+        # Single-ACE mode: every head sources from the only ACE, so the
+        # active ACE always feeds whatever is extruding — skip not needed.
+        if self._ace_mode != 'multi':
+            return
+        start_ace = self._active_device_index
+        for head in range(4):
+            source = self._head_source.get(head)
+            if source is None:
+                continue
+            src_ace = source.get('ace_index')
+            if src_ace is None or src_ace == start_ace:
+                continue
+            detector = self.printer.lookup_object(
+                'filament_entangle_detect e%d_filament' % head, None)
+            if detector is None:
+                continue
+            try:
+                detector.skip_entangle_check(True)
+            except Exception as e:
+                logging.info('[multiACE] entangle skip enable failed head=%d: %s' % (head, e))
+                continue
+            self._entangle_skipped_heads.add(head)
+            self._audit_state('ENTANGLE_SKIP_ENABLED', {
+                'head': head,
+                'src_ace': src_ace,
+                'start_ace': start_ace,
+                'reason': 'non_start_ace_source',
+            })
+
+    def _release_entangle_skip_after_print(self):
+        if not self._entangle_skipped_heads:
+            return
+        for head in sorted(self._entangle_skipped_heads):
+            detector = self.printer.lookup_object(
+                'filament_entangle_detect e%d_filament' % head, None)
+            if detector is None:
+                continue
+            try:
+                detector.skip_entangle_check(False)
+            except Exception as e:
+                logging.info('[multiACE] entangle skip disable failed head=%d: %s' % (head, e))
+                continue
+            self._audit_state('ENTANGLE_SKIP_DISABLED', {
+                'head': head,
+                'reason': 'print_ended',
+            })
+        self._entangle_skipped_heads.clear()
 
     def _color_message(self, msg):
         try:
@@ -1025,30 +1096,32 @@ class BunnyAce:
         for ~5s (issue #70); the active ACE's _periodic_heartbeat_event
         already covers itself, so we only need to ping the rest.
 
-        Drains the input buffer so the kernel-side queue doesn't fill.
-        Responses are discarded — for a true two-way per-ACE I/O lane see
-        the full decay71 port in #74 (this is the minimal version)."""
+        On write/read failure the helper reopens the by-path device,
+        because pyserial's `is_open` keeps returning True after the kernel
+        re-enumerates the ACE — left unhandled, the loop would keep
+        writing to a dead fd (errno 5 EIO) every tick. See ace_keepalive
+        for the per-handle logic; task #88 (extends #70) for the bug
+        history."""
         active = self._active_device_index
         for idx, ser in list(self._serials.items()):
             if idx == active:
                 continue
-            if ser is None or not ser.is_open:
-                continue
-            try:
-                ser.write(self._keepalive_frame)
-                # Drain whatever the ACE sent back (typically ~100 bytes of
-                # JSON response). Without this the kernel buffer fills in
-                # ~30s and writes start failing.
-                in_waiting = ser.in_waiting
-                if in_waiting:
-                    ser.read(in_waiting)
-            except Exception as e:
-                self._usb_log.warning(
-                    'KEEPALIVE idx=%d failed: %s — marking disconnected',
-                    idx, e)
-                self._connected_per_ace[idx] = False
-                # Don't pop from _serials yet; let the next switch attempt
-                # detect the closed state and slow-path-reopen.
+            path = (self._ace_devices[idx]
+                    if 0 <= idx < len(self._ace_devices) else None)
+            new_ser, connected = attempt_keepalive(
+                idx=idx, ser=ser, path=path, baud=self.baud,
+                frame=self._keepalive_frame, usb_log=self._usb_log)
+            self._connected_per_ace[idx] = connected
+            if new_ser is None:
+                # Terminal — drop the cache slot so the next switch
+                # attempt slow-path-reopens through the normal connect
+                # flow, and the next keepalive tick simply skips this idx.
+                self._serials.pop(idx, None)
+            elif new_ser is not ser:
+                # Fresh fd — swap into cache and refresh protocol state
+                # (no per-ACE protocol counters cross re-enumeration).
+                self._serials[idx] = new_ser
+                self._protocols[idx] = AceProtocolV1()
         return eventtime + 1.0
 
     def _calc_crc(self, buffer):
@@ -2967,6 +3040,18 @@ class BunnyAce:
         # SP1: add the multi-unit HelixScreen contract WITHOUT touching the
         # legacy keys above. Guarded so the additions can never break the
         # legacy object that existing consumers depend on. SP2 reads units[].
+        sensors_per_head = {}
+        for h in range(4):
+            sensor = self.printer.lookup_object(
+                'filament_motion_sensor e%d_filament' % h, None)
+            if sensor is None:
+                sensors_per_head[h] = False
+            else:
+                try:
+                    sensors_per_head[h] = bool(
+                        sensor.get_status(0).get('filament_detected', False))
+                except Exception:
+                    sensors_per_head[h] = False
         try:
             now = self.reactor.monotonic() if eventtime is None else eventtime
             multi = build_multiace_status(
@@ -2976,12 +3061,15 @@ class BunnyAce:
                 last_status=self._last_status,
                 now=now,
                 firmware_version=MULTIACE_VERSION,
+                sensors_per_head=sensors_per_head,
             )
             # device_count/head_source/slots/humidity from the builder are
             # intentionally NOT copied: the legacy dict above already has
             # single-ACE-semantics versions that consumers depend on. SP2
-            # readers use units[n] for per-ACE data.
-            for key in ('model', 'firmware', 'type_name', 'units',
+            # readers use units[n] for per-ACE data. SP3 adds 'sensors'
+            # (list[4] bool) at top-level so HelixScreen can read per-head
+            # filament-at-gate truth without reshaping the legacy head_source.
+            for key in ('model', 'firmware', 'type_name', 'units', 'sensors',
                         'active_unit', 'current_tool', 'current_slot', 'total_slots'):
                 status[key] = multi.get(key)
         except Exception:
