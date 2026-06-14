@@ -259,10 +259,13 @@ class BunnyAce:
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.printer.register_event_handler('klippy:disconnect', self._handle_disconnect)
         
-        self.printer.register_event_handler('print_stats:start_printing', self._on_print_start)
-        self.printer.register_event_handler('print_stats:complete', self._on_print_end)
-        self.printer.register_event_handler('print_stats:cancelled', self._on_print_end)
-        self.printer.register_event_handler('print_stats:error', self._on_print_end)
+        # Snapmaker's print_stats.py fork emits only `print_stats:start` and
+        # `print_stats:stop` (the latter covers complete + cancelled + error).
+        # Upstream Klipper's `:start_printing`, `:complete`, `:cancelled`,
+        # `:error` are NEVER emitted on this fork, so registering for them
+        # left _on_print_start / _on_print_end as dead code on Snapmaker U1.
+        self.printer.register_event_handler('print_stats:start', self._on_print_start)
+        self.printer.register_event_handler('print_stats:stop', self._on_print_end)
 
         self.gcode.register_command(
             'ACE_START_DRYING', self.cmd_ACE_START_DRYING,
