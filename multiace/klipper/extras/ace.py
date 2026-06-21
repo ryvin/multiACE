@@ -13,6 +13,10 @@ from serial import SerialException
 from .ace_protocol_v1 import AceProtocolV1
 from .ace_keepalive import attempt_keepalive
 from .ace_status import build_multiace_status
+from .manual_heads import (
+    parse_manual_heads, head_manual_bypasses,
+    serialize_manual_heads, deserialize_manual_heads,
+)
 
 MULTIACE_VERSION = "0.81b"
 
@@ -40,7 +44,8 @@ GATE_AVAILABLE = 1
 class BunnyAce:
     VARS_ACE_REVISION = 'ace__revision'
     VARS_ACE_ACTIVE_DEVICE = 'ace__active_device'  
-    VARS_ACE_HEAD_SOURCE = 'ace__head_source'      
+    VARS_ACE_HEAD_SOURCE = 'ace__head_source'
+    VARS_ACE_MANUAL_HEADS = 'ace__manual_heads'
 
     def __init__(self, config):
         self._connected = False
@@ -178,6 +183,10 @@ class BunnyAce:
         self._fa_print_disable = _parse_idx_list('fa_print_disable')
         self._fa_load_disable = _parse_idx_list('fa_load_disable')
         self.fa_debug = config.getboolean('fa_debug', False)
+        # Manual Heads / TPU: heads hand-fed with flexible filament. Refuses ACE
+        # load/unload so the operator hand-feeds them; persists across restarts.
+        # (mid-print FA/retract bypass is tracked separately — see README.)
+        self._manual_heads = set(parse_manual_heads(config.get('manual_heads', '')))
         
         self._serial_failed = False
         self._serial_failed_at = 0.0
@@ -285,7 +294,10 @@ class BunnyAce:
         self.gcode.register_command(
             'ACE_RETRACT', self.cmd_ACE_RETRACT,
             desc=self.cmd_ACE_RETRACT_help)
-        
+        self.gcode.register_command(
+            'ACE_SET_HEAD_MANUAL', self.cmd_ACE_SET_HEAD_MANUAL,
+            desc=self.cmd_ACE_SET_HEAD_MANUAL_help)
+
         self.gcode.register_command(
             'ACE_SWITCH', self.cmd_ACE_SWITCH,
             desc=self.cmd_ACE_SWITCH_help)
@@ -405,6 +417,7 @@ class BunnyAce:
 
         if self._ace_mode == 'multi':
             self._restore_head_source()
+            self._restore_manual_heads()
             self.printer.register_event_handler(
                 'extruder:activate_extruder', self._on_extruder_change)
         else:
@@ -1910,6 +1923,64 @@ class BunnyAce:
             "SAVE_VARIABLE VARIABLE=%s VALUE='%s'"
             % (self.VARS_ACE_HEAD_SOURCE, value_str))
 
+    # --- Manual Heads / TPU --------------------------------------------------
+
+    def head_is_manual(self, head):
+        """True if `head` is marked manual (hand-fed flexible filament). Thin
+        wrapper over the Klipper-free predicate in manual_heads.py."""
+        return head_manual_bypasses(head, self._manual_heads)
+
+    def _head_is_loaded(self, head):
+        """True if the head has filament — an ACE source (head_source set) or
+        filament physically at the toolhead motion sensor (covers a hand-loaded
+        manual head, which has no head_source)."""
+        if self._head_source.get(head) is not None:
+            return True
+        sensor = self.printer.lookup_object(
+            'filament_motion_sensor e%d_filament' % head, None)
+        try:
+            return bool(sensor and sensor.get_status(0).get('filament_detected'))
+        except Exception:
+            return False
+
+    def _restore_manual_heads(self):
+        saved = self.save_variables.allVariables.get(
+            self.VARS_ACE_MANUAL_HEADS, None)
+        restored = deserialize_manual_heads(saved)
+        if restored:
+            self._manual_heads = restored
+            logging.info('[multiACE] Restored manual heads: %s'
+                         % sorted(self._manual_heads))
+
+    def _save_manual_heads(self):
+        # serialize_manual_heads yields a JSON list (e.g. "[0, 3]"), which is
+        # also a valid Python literal — Klipper's SAVE_VARIABLE parses VALUE via
+        # ast.literal_eval, so no JSON->literal token fixup is needed here.
+        value_str = serialize_manual_heads(self._manual_heads)
+        self.gcode.run_script_from_command(
+            "SAVE_VARIABLE VARIABLE=%s VALUE='%s'"
+            % (self.VARS_ACE_MANUAL_HEADS, value_str))
+
+    cmd_ACE_SET_HEAD_MANUAL_help = (
+        '[multiACE] Mark a head manual (hand-fed TPU). '
+        'HEAD=0-3 ENABLE=0|1')
+
+    def cmd_ACE_SET_HEAD_MANUAL(self, gcmd):
+        head = gcmd.get_int('HEAD', minval=0, maxval=3)
+        enable = gcmd.get_int('ENABLE', minval=0, maxval=1)
+        was_manual = self.head_is_manual(head)
+        if bool(enable) != was_manual and self._head_is_loaded(head):
+            raise gcmd.error(
+                '[multiACE] Head %d has filament loaded — unload it before '
+                'changing manual mode.' % head)
+        if enable:
+            self._manual_heads.add(head)
+        else:
+            self._manual_heads.discard(head)
+        self._save_manual_heads()
+        self.log_always('[multiACE] Head %d manual mode %s'
+                        % (head, 'ENABLED' if enable else 'disabled'))
+
     def _ensure_ace_available(self, ace_index):
         
         for attempt in range(5):
@@ -2082,6 +2153,9 @@ class BunnyAce:
 
         if head < 0 or head > 3:
             raise gcmd.error('[multiACE] HEAD must be 0-3')
+        if self.head_is_manual(head):
+            raise gcmd.error('[multiACE] Head %d is manual (hand-fed TPU) — '
+                             'load it by hand, not via ACE_LOAD_HEAD.' % head)
         if ace_index < 0 or not self._ensure_ace_available(ace_index):
             self.log_always('[multiACE] ACE %d not available' % ace_index)
             self._audit_state('LOAD_HEAD_FAILED', {'head': head, 'ace': ace_index, 'slot': slot, 'reason': 'ace_not_available'})
@@ -2312,6 +2386,9 @@ class BunnyAce:
 
         if head < 0 or head > 3:
             raise gcmd.error('[multiACE] HEAD must be 0-3')
+        if self.head_is_manual(head):
+            raise gcmd.error('[multiACE] Head %d is manual (hand-fed TPU) — '
+                             'unload it by hand, not via ACE_UNLOAD_HEAD.' % head)
 
         park_length = gcmd.get_int('LENGTH', None)
         if park_length is not None and (park_length < 100 or park_length > 2000):
@@ -2652,6 +2729,7 @@ class BunnyAce:
             self._ace_mode = mode
             if mode == 'multi':
                 self._restore_head_source()
+                self._restore_manual_heads()
                 self.printer.register_event_handler(
                     'extruder:activate_extruder', self._on_extruder_change)
             self.log_always('[multiACE] Switched to %s mode. No reboot needed.' % mode.upper())
@@ -3038,6 +3116,7 @@ class BunnyAce:
             'active_device': self._active_device_index + 1,
             'device_count': len(self._ace_devices),
             'head_source': self._head_source,
+            'manual_heads': sorted(self._manual_heads),
             'slots': self._info.get('slots', []),
         }
         # SP1: add the multi-unit HelixScreen contract WITHOUT touching the
