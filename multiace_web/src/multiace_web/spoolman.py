@@ -56,12 +56,12 @@ class SpoolmanClient:
                 if not fh_raw:
                     continue
                 fh = json.loads(fh_raw) if isinstance(fh_raw, str) else fh_raw
-                loc = fh.get("location") or {}
-                if loc.get("printer") != self._printer_id:
+                loc = fh.get("location") if isinstance(fh, dict) else None
+                if not isinstance(loc, dict) or loc.get("printer") != self._printer_id:
                     continue
                 ace = int(loc.get("ace", 0))
                 slot = int(loc["slot"])
-            except (KeyError, ValueError, TypeError) as e:
+            except (KeyError, ValueError, TypeError, AttributeError) as e:
                 log.debug("Skipping malformed spool extra: %s", e)
                 continue
 
@@ -102,10 +102,11 @@ class SpoolmanClient:
             if fh_raw:
                 try:
                     fh = json.loads(fh_raw) if isinstance(fh_raw, str) else fh_raw
-                    loc = (fh or {}).get("location") or {}
-                    if loc.get("printer") == self._printer_id and loc.get("slot") is not None:
+                    loc = fh.get("location") if isinstance(fh, dict) else None
+                    if (isinstance(loc, dict) and loc.get("printer") == self._printer_id
+                            and loc.get("slot") is not None):
                         location = {"ace": int(loc.get("ace", 0)), "slot": int(loc["slot"])}
-                except (ValueError, TypeError, KeyError):
+                except (ValueError, TypeError, KeyError, AttributeError):
                     pass
             out.append({
                 "spool_id": int(sp["id"]),
