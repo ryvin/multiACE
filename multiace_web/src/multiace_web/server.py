@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from . import __version__
 from .auth import TokenAuth
 from .config_io import read_ace_config, write_ace_config
+from .i18n import list_languages, load_catalog, DEFAULT_LANG
 from .moonraker import MoonrakerClient, MoonrakerError
 from .poller import StatusPoller, PrintStatePoller, MultiAcePoller
 from .announcements import AnnouncementsClient
@@ -816,6 +817,23 @@ def create_app(
     @app.get("/health")
     async def health() -> dict:
         return {"ok": True}
+
+    def _i18n_dir() -> Optional[Path]:
+        return (static_dir / "i18n") if static_dir else None
+
+    @app.get("/api/i18n")
+    async def get_i18n_languages() -> dict:
+        i18n_dir = _i18n_dir()
+        langs = list_languages(i18n_dir) if i18n_dir else []
+        return {"languages": langs, "default": DEFAULT_LANG}
+
+    @app.get("/api/i18n/{lang}")
+    async def get_i18n_catalog(lang: str) -> dict:
+        i18n_dir = _i18n_dir()
+        catalog = load_catalog(i18n_dir, lang) if i18n_dir else None
+        if catalog is None:
+            raise HTTPException(404, f"no catalog for language: {lang}")
+        return catalog
 
     @app.get("/api/state")
     async def get_state(request: Request) -> dict:
