@@ -8,6 +8,7 @@ import os
 import re as _re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,6 +22,7 @@ from . import __version__
 from .auth import TokenAuth
 from .config_io import read_ace_config, write_ace_config
 from .i18n import list_languages, load_catalog, DEFAULT_LANG
+from .snapshots import SnapshotStore, capture_loadout, plan_apply
 from .moonraker import MoonrakerClient, MoonrakerError
 from .poller import StatusPoller, PrintStatePoller, MultiAcePoller
 from .announcements import AnnouncementsClient
@@ -126,6 +128,39 @@ def _serialize_spool_cache(cache: dict) -> dict:
             }
         out[str(ace)] = sub
     return out
+
+
+def build_slots_payload(state, spool_cache) -> dict:
+    """Build the /api/slots response from current state + spool_cache. Shared by
+    the /api/slots route and the snapshot capture/apply endpoints."""
+    s = state
+    device_count = int(getattr(s, "device_count", 1) or 1) if s else 1
+    if device_count < 1:
+        device_count = 1
+    active = int(getattr(s, "active_device", 0) or 0) if s else 0
+    gate_status = list(getattr(s, "gate_status", [0, 0, 0, 0]) or [0, 0, 0, 0]) if s else [0, 0, 0, 0]
+    cache = spool_cache or {}
+    aces = []
+    for ace_idx in range(device_count):
+        slots = []
+        for slot in range(4):
+            binding = (cache.get(ace_idx) or {}).get(slot)
+            slots.append({
+                "slot": slot,
+                "gate_status": gate_status[slot] if ace_idx == active and slot < len(gate_status) else None,
+                "spool": (
+                    {
+                        "spool_id": binding.spool_id,
+                        "name": binding.name,
+                        "material": binding.material,
+                        "color": binding.color,
+                        "weight_remaining_g": binding.weight_remaining_g,
+                    }
+                    if binding else None
+                ),
+            })
+        aces.append({"index": ace_idx, "is_active": ace_idx == active, "slots": slots})
+    return {"aces": aces}
 
 
 def _state_payload(app: Any) -> dict:
@@ -809,6 +844,10 @@ def create_app(
     app.state.start_background_tasks = start_background_tasks
     app.state.config_path = Path(_env("MULTIACE_CONFIG",
                                        "/home/lava/printer_data/config/extended/ace.cfg"))
+    # Loadout snapshots live on the persistent partition (overlayfs is wiped on
+    # reboot). Overridable for tests / local dev via MULTIACE_SNAPSHOTS_DIR.
+    app.state.snapshots = SnapshotStore(Path(_env(
+        "MULTIACE_SNAPSHOTS_DIR", "/userdata/multiace-web/snapshots")))
 
     token = os.environ.get("MULTIACE_TOKEN")
     app.state.token = token
@@ -834,6 +873,42 @@ def create_app(
         if catalog is None:
             raise HTTPException(404, f"no catalog for language: {lang}")
         return catalog
+
+    # --- Loadout snapshots ---------------------------------------------------
+    def _current_slots(request: Request) -> dict:
+        return build_slots_payload(
+            request.app.state.state,
+            getattr(request.app.state, "spool_cache", {}) or {})
+
+    @app.get("/api/snapshots")
+    async def list_snapshots(request: Request) -> dict:
+        return {"snapshots": request.app.state.snapshots.list()}
+
+    @app.post("/api/snapshots/{name}")
+    async def save_snapshot(request: Request, name: str) -> dict:
+        store = request.app.state.snapshots
+        head_source = getattr(request.app.state.state, "head_source", {}) or {}
+        snap = capture_loadout(head_source, _current_slots(request))
+        snap["name"] = name
+        snap["created_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            store.save(name, snap)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        return {"saved": name, "created_at": snap["created_at"], "heads": snap["heads"]}
+
+    @app.delete("/api/snapshots/{name}")
+    async def delete_snapshot(request: Request, name: str) -> dict:
+        if not request.app.state.snapshots.delete(name):
+            raise HTTPException(404, f"no snapshot: {name}")
+        return {"deleted": name}
+
+    @app.post("/api/snapshots/{name}/apply")
+    async def apply_snapshot(request: Request, name: str) -> dict:
+        snap = request.app.state.snapshots.load(name)
+        if snap is None:
+            raise HTTPException(404, f"no snapshot: {name}")
+        return plan_apply(snap, _current_slots(request))
 
     @app.get("/api/state")
     async def get_state(request: Request) -> dict:
@@ -951,34 +1026,9 @@ def create_app(
 
     @app.get("/api/slots")
     async def get_slots(request: Request) -> dict:
-        s = request.app.state.state
-        device_count = int(getattr(s, "device_count", 1) or 1) if s else 1
-        if device_count < 1:
-            device_count = 1
-        active = int(getattr(s, "active_device", 0) or 0) if s else 0
-        gate_status = list(getattr(s, "gate_status", [0, 0, 0, 0]) or [0, 0, 0, 0]) if s else [0, 0, 0, 0]
-        cache = getattr(request.app.state, "spool_cache", {}) or {}
-        aces = []
-        for ace_idx in range(device_count):
-            slots = []
-            for slot in range(4):
-                binding = (cache.get(ace_idx) or {}).get(slot)
-                slots.append({
-                    "slot": slot,
-                    "gate_status": gate_status[slot] if ace_idx == active and slot < len(gate_status) else None,
-                    "spool": (
-                        {
-                            "spool_id": binding.spool_id,
-                            "name": binding.name,
-                            "material": binding.material,
-                            "color": binding.color,
-                            "weight_remaining_g": binding.weight_remaining_g,
-                        }
-                        if binding else None
-                    ),
-                })
-            aces.append({"index": ace_idx, "is_active": ace_idx == active, "slots": slots})
-        return {"aces": aces}
+        return build_slots_payload(
+            request.app.state.state,
+            getattr(request.app.state, "spool_cache", {}) or {})
 
     @app.post("/api/dry/stop")
     async def post_dry_stop(request: Request, body: DryStopRequest) -> dict:

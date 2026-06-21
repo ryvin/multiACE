@@ -1600,6 +1600,28 @@ body.multiace-embed { background: transparent; }
   font-size: 0.7em;
   letter-spacing: 0.02em;
 }
+
+/* Loadouts (saveable snapshots) panel */
+.loadout-save { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.loadout-save input { flex: 1 1 12rem; min-width: 0; }
+.loadouts-list { display: flex; flex-direction: column; gap: 8px; }
+.loadout-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: var(--surface);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px 12px;
+}
+.loadout-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.loadout-meta strong { overflow-wrap: anywhere; }
+.loadout-actions { display: flex; gap: 6px; align-items: center; }
+.loadout-plan { grid-column: 1 / -1; }
+.loadout-warnings { margin: 4px 0; padding-left: 1.1em; color: var(--warn); font-size: 0.85em; }
+.loadout-cmds { margin: 4px 0; padding-left: 1.4em; font-size: 0.85em; }
+.loadout-cmds code { background: var(--accent-soft); padding: 0 4px; border-radius: 4px; }
 .status-chip { padding: 2px 8px; border-radius: 10px; font-size: 0.82em; font-weight: 600; }
 .chip-green { background: #d4edda; color: #155724; }
 .chip-yellow { background: #fff3cd; color: #856404; }
