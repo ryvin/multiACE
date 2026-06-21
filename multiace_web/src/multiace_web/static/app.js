@@ -32,6 +32,77 @@ const authHeader = () => (TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {});
 // proxies to 127.0.0.1:7126/api/state. When mounted at /, it just works.
 const api = (path) => new URL(path, document.baseURI).toString();
 
+// --- i18n -----------------------------------------------------------------
+// Catalogs are fetched from /api/i18n/<lang> (merged over the English
+// fallback server-side). Elements with [data-i18n="section.key"] get their
+// text swapped; missing keys keep the English markup. Choice persists in
+// localStorage. If the endpoint is unavailable the page stays English.
+let _i18nCatalog = {};
+const I18N_LANG_KEY = "multiace_lang";
+
+function t(key) {
+  let node = _i18nCatalog;
+  for (const part of String(key).split(".")) {
+    if (node && typeof node === "object" && part in node) node = node[part];
+    else return key;
+  }
+  return typeof node === "string" ? node : key;
+}
+
+function applyI18n() {
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    const v = t(el.dataset.i18n);
+    if (v && v !== el.dataset.i18n) el.textContent = v;
+  });
+}
+
+async function loadLanguage(lang) {
+  try {
+    const r = await fetch(api(`api/i18n/${encodeURIComponent(lang)}`));
+    if (!r.ok) return false;
+    _i18nCatalog = await r.json();
+    document.documentElement.setAttribute("lang", lang);
+    localStorage.setItem(I18N_LANG_KEY, lang);
+    applyI18n();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function initI18n() {
+  const sel = document.getElementById("lang-select");
+  let languages = [];
+  let def = "en";
+  try {
+    const r = await fetch(api("api/i18n"));
+    if (r.ok) {
+      const b = await r.json();
+      languages = b.languages || [];
+      def = b.default || "en";
+    }
+  } catch (e) {
+    /* offline → keep English markup */
+  }
+  if (!languages.length) {
+    if (sel) sel.hidden = true;
+    return;
+  }
+  const current = localStorage.getItem(I18N_LANG_KEY) || def;
+  if (sel) {
+    sel.innerHTML = "";
+    for (const l of languages) {
+      const opt = document.createElement("option");
+      opt.value = l.code;
+      opt.textContent = l.name || l.code;
+      if (l.code === current) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener("change", () => loadLanguage(sel.value));
+  }
+  await loadLanguage(current);
+}
+
 function setConnState(label, dotState) {
   document.getElementById("conn-label").textContent = label;
   document.getElementById("conn-dot").dataset.state = dotState;
@@ -3065,6 +3136,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (viewAll) {
     viewAll.addEventListener("click", (ev) => { ev.preventDefault(); setView("activity"); });
   }
+  initI18n();
   loadWebConfig();
   connectWS();
   startPrintPolling();

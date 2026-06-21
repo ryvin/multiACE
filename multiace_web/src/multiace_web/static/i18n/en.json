@@ -1,0 +1,25 @@
+{
+  "_meta": { "language": "en", "name": "English", "fallback": "en" },
+  "app": { "title": "multiACE" },
+  "nav": {
+    "dashboard": "Dashboard",
+    "activity": "Activity",
+    "dryer": "Dryer",
+    "config": "Config",
+    "diag": "Diag",
+    "hardware": "Hardware",
+    "printQueue": "Print queue"
+  },
+  "action": {
+    "saveRestart": "Save & Restart",
+    "reload": "Reload",
+    "refresh": "Refresh",
+    "load": "Load",
+    "unload": "Unload",
+    "pause": "Pause",
+    "resume": "Resume",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "help": "Help"
+  }
+}

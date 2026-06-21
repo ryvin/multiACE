@@ -34,17 +34,18 @@
         <span class="ghost-btn-label">Mode</span>
         <span class="ghost-btn-value">…</span>
       </button>
+      <select id="lang-select" class="ghost-btn" aria-label="Language"></select>
     </div>
   </header>
 
   <nav class="tabs" role="tablist" aria-label="Sections">
-    <button data-view="dashboard" class="tab active">Dashboard</button>
-    <button data-view="activity" class="tab">Activity</button>
-    <button data-view="dryer" class="tab">Dryer</button>
-    <button data-view="config" class="tab">Config</button>
-    <button data-view="diag" class="tab">Diag</button>
-    <button data-view="hardware" class="tab">Hardware</button>
-    <button data-view="print-queue" class="tab">Print queue</button>
+    <button data-view="dashboard" class="tab active" data-i18n="nav.dashboard">Dashboard</button>
+    <button data-view="activity" class="tab" data-i18n="nav.activity">Activity</button>
+    <button data-view="dryer" class="tab" data-i18n="nav.dryer">Dryer</button>
+    <button data-view="config" class="tab" data-i18n="nav.config">Config</button>
+    <button data-view="diag" class="tab" data-i18n="nav.diag">Diag</button>
+    <button data-view="hardware" class="tab" data-i18n="nav.hardware">Hardware</button>
+    <button data-view="print-queue" class="tab" data-i18n="nav.printQueue">Print queue</button>
     <button id="help-btn" class="tab help-btn" type="button" aria-label="Help" title="What does each control do?">?</button>
   </nav>
 

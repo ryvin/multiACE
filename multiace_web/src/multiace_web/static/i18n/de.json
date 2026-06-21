@@ -1,0 +1,25 @@
+{
+  "_meta": { "language": "de", "name": "Deutsch", "fallback": "en" },
+  "app": { "title": "multiACE" },
+  "nav": {
+    "dashboard": "Übersicht",
+    "activity": "Aktivität",
+    "dryer": "Trockner",
+    "config": "Konfiguration",
+    "diag": "Diagnose",
+    "hardware": "Hardware",
+    "printQueue": "Druckwarteschlange"
+  },
+  "action": {
+    "saveRestart": "Speichern & Neustart",
+    "reload": "Neu laden",
+    "refresh": "Aktualisieren",
+    "load": "Laden",
+    "unload": "Entladen",
+    "pause": "Pause",
+    "resume": "Fortsetzen",
+    "cancel": "Abbrechen",
+    "confirm": "Bestätigen",
+    "help": "Hilfe"
+  }
+}

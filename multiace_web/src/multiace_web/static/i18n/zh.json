@@ -1,0 +1,25 @@
+{
+  "_meta": { "language": "zh", "name": "中文", "fallback": "en" },
+  "app": { "title": "multiACE" },
+  "nav": {
+    "dashboard": "仪表板",
+    "activity": "活动",
+    "dryer": "干燥机",
+    "config": "配置",
+    "diag": "诊断",
+    "hardware": "硬件",
+    "printQueue": "打印队列"
+  },
+  "action": {
+    "saveRestart": "保存并重启",
+    "reload": "重新加载",
+    "refresh": "刷新",
+    "load": "加载",
+    "unload": "卸载",
+    "pause": "暂停",
+    "resume": "恢复",
+    "cancel": "取消",
+    "confirm": "确认",
+    "help": "帮助"
+  }
+}
