@@ -1961,13 +1961,6 @@ function renderAceBlock(ace) {
   return block;
 }
 
-function lowestFreeHead() {
-  for (let h = 0; h < 4; h++) {
-    if (!state.head_source[h] && !state.sensors[h]) return h;
-  }
-  return null;
-}
-
 /**
  * Classify a toolhead's current state relative to an optional target ACE.
  *
@@ -2399,12 +2392,22 @@ function renderSlotCard(ace, slotIdx) {
   loadBtn.classList.add("primary");
   loadBtn.disabled = (filled === false) || state.swap_in_progress;
   loadBtn.addEventListener("click", async () => {
-    const head = lowestFreeHead();
-    if (head === null) {
+    // Slot N is wired to toolhead N only — each splitter T<N> joins ACE A
+    // slot N and ACE B slot N, so this slot's filament can ONLY reach the
+    // mate-pair head (head === slotIdx). NEVER pick lowestFreeHead(): a
+    // non-mate head makes the ACE push THIS slot while a different toolhead
+    // pulls its OWN mate slot — e.g. "load B3" with head 2 free pushes B3 but
+    // advances B2 (head 2 is wired to A2/B2). Mirror the chevron menu, which
+    // already enforces this invariant.
+    const head = slotIdx;
+    const hc = classifyHeadState(head, ace);
+    if (hc === "empty") {
+      await initiateSmartSwap(head, ace, slotIdx, "empty");
+    } else {
+      // Mate head already loaded/parked — defer to the menu so the user sees
+      // the swap/unload options instead of silently displacing it.
       openHeadTargetMenu(loadBtn, ace, slotIdx);
-      return;
     }
-    await sendScript(`ACE_LOAD_HEAD HEAD=${head} ACE=${ace} SLOT=${slotIdx}`);
   });
   const chevron = setEl(split, "button", { textContent: "▾" });
   chevron.classList.add("primary");
