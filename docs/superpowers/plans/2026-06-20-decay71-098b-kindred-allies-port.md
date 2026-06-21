@@ -166,6 +166,10 @@ Live-verified on Davinci-U1 (`state=standby`): 0.8.4 bundle loaded, clear button
 
 **Known wrinkle (real data):** ACE 0 currently has duplicate bindings (slot 2 claimed by 3 spools; slots 0/1/3 by 2 each). `unassign_slot` clears the *first* match per call, so a duplicated slot needs one click per stale binding. A bulk "clear all bindings for this slot" pass is a candidate future cleanup.
 
+### Field bugfix — load targets mate-pair head (#24, deployed v0.8.5)
+
+Reported: loading **B3** grabbed B3 but advanced **B2**. Root cause: the slot-card **Load** button chose `lowestFreeHead()` as the load target, violating the splitter wiring (T`N` joins A`N`/B`N`, so slot N reaches toolhead N only). Loading B3 with head 2 free emitted `ACE_LOAD_HEAD HEAD=2 ACE=1 SLOT=3` → ACE pushed B3 while toolhead 2 (wired to B2) pulled → B2 advanced. The chevron menu already enforced `head === slotIdx`; only the quick Load button bypassed it. Fix: Load button now targets the mate head (direct load if empty, else defer to swap menu); `lowestFreeHead()` removed. Live-verified every Load emission uses `head === slot`.
+
 ### Blocked on hardware (next session, with the ACE 2 + a print rig)
 
 Not fabricated unverified — these require physical hardware and the plan's own gates:
