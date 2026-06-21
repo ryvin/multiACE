@@ -1638,6 +1638,11 @@ body.multiace-embed { background: transparent; }
 }
 .spool-row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
 .spool-row-main strong { overflow-wrap: anywhere; }
+.spool-picker-clear {
+  width: 100%; margin-bottom: 8px; color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 35%, var(--border));
+}
+.spool-picker-clear:hover { background: var(--bad-soft); }
 .status-chip { padding: 2px 8px; border-radius: 10px; font-size: 0.82em; font-weight: 600; }
 .chip-green { background: #d4edda; color: #155724; }
 .chip-yellow { background: #fff3cd; color: #856404; }

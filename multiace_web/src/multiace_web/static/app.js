@@ -2631,6 +2631,33 @@ async function assignSpool(spoolId) {
   }
 }
 
+async function clearSlot() {
+  if (!_spoolPickerCtx) return;
+  const { ace, slot } = _spoolPickerCtx;
+  try {
+    const r = await fetch(api(`api/slots/${ace}/${slot}/assign`),
+                          { method: "DELETE", headers: authHeader() });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      toast(`Clear failed: ${e.detail || r.status}`, "error");
+      return;
+    }
+    // Optimistically drop the binding from the slot (WS reconciles after).
+    const a = String(ace);
+    if (state.spool_cache && state.spool_cache[a]) {
+      state.spool_cache = { ...state.spool_cache };
+      state.spool_cache[a] = { ...state.spool_cache[a] };
+      delete state.spool_cache[a][String(slot)];
+      renderSlots();
+    }
+    closeSpoolPicker();
+    toast(`Cleared ACE ${String.fromCharCode(65 + ace)} / ${slotName(slot)}.`);
+    fetchState();
+  } catch (e) {
+    toast("Clear failed.", "error");
+  }
+}
+
 function closeSpoolPicker() {
   document.getElementById("spool-picker-modal")?.classList.add("hidden");
   _spoolPickerCtx = null;
@@ -3437,6 +3464,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("loadout-name")?.addEventListener("keydown",
     (e) => { if (e.key === "Enter") saveLoadout(); });
   document.getElementById("spool-picker-close")?.addEventListener("click", closeSpoolPicker);
+  document.getElementById("spool-picker-clear")?.addEventListener("click", clearSlot);
   document.getElementById("spool-picker-search")?.addEventListener("input",
     (e) => renderSpoolPickerList(e.target.value));
   loadWebConfig();

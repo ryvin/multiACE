@@ -159,6 +159,36 @@ async def test_assign_spool_handles_missing_extra() -> None:
     assert fh["location"]["slot"] == 1 and fh["location"]["ace"] == 1
 
 
+# --- unassign_slot (make a slot blank) -------------------------------------
+
+@pytest.mark.asyncio
+async def test_unassign_slot_clears_location_of_bound_spool() -> None:
+    captured = {}
+    inner = '{"schema":1,"td":2.9,"location":{"printer":"u1-ace","ace":0,"slot":1}}'
+    spool = {"id": 81, "filament": {"name": "Red", "material": "PLA", "color_hex": "ce2029"},
+             "remaining_weight": 0.0, "extra": {"filamenthub": json.dumps(inner)}}
+    async with respx.mock(base_url="http://fh.local") as mock:
+        mock.get("/api/v1/spool").respond(200, json=[spool])      # list_spools (find)
+        mock.get("/api/v1/spool/81").respond(200, json=spool)     # _set_location read
+        mock.patch("/api/v1/spool/81").mock(
+            side_effect=lambda r: (captured.__setitem__("b", json.loads(r.content)),
+                                   httpx.Response(200, json={}))[1])
+        client = SpoolmanClient(base_url="http://fh.local", printer_id="u1-ace")
+        cleared = await client.unassign_slot(0, 1)
+    assert cleared == 81
+    fh = json.loads(json.loads(captured["b"]["extra"]["filamenthub"]))   # double-encoded
+    assert fh["location"] is None                       # location cleared
+    assert fh["td"] == 2.9                               # other fields preserved
+
+
+@pytest.mark.asyncio
+async def test_unassign_slot_returns_none_when_empty() -> None:
+    async with respx.mock(base_url="http://fh.local") as mock:
+        mock.get("/api/v1/spool").respond(200, json=[])
+        client = SpoolmanClient(base_url="http://fh.local", printer_id="u1-ace")
+        assert await client.unassign_slot(0, 1) is None
+
+
 @pytest.mark.asyncio
 async def test_list_spools_reads_double_encoded_location() -> None:
     # The real FilamentHub stores extra.filamenthub double-encoded; the reader
