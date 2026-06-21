@@ -2608,6 +2608,21 @@ async function assignSpool(spoolId) {
       toast(`Assign failed: ${e.detail || r.status}`, "error");
       return;
     }
+    // Reflect the binding on the slot immediately. /api/state (fetchState)
+    // does NOT carry spool_cache, so without this the slot looks unchanged
+    // until the next WebSocket poll — making a successful assign look like it
+    // did nothing. The WS push reconciles (confirms) it a moment later.
+    const picked = _spoolPickerData.find((s) => s.spool_id === spoolId);
+    if (picked) {
+      const a = String(ace);
+      state.spool_cache = { ...(state.spool_cache || {}) };
+      state.spool_cache[a] = { ...(state.spool_cache[a] || {}) };
+      state.spool_cache[a][String(slot)] = {
+        spool_id: picked.spool_id, name: picked.name, material: picked.material,
+        color: picked.color, weight_remaining_g: picked.weight_remaining_g,
+      };
+      renderSlots();
+    }
     closeSpoolPicker();
     toast(`Assigned to ACE ${String.fromCharCode(65 + ace)} / ${slotName(slot)}.`);
     fetchState();
