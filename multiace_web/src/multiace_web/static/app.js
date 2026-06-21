@@ -2440,6 +2440,101 @@ function renderSlotCard(ace, slotIdx) {
   return card;
 }
 
+// --- Loadouts (saveable snapshots) ---------------------------------------
+let _loadouts = [];
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = String(s == null ? "" : s);
+  return d.innerHTML;
+}
+
+async function fetchLoadouts() {
+  try {
+    const r = await fetch(api("api/snapshots"), { headers: authHeader() });
+    if (!r.ok) return;
+    _loadouts = (await r.json()).snapshots || [];
+    renderLoadouts();
+  } catch (e) { /* offline → leave as-is */ }
+}
+
+function renderLoadouts() {
+  const el = document.getElementById("loadouts-list");
+  if (!el) return;
+  if (!_loadouts.length) {
+    el.innerHTML = `<p class="muted small">No saved loadouts yet.</p>`;
+    return;
+  }
+  el.innerHTML = _loadouts.map(s => {
+    const n = Object.keys(s.heads || {}).length;
+    const when = s.created_at ? new Date(s.created_at).toLocaleString() : "";
+    const enc = encodeURIComponent(String(s.name));
+    return `<div class="loadout-row" data-name="${enc}">
+      <div class="loadout-meta">
+        <strong>${escapeHtml(s.name)}</strong>
+        <span class="muted small">${n} head${n === 1 ? "" : "s"}${when ? " · " + escapeHtml(when) : ""}</span>
+      </div>
+      <div class="loadout-actions">
+        <button class="ghost-btn loadout-apply" data-name="${enc}">Apply…</button>
+        <button class="ghost-btn loadout-delete" data-name="${enc}" title="Delete loadout">&#xd7;</button>
+      </div>
+      <div class="loadout-plan" hidden></div>
+    </div>`;
+  }).join("");
+  el.querySelectorAll(".loadout-apply").forEach(b =>
+    b.addEventListener("click", () => applyLoadout(decodeURIComponent(b.dataset.name))));
+  el.querySelectorAll(".loadout-delete").forEach(b =>
+    b.addEventListener("click", () => deleteLoadout(decodeURIComponent(b.dataset.name))));
+}
+
+async function saveLoadout() {
+  const input = document.getElementById("loadout-name");
+  const name = (input.value || "").trim();
+  if (!name) { toast("Enter a loadout name first.", "error"); return; }
+  try {
+    const r = await fetch(api("api/snapshots/" + encodeURIComponent(name)),
+                          { method: "POST", headers: authHeader() });
+    if (!r.ok) { toast(`Save failed (${r.status})`, "error"); return; }
+    input.value = "";
+    toast(`Saved loadout "${name}".`);
+    fetchLoadouts();
+  } catch (e) { toast("Save failed.", "error"); }
+}
+
+async function deleteLoadout(name) {
+  try {
+    await fetch(api("api/snapshots/" + encodeURIComponent(name)),
+                { method: "DELETE", headers: authHeader() });
+    fetchLoadouts();
+  } catch (e) { /* ignore */ }
+}
+
+async function applyLoadout(name) {
+  const row = document.querySelector(`.loadout-row[data-name="${encodeURIComponent(name)}"]`);
+  const planEl = row ? row.querySelector(".loadout-plan") : null;
+  let plan;
+  try {
+    const r = await fetch(api("api/snapshots/" + encodeURIComponent(name) + "/apply"),
+                          { method: "POST", headers: authHeader() });
+    if (!r.ok) { toast(`Apply failed (${r.status})`, "error"); return; }
+    plan = await r.json();
+  } catch (e) { toast("Apply failed.", "error"); return; }
+  if (!planEl) return;
+  const actions = plan.actions || [];
+  const warnings = plan.warnings || [];
+  planEl.hidden = false;
+  planEl.innerHTML = `
+    ${warnings.length ? `<ul class="loadout-warnings">${warnings.map(w => `<li>&#9888; ${escapeHtml(w)}</li>`).join("")}</ul>` : ""}
+    <ol class="loadout-cmds">${actions.map(a => `<li><code>${escapeHtml(a.gcode)}</code></li>`).join("")}</ol>
+    <button class="primary loadout-run">Run ${actions.length} command${actions.length === 1 ? "" : "s"}</button>`;
+  planEl.querySelector(".loadout-run")?.addEventListener("click", async (ev) => {
+    ev.target.disabled = true;
+    for (const a of actions) { await sendScript(a.gcode); }
+    toast(`Applied loadout "${name}".`);
+    planEl.hidden = true;
+  });
+}
+
 // --- Wiring overlay -------------------------------------------------------
 // Bezier slot->toolhead lines on the Dashboard, coloured by that head's
 // filament. Read-only; reflects state.head_source. Drawn into an SVG layered
@@ -3236,6 +3331,10 @@ document.addEventListener("DOMContentLoaded", () => {
     viewAll.addEventListener("click", (ev) => { ev.preventDefault(); setView("activity"); });
   }
   initI18n();
+  fetchLoadouts();
+  document.getElementById("loadout-save-btn")?.addEventListener("click", saveLoadout);
+  document.getElementById("loadout-name")?.addEventListener("keydown",
+    (e) => { if (e.key === "Enter") saveLoadout(); });
   loadWebConfig();
   connectWS();
   startPrintPolling();
