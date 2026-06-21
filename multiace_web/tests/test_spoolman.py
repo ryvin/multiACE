@@ -123,6 +123,27 @@ async def test_assign_spool_patches_location_preserving_extra() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_spools_tolerates_non_dict_or_bad_extra() -> None:
+    # Real FilamentHub data has spools whose extra.filamenthub decodes to a
+    # bare string (double-encoded) or isn't valid JSON — must not crash.
+    spools = [
+        {"id": 50, "filament": {"name": "X", "material": "PLA", "color_hex": "abcdef"},
+         "remaining_weight": 100.0, "extra": {"filamenthub": '"just a string"'}},
+        {"id": 51, "filament": {"name": "Y", "material": "PETG"},
+         "extra": {"filamenthub": "not-json"}},
+        {"id": 52, "filament": {"name": "Z", "material": "TPU"},
+         "extra": {"filamenthub": '{"schema":1,"location":"oops-a-string"}'}},
+    ]
+    async with respx.mock(base_url="http://fh.local") as mock:
+        mock.get("/api/v1/spool").respond(200, json=spools)
+        client = SpoolmanClient(base_url="http://fh.local", printer_id="u1-ace")
+        out = await client.list_spools()
+    by_id = {s["spool_id"]: s for s in out}
+    assert set(by_id) == {50, 51, 52}                  # all listed, no crash
+    assert all(by_id[i]["location"] is None for i in (50, 51, 52))
+
+
+@pytest.mark.asyncio
 async def test_assign_spool_handles_missing_extra() -> None:
     captured = {}
     async with respx.mock(base_url="http://fh.local") as mock:
