@@ -219,6 +219,19 @@
 
   <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
+  <div id="spool-picker-modal" class="modal hidden" role="dialog" aria-modal="true"
+       aria-labelledby="spool-picker-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="spool-picker-title">Assign filament</h3>
+        <button id="spool-picker-close" class="ghost-btn" aria-label="Close">&#xd7;</button>
+      </div>
+      <input id="spool-picker-search" type="text" autocomplete="off"
+             placeholder="Search vendor / material / color / name…" aria-label="Search spools">
+      <div id="spool-picker-list" class="spool-picker-list"></div>
+    </div>
+  </div>
+
   <div id="help-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="help-title">
     <div class="modal-card help-card">
       <div class="help-head">
