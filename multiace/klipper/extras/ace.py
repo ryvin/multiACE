@@ -1970,9 +1970,13 @@ class BunnyAce:
         enable = gcmd.get_int('ENABLE', minval=0, maxval=1)
         was_manual = self.head_is_manual(head)
         if bool(enable) != was_manual and self._head_is_loaded(head):
-            raise gcmd.error(
+            # Gentle console message, not gcmd.error — on the Snapmaker fork a
+            # raised CommandError surfaces as a scary touchscreen "System
+            # Anomaly" popup, which is wrong for a deliberate refusal.
+            self.gcode.respond_info(
                 '[multiACE] Head %d has filament loaded — unload it before '
                 'changing manual mode.' % head)
+            return
         if enable:
             self._manual_heads.add(head)
         else:
@@ -2154,8 +2158,10 @@ class BunnyAce:
         if head < 0 or head > 3:
             raise gcmd.error('[multiACE] HEAD must be 0-3')
         if self.head_is_manual(head):
-            raise gcmd.error('[multiACE] Head %d is manual (hand-fed TPU) — '
-                             'load it by hand, not via ACE_LOAD_HEAD.' % head)
+            self.gcode.respond_info(
+                '[multiACE] Head %d is manual (hand-fed TPU) — '
+                'load it by hand, not via ACE_LOAD_HEAD.' % head)
+            return
         if ace_index < 0 or not self._ensure_ace_available(ace_index):
             self.log_always('[multiACE] ACE %d not available' % ace_index)
             self._audit_state('LOAD_HEAD_FAILED', {'head': head, 'ace': ace_index, 'slot': slot, 'reason': 'ace_not_available'})
@@ -2387,8 +2393,10 @@ class BunnyAce:
         if head < 0 or head > 3:
             raise gcmd.error('[multiACE] HEAD must be 0-3')
         if self.head_is_manual(head):
-            raise gcmd.error('[multiACE] Head %d is manual (hand-fed TPU) — '
-                             'unload it by hand, not via ACE_UNLOAD_HEAD.' % head)
+            self.gcode.respond_info(
+                '[multiACE] Head %d is manual (hand-fed TPU) — '
+                'unload it by hand, not via ACE_UNLOAD_HEAD.' % head)
+            return
 
         park_length = gcmd.get_int('LENGTH', None)
         if park_length is not None and (park_length < 100 or park_length > 2000):
