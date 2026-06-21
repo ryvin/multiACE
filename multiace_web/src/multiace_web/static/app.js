@@ -1825,6 +1825,7 @@ function renderAll() {
   renderTopbar();
   renderSlots();
   renderToolheads();
+  scheduleWiringOverlay();
   renderActivity();
   renderActivityPreview();
   renderActionBar();
@@ -2336,6 +2337,8 @@ function renderSlotCard(ace, slotIdx) {
   const color = rgbFromUint(hcfg.color);
 
   const card = document.createElement("div");
+  card.dataset.ace = String(ace);    // anchors for the wiring overlay
+  card.dataset.slot = String(slotIdx);
   card.className = "card" + (color ? "" : " no-color");
   if (color) card.style.setProperty("--card-color", color);
   setEl(card, "div", { className: "color-band" });
@@ -2425,6 +2428,59 @@ function renderSlotCard(ace, slotIdx) {
   return card;
 }
 
+// --- Wiring overlay -------------------------------------------------------
+// Bezier slot->toolhead lines on the Dashboard, coloured by that head's
+// filament. Read-only; reflects state.head_source. Drawn into an SVG layered
+// over .dash-wrap (pointer-events:none, so cards stay interactive). A no-op
+// until both grids have laid out, and skips heads with no source.
+let _wiringRaf = 0;
+function scheduleWiringOverlay() {
+  if (_wiringRaf) return;
+  _wiringRaf = requestAnimationFrame(() => { _wiringRaf = 0; renderWiringOverlay(); });
+}
+
+function renderWiringOverlay() {
+  const host = document.querySelector(".dash-wrap");
+  if (!host) return;
+  const SVGNS = "http://www.w3.org/2000/svg";
+  let svg = document.getElementById("wiring-overlay");
+  if (!svg) {
+    svg = document.createElementNS(SVGNS, "svg");
+    svg.id = "wiring-overlay";
+    svg.setAttribute("aria-hidden", "true");
+    host.appendChild(svg);
+  }
+  const hostRect = host.getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${hostRect.width} ${hostRect.height}`);
+  svg.setAttribute("width", String(hostRect.width));
+  svg.setAttribute("height", String(hostRect.height));
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  for (let head = 0; head < 4; head++) {
+    const src = state.head_source[head];
+    if (!src) continue;
+    const slotCard = host.querySelector(
+      `#slots-grid [data-ace="${src.ace}"][data-slot="${src.slot}"]`);
+    const headCard = host.querySelector(`#toolheads-grid [data-head="${head}"]`);
+    if (!slotCard || !headCard) continue;
+    const s = slotCard.getBoundingClientRect();
+    const h = headCard.getBoundingClientRect();
+    // Toolheads render above slots: connect head-card bottom -> slot-card top.
+    const a = { x: h.left + h.width / 2 - hostRect.left, y: h.bottom - hostRect.top };
+    const b = { x: s.left + s.width / 2 - hostRect.left, y: s.top - hostRect.top };
+    const midY = (a.y + b.y) / 2;
+    const cfg = state.print_task_config[head] || {};
+    const color = rgbFromUint(cfg.color) || "var(--accent)";
+    const path = document.createElementNS(SVGNS, "path");
+    path.setAttribute("d",
+      `M ${a.x} ${a.y} C ${a.x} ${midY}, ${b.x} ${midY}, ${b.x} ${b.y}`);
+    path.setAttribute("class", "wire");
+    path.setAttribute("stroke", color);
+    path.dataset.head = String(head);
+    svg.appendChild(path);
+  }
+}
+
 function renderToolheads() {
   const grid = document.getElementById("toolheads-grid");
   grid.innerHTML = "";
@@ -2442,6 +2498,7 @@ function renderToolheads() {
     const wfFailed = wfStep && wfStep.status === "failed";
 
     const card = setEl(grid, "div");
+    card.dataset.head = String(i);   // anchor for the wiring overlay
     card.className = "card" + (color ? "" : " no-color")
       + (err || wfFailed ? " error" : "")
       + (activeHead === i ? " extruding" : "")
@@ -3190,4 +3247,19 @@ document.addEventListener("DOMContentLoaded", () => {
   // Eagerly fetch per-ACE autodry state so the Diag tab has data on first
   // open even if the user hasn't touched the dropdown yet.
   fetchDiagAceState(window._diagAce ?? 0).then(() => renderDiag());
+
+  // Wiring overlay: redraw on layout changes (window resize + dash-wrap
+  // reflow). Card re-renders schedule their own redraw via renderAll().
+  const dashWrap = document.querySelector(".dash-wrap");
+  if (dashWrap && typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(scheduleWiringOverlay).observe(dashWrap);
+  }
+  window.addEventListener("resize", scheduleWiringOverlay);
 });
+
+// Exposed for the wiring-overlay redraw + e2e tests (read-only debug handles).
+window.renderWiringOverlay = renderWiringOverlay;
+window._dashDebug = {
+  get state() { return state; },
+  renderSlots, renderToolheads, renderWiringOverlay,
+};
