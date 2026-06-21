@@ -200,16 +200,9 @@ class AceProtocolV2(AceProtocol):
         for entry in sorted(os.listdir(by_path_dir)):
             full_path = os.path.join(by_path_dir, entry)
             real_dev = os.path.basename(os.path.realpath(full_path))
-            try:
-                sysfs_base = '/sys/class/tty/%s/device/../' % real_dev
-                with open(os.path.join(sysfs_base, 'idVendor'), 'r') as f:
-                    vendor = f.read().strip()
-                with open(os.path.join(sysfs_base, 'idProduct'), 'r') as f:
-                    product = f.read().strip()
-                if vendor == V2_VENDOR_ID and product in V2_PRODUCT_IDS:
-                    ace_devices.append(full_path)
-            except (IOError, OSError):
-                continue
+            vendor, product = cls._read_usb_ids(real_dev)
+            if vendor == V2_VENDOR_ID and product in V2_PRODUCT_IDS:
+                ace_devices.append(full_path)
         return ace_devices
 
     @classmethod
