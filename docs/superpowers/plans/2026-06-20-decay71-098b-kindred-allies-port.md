@@ -128,3 +128,35 @@ Editable+pausable command queue (`/api/macro-batch`), saveable loadout snapshots
 ## Out of scope
 
 Full Vue migration; their nginx `auth_request`→Moonraker pipeline (keep bearer-token); their Klipper-side `_t()` runtime (catalog only).
+
+## Progress (2026-06-21)
+
+All cleanly-portable, verifiable-without-hardware work is **shipped to `main`** (each its own TDD'd PR; web items Playwright-verified against the live GUI).
+
+| Item | PR | Status |
+|---|---|---|
+| 1.1 ttyUSB discovery (ACE 2 CH340 latent fix) | #4 | ✅ merged |
+| 1.2 `merge_ace_cfg.py` | #6 | ✅ merged |
+| 1.3 Swaptimizer fuzzy/tiered color matcher (`--fuzzy-color`) | #5 | ✅ merged |
+| 1.4 `generate_testmatrix.py` | #7 | ✅ merged |
+| 1.5 ACE/slot-aware runout message | #8 | ✅ merged (rig: confirm touchscreen text) |
+| 2.1 Manual Heads control surface (`ACE_SET_HEAD_MANUAL`, refuse load/unload, persist) | #9 | ✅ merged (rig: confirm refusals) |
+| 3.1 i18n (EN/DE/ZH catalog, `/api/i18n`, switcher) | #10 | ✅ merged |
+| 3.4 Match-tier labels (resolution table + wizard) | #11 | ✅ merged |
+| 3.2 SVG wiring overlay | #12 | ✅ merged |
+| 3.3 Provenance badges (bound-spool surfacing) | #13 | ✅ merged (partial — see below) |
+
+**Test totals on `main`:** 70 firmware + 384 web, all green.
+
+### Blocked on hardware (next session, with the ACE 2 + a print rig)
+
+Not fabricated unverified — these require physical hardware and the plan's own gates:
+
+- **Wave 2.2** — mid-print FA/retract/park **bypass** for manual heads. Needs the slot↔head mapping (decay71 conflates them) + rig validation. Until then: avoid cross-ACE toolchanges into a manual head mid-print (documented in README Known Limitations).
+- **Wave 4** — ACE 2 / Protocol V2 + threaded engine. Gated by **G1** (threaded I/O must keep V1 buses warm on the rig before the start-ACE pin / keepalive is removed) and by the ACE 2 unit being on the bench.
+- **Wave 5** — higher-coupling firmware (regrip, hardened unload, PTC sync, smart swap, flow cal). Depends on the Wave 4 engine + rig.
+
+### Deferred (net-new, not clean ports)
+
+- **3.3 remainder** — cascading materials-DB picker + RFID-read round-trip. Needs a materials-DB backend endpoint + a firmware/Moonraker RFID-read flow that don't exist in this fork. (Slot `📖` FilamentHub deep-link picker already exists.)
+- **Wave 6** — editable command queue, saveable loadout snapshots, display mirror, online update. Large net-new web features (decay71's are Vue); each warrants its own design pass.
