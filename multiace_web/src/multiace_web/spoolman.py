@@ -15,6 +15,34 @@ import httpx
 log = logging.getLogger("multiace.spoolman")
 
 
+def _decode_fh(raw) -> dict:
+    """Decode a Spoolman ``extra.filamenthub`` value into a dict.
+
+    The field is a *text* extra field whose value is a JSON-encoded string —
+    and FilamentHub stores it double-encoded (a JSON string whose content is
+    the object's JSON text). Peel up to a few layers until a dict is reached;
+    return {} if it can't be decoded to one.
+    """
+    val = raw
+    for _ in range(4):
+        if isinstance(val, dict):
+            return val
+        if not isinstance(val, str):
+            return {}
+        try:
+            val = json.loads(val)
+        except (ValueError, TypeError):
+            return {}
+    return val if isinstance(val, dict) else {}
+
+
+def _encode_fh(fh: dict) -> str:
+    """Encode a filamenthub dict the way Spoolman's text extra field expects:
+    a JSON string whose content is the object's JSON text (double-encoded), so
+    a scan and an assign produce byte-compatible values."""
+    return json.dumps(json.dumps(fh))
+
+
 @dataclass
 class SpoolBinding:
     spool_id: int
@@ -55,8 +83,8 @@ class SpoolmanClient:
                 fh_raw = (sp.get("extra") or {}).get("filamenthub")
                 if not fh_raw:
                     continue
-                fh = json.loads(fh_raw) if isinstance(fh_raw, str) else fh_raw
-                loc = fh.get("location") if isinstance(fh, dict) else None
+                fh = _decode_fh(fh_raw)
+                loc = fh.get("location")
                 if not isinstance(loc, dict) or loc.get("printer") != self._printer_id:
                     continue
                 ace = int(loc.get("ace", 0))
@@ -101,8 +129,8 @@ class SpoolmanClient:
             fh_raw = (sp.get("extra") or {}).get("filamenthub")
             if fh_raw:
                 try:
-                    fh = json.loads(fh_raw) if isinstance(fh_raw, str) else fh_raw
-                    loc = fh.get("location") if isinstance(fh, dict) else None
+                    fh = _decode_fh(fh_raw)
+                    loc = fh.get("location")
                     if (isinstance(loc, dict) and loc.get("printer") == self._printer_id
                             and loc.get("slot") is not None):
                         location = {"ace": int(loc.get("ace", 0)), "slot": int(loc["slot"])}
@@ -130,17 +158,12 @@ class SpoolmanClient:
             sp = resp.json()
 
             fh_raw = (sp.get("extra") or {}).get("filamenthub")
-            try:
-                fh = json.loads(fh_raw) if isinstance(fh_raw, str) else (fh_raw or {})
-            except (ValueError, TypeError):
-                fh = {}
-            if not isinstance(fh, dict):
-                fh = {}
+            fh = _decode_fh(fh_raw)
             fh.setdefault("schema", 1)
             location = {"printer": self._printer_id, "ace": int(ace), "slot": int(slot)}
             fh["location"] = location
 
-            patch = {"extra": {"filamenthub": json.dumps(fh)}}
+            patch = {"extra": {"filamenthub": _encode_fh(fh)}}
             presp = await client.patch(f"{self._base}/api/v1/spool/{spool_id}", json=patch)
             presp.raise_for_status()
         return location

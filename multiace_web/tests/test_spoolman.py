@@ -107,19 +107,21 @@ async def test_assign_spool_patches_location_preserving_extra() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"id": 21})
 
+    # FilamentHub stores extra.filamenthub double-encoded (a JSON string whose
+    # content is the object's JSON text).
+    stored = json.dumps(json.dumps({"schema": 1, "td": 3.3, "location": None}))
     async with respx.mock(base_url="http://fh.local") as mock:
-        mock.get("/api/v1/spool/21").respond(200, json={
-            "id": 21,
-            "extra": {"filamenthub": '{"schema":1,"td":3.3,"location":null}'},
-        })
+        mock.get("/api/v1/spool/21").respond(200, json={"id": 21, "extra": {"filamenthub": stored}})
         mock.patch("/api/v1/spool/21").mock(side_effect=_patch_side_effect)
         client = SpoolmanClient(base_url="http://fh.local", printer_id="u1-ace")
         loc = await client.assign_spool(21, ace=0, slot=3)
 
     assert loc == {"printer": "u1-ace", "ace": 0, "slot": 3}
-    fh = json.loads(captured["body"]["extra"]["filamenthub"])
+    written = captured["body"]["extra"]["filamenthub"]
+    assert isinstance(json.loads(written), str)         # double-encoded (text field)
+    fh = json.loads(json.loads(written))                # decode twice -> dict
     assert fh["location"] == {"printer": "u1-ace", "ace": 0, "slot": 3}
-    assert fh["td"] == 3.3 and fh["schema"] == 1       # other fields preserved
+    assert fh["td"] == 3.3 and fh["schema"] == 1        # other fields preserved
 
 
 @pytest.mark.asyncio
@@ -153,5 +155,21 @@ async def test_assign_spool_handles_missing_extra() -> None:
                                    httpx.Response(200, json={}))[1])
         client = SpoolmanClient(base_url="http://fh.local", printer_id="u1-ace")
         await client.assign_spool(5, ace=1, slot=1)
-    fh = json.loads(captured["b"]["extra"]["filamenthub"])
+    fh = json.loads(json.loads(captured["b"]["extra"]["filamenthub"]))   # double-encoded
     assert fh["location"]["slot"] == 1 and fh["location"]["ace"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_spools_reads_double_encoded_location() -> None:
+    # The real FilamentHub stores extra.filamenthub double-encoded; the reader
+    # must peel both layers to surface the placement.
+    inner = '{"schema":1,"td":2.9,"location":{"printer":"u1-ace","ace":0,"slot":1}}'
+    spools = [
+        {"id": 81, "filament": {"name": "Ivory", "material": "PLA", "color_hex": "fffff0"},
+         "remaining_weight": 126.0, "extra": {"filamenthub": json.dumps(inner)}},
+    ]
+    async with respx.mock(base_url="http://fh.local") as mock:
+        mock.get("/api/v1/spool").respond(200, json=spools)
+        client = SpoolmanClient(base_url="http://fh.local", printer_id="u1-ace")
+        out = await client.list_spools()
+    assert out[0]["location"] == {"ace": 0, "slot": 1}
