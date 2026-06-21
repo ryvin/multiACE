@@ -30,8 +30,10 @@ def app_with_sidecars(tmp_path, monkeypatch):
         "status": "ready",
         "reason": None,
         "tools": {"0": {"type": "PLA", "color": "#ff0000", "match_quality": "exact",
+                        "tier": "exact_hex", "color_name": "Red",
                         "candidates": [{"ace": 0, "slot": 0, "spool_id": 10, "spool_name": "PLA Red"}],
                         "resolved": {"ace": 0, "slot": 0, "spool_id": 10}, "physical_head": 0}},
+        "match_summary": {"exact_hex": 1},
         "swaps": [],
         "errors": [],
     }
@@ -104,7 +106,18 @@ def test_print_queue_item_shape(app_with_sidecars):
     assert "reason" in item
     assert "generated_at" in item
     assert "tools" in item
+    assert "match_summary" in item
     assert "swaps" in item
+
+
+def test_print_queue_surfaces_tier_and_match_summary(app_with_sidecars):
+    # The sidecar's per-tool `tier` and top-level `match_summary` (added by the
+    # --fuzzy-color matcher) must pass through so the UI can show match-tier
+    # labels in the resolution table / fix-loadout wizard.
+    with TestClient(app_with_sidecars) as c:
+        item = c.get("/api/print_queue").json()["items"][0]
+    assert item["match_summary"] == {"exact_hex": 1}
+    assert item["tools"]["0"]["tier"] == "exact_hex"
 
 
 def test_revalidate_returns_updated_sidecar(app_with_sidecars, monkeypatch):

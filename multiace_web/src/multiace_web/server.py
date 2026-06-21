@@ -1171,6 +1171,7 @@ def create_app(
                 "reason": sidecar.get("reason"),
                 "generated_at": sidecar.get("generated_at"),
                 "tools": sidecar.get("tools", {}),
+                "match_summary": sidecar.get("match_summary", {}),
                 "swaps": sidecar.get("swaps", []),
                 "errors": sidecar.get("errors", []),
             })
