@@ -147,23 +147,35 @@ class SpoolmanClient:
             })
         return out
 
+    async def _set_location(self, client, spool_id, location) -> None:
+        """GET a spool, set its ``extra.filamenthub`` location (preserving the
+        other fields like ``schema``/``td``), and PATCH it back. ``location``
+        is a {printer, ace, slot} dict to bind, or None to clear."""
+        resp = await client.get(f"{self._base}/api/v1/spool/{spool_id}")
+        resp.raise_for_status()
+        fh = _decode_fh((resp.json().get("extra") or {}).get("filamenthub"))
+        fh.setdefault("schema", 1)
+        fh["location"] = location
+        patch = {"extra": {"filamenthub": _encode_fh(fh)}}
+        presp = await client.patch(f"{self._base}/api/v1/spool/{spool_id}", json=patch)
+        presp.raise_for_status()
+
     async def assign_spool(self, spool_id: int, ace: int, slot: int) -> dict:
         """Bind a spool to (ace, slot) on this printer — the same effect as an
-        RFID scan. Reads the spool's current ``extra.filamenthub`` JSON, sets
-        ``location`` (preserving any other fields like ``schema``/``td``), and
-        PATCHes it back. Returns the written location dict."""
+        RFID scan. Returns the written location dict."""
+        location = {"printer": self._printer_id, "ace": int(ace), "slot": int(slot)}
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(f"{self._base}/api/v1/spool/{spool_id}")
-            resp.raise_for_status()
-            sp = resp.json()
-
-            fh_raw = (sp.get("extra") or {}).get("filamenthub")
-            fh = _decode_fh(fh_raw)
-            fh.setdefault("schema", 1)
-            location = {"printer": self._printer_id, "ace": int(ace), "slot": int(slot)}
-            fh["location"] = location
-
-            patch = {"extra": {"filamenthub": _encode_fh(fh)}}
-            presp = await client.patch(f"{self._base}/api/v1/spool/{spool_id}", json=patch)
-            presp.raise_for_status()
+            await self._set_location(client, spool_id, location)
         return location
+
+    async def unassign_slot(self, ace: int, slot: int):
+        """Make a slot blank: clear the location of whatever spool is currently
+        bound to (ace, slot) on this printer. Returns the cleared spool_id, or
+        None if the slot was already empty."""
+        want = {"ace": int(ace), "slot": int(slot)}
+        target = next((s for s in await self.list_spools() if s["location"] == want), None)
+        if target is None:
+            return None
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            await self._set_location(client, target["spool_id"], None)
+        return target["spool_id"]

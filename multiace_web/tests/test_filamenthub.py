@@ -89,3 +89,34 @@ def test_assign_422_on_bad_slot(app):
         r = c.post("/api/slots/0/9/assign", json={"spool_id": 1})
     assert r.status_code == 422
     sm.assign_spool.assert_not_awaited()
+
+
+def test_unassign_clears_and_refreshes(app):
+    sm = MagicMock()
+    sm.unassign_slot = AsyncMock(return_value=81)
+    sm.list_all_bindings = AsyncMock(return_value={})
+    with TestClient(app) as c:
+        app.state.spoolman = sm
+        r = c.delete("/api/slots/0/1/assign")
+    assert r.status_code == 200
+    assert r.json()["cleared_spool_id"] == 81
+    sm.unassign_slot.assert_awaited_once_with(0, 1)
+    sm.list_all_bindings.assert_awaited()
+
+
+def test_unassign_ok_when_slot_already_empty(app):
+    sm = MagicMock()
+    sm.unassign_slot = AsyncMock(return_value=None)
+    sm.list_all_bindings = AsyncMock(return_value={})
+    with TestClient(app) as c:
+        app.state.spoolman = sm
+        r = c.delete("/api/slots/1/2/assign")
+    assert r.status_code == 200
+    assert r.json()["cleared_spool_id"] is None
+
+
+def test_unassign_503_when_not_configured(app):
+    with TestClient(app) as c:
+        app.state.spoolman = None
+        r = c.delete("/api/slots/0/0/assign")
+    assert r.status_code == 503

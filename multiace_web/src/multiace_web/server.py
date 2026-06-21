@@ -1062,6 +1062,23 @@ def create_app(
             pass
         return {"ok": True, "spool_id": body.spool_id, "location": location}
 
+    @app.delete("/api/slots/{ace}/{slot}/assign")
+    async def unassign_slot_spool(request: Request, ace: int, slot: int) -> dict:
+        sm = getattr(request.app.state, "spoolman", None)
+        if sm is None:
+            raise HTTPException(503, "FilamentHub not configured")
+        if not (0 <= ace <= 3 and 0 <= slot <= 3):
+            raise HTTPException(422, "ace and slot must be 0-3")
+        try:
+            cleared = await sm.unassign_slot(ace, slot)
+        except Exception as e:  # noqa: BLE001 — surface upstream failure to caller
+            raise HTTPException(502, f"FilamentHub unassign failed: {e}")
+        try:
+            request.app.state.spool_cache = await sm.list_all_bindings()
+        except Exception:
+            pass
+        return {"ok": True, "cleared_spool_id": cleared}
+
     @app.post("/api/dry/stop")
     async def post_dry_stop(request: Request, body: DryStopRequest) -> dict:
         mr = request.app.state.moonraker
