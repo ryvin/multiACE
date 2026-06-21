@@ -148,7 +148,23 @@ All cleanly-portable, verifiable-without-hardware work is **shipped to `main`** 
 
 | 6 (partial) Saveable loadout snapshots (`/api/snapshots`, Dashboard panel) | #15 | ✅ merged |
 
-**Test totals on `main`:** 70 firmware + 397 web, all green.
+**Test totals on `main`:** 70 firmware + 413 web, all green.
+
+### In-console FilamentHub spool picker (follow-on, shipped 2026-06-21)
+
+Net-new beyond the deep-link picker: assign/unassign a spool to an ACE slot from the GUI with no RFID scan. Binds via the spool's double-encoded `extra.filamenthub.location`.
+
+| Item | PR | Status |
+|---|---|---|
+| Spool picker — list all FilamentHub spools, searchable, assign without scan | #18 | ✅ merged |
+| Fix assign 400 — `extra.filamenthub` is **double**-encoded (`json.dumps(json.dumps(obj))`); added `_decode_fh`/`_encode_fh` | #19/#20 | ✅ merged |
+| Fix "only scan RFID" — stale browser bundle; cache-bust `?v` bump discipline | #21 | ✅ merged |
+| Fix assign not reflecting on slot — optimistic `spool_cache` update (`/api/state` carries no cache) | #22 | ✅ merged |
+| **"Make slot blank" (unassign)** — `DELETE /api/slots/{ace}/{slot}/assign`, clears slot's binding | #23 | ✅ merged + deployed (v0.8.4) |
+
+Live-verified on Davinci-U1 (`state=standby`): 0.8.4 bundle loaded, clear button renders, `DELETE` idempotent on empty slot (`cleared_spool_id: null`) and `422` on out-of-range slot.
+
+**Known wrinkle (real data):** ACE 0 currently has duplicate bindings (slot 2 claimed by 3 spools; slots 0/1/3 by 2 each). `unassign_slot` clears the *first* match per call, so a duplicated slot needs one click per stale binding. A bulk "clear all bindings for this slot" pass is a candidate future cleanup.
 
 ### Blocked on hardware (next session, with the ACE 2 + a print rig)
 
