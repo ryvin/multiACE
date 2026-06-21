@@ -1590,6 +1590,16 @@ body.multiace-embed { background: transparent; }
 .tier-badge.tier-approx { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
 .tier-badge.tier-warn { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
 .tier-badge.tier-err { background: var(--bad-soft); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+
+/* Provenance chip — slot's filament info came from a FilamentHub/Spoolman
+   (RFID) binding. */
+.pill.prov-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  font-size: 0.7em;
+  letter-spacing: 0.02em;
+}
 .status-chip { padding: 2px 8px; border-radius: 10px; font-size: 0.82em; font-weight: 600; }
 .chip-green { background: #d4edda; color: #155724; }
 .chip-yellow { background: #fff3cd; color: #856404; }

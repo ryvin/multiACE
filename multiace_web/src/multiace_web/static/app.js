@@ -2368,6 +2368,18 @@ function renderSlotCard(ace, slotIdx) {
   const cacheForAce = (state.spool_cache && state.spool_cache[String(ace)]) || {};
   const spool = cacheForAce[String(slotIdx)] || null;
 
+  // Provenance: a spool binding means FilamentHub/Spoolman identified this
+  // slot (typically from the RFID tag). Surface it — the binding was fetched
+  // but never shown — with a badge + the bound spool's name/material.
+  if (spool) {
+    const prov = pill(head, "Bound", "prov-badge");
+    prov.title = "Spool bound via FilamentHub/Spoolman"
+      + (spool.name ? ` — ${spool.name}` : "");
+    const spoolLabel = [spool.material, spool.name].filter(Boolean).join(" · ")
+      || `#${spool.spool_id}`;
+    metaRow(meta, "Spool", spoolLabel);
+  }
+
   // Actions: 📖 picker, Load split-button + chevron, Unload (when applicable)
   const actions = setEl(card, "div"); actions.className = "actions";
 
