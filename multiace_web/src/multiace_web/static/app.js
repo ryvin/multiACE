@@ -2387,10 +2387,8 @@ function renderSlotCard(ace, slotIdx) {
   pickerBtn.className = "btn-icon";
   const fhUrl = buildFilamentHubPickerUrl(ace, slotIdx);
   if (fhUrl) {
-    pickerBtn.title = "Pick spool from FilamentHub";
-    pickerBtn.addEventListener("click", () => {
-      window.open(fhUrl, "_blank", "noopener,noreferrer");
-    });
+    pickerBtn.title = "Assign filament from FilamentHub (no scan)";
+    pickerBtn.addEventListener("click", () => openSpoolPicker(ace, slotIdx));
   } else {
     pickerBtn.disabled = true;
     pickerBtn.title = "Set FILAMENTHUB_URL to enable";
@@ -2533,6 +2531,94 @@ async function applyLoadout(name) {
     toast(`Applied loadout "${name}".`);
     planEl.hidden = true;
   });
+}
+
+// --- FilamentHub spool picker (assign a profile to a slot, no scan) ------
+let _spoolPickerCtx = null;   // { ace, slot }
+let _spoolPickerData = [];
+
+async function openSpoolPicker(ace, slot) {
+  _spoolPickerCtx = { ace, slot };
+  const modal = document.getElementById("spool-picker-modal");
+  const listEl = document.getElementById("spool-picker-list");
+  const search = document.getElementById("spool-picker-search");
+  if (!modal || !listEl) return;
+  document.getElementById("spool-picker-title").textContent =
+    `Assign filament — ACE ${String.fromCharCode(65 + ace)} / ${slotName(slot)}`;
+  if (search) search.value = "";
+  listEl.innerHTML = `<p class="muted small">Loading spools…</p>`;
+  modal.classList.remove("hidden");
+  if (search) search.focus();
+  try {
+    const r = await fetch(api("api/filamenthub/spools"), { headers: authHeader() });
+    const body = await r.json();
+    if (!body.configured) {
+      listEl.innerHTML = `<p class="muted small">FilamentHub is not configured.</p>`;
+      return;
+    }
+    _spoolPickerData = body.spools || [];
+    renderSpoolPickerList("");
+  } catch (e) {
+    listEl.innerHTML = `<p class="muted small">Failed to load spools.</p>`;
+  }
+}
+
+function renderSpoolPickerList(query) {
+  const listEl = document.getElementById("spool-picker-list");
+  if (!listEl) return;
+  const q = (query || "").trim().toLowerCase();
+  const rows = _spoolPickerData.filter(s =>
+    !q || [s.vendor, s.material, s.name, s.color].filter(Boolean).join(" ").toLowerCase().includes(q));
+  if (!rows.length) { listEl.innerHTML = `<p class="muted small">No matching spools.</p>`; return; }
+  const here = _spoolPickerCtx;
+  listEl.innerHTML = rows.map(s => {
+    const color = (s.color || "").replace("#", "") || "888888";
+    const grams = s.weight_remaining_g != null ? `${Math.round(s.weight_remaining_g)} g` : "";
+    let placed = "";
+    if (s.location) {
+      const atHere = here && s.location.ace === here.ace && s.location.slot === here.slot;
+      placed = atHere
+        ? `<span class="tier-badge tier-exact">here</span>`
+        : `<span class="tier-badge tier-warn">ACE ${String.fromCharCode(65 + s.location.ace)}/${slotName(s.location.slot)}</span>`;
+    }
+    return `<button class="spool-row" data-spool="${s.spool_id}">
+      <span class="color-swatch" style="background:#${color}"></span>
+      <span class="spool-row-main">
+        <strong>${escapeHtml([s.vendor, s.material].filter(Boolean).join(" ") || "Spool")}</strong>
+        <span class="muted small">${escapeHtml(s.name || "")}${grams ? " · " + grams : ""}</span>
+      </span>
+      ${placed}
+    </button>`;
+  }).join("");
+  listEl.querySelectorAll(".spool-row").forEach(b =>
+    b.addEventListener("click", () => assignSpool(parseInt(b.dataset.spool, 10))));
+}
+
+async function assignSpool(spoolId) {
+  if (!_spoolPickerCtx) return;
+  const { ace, slot } = _spoolPickerCtx;
+  try {
+    const r = await fetch(api(`api/slots/${ace}/${slot}/assign`), {
+      method: "POST",
+      headers: { ...authHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify({ spool_id: spoolId }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      toast(`Assign failed: ${e.detail || r.status}`, "error");
+      return;
+    }
+    closeSpoolPicker();
+    toast(`Assigned to ACE ${String.fromCharCode(65 + ace)} / ${slotName(slot)}.`);
+    fetchState();
+  } catch (e) {
+    toast("Assign failed.", "error");
+  }
+}
+
+function closeSpoolPicker() {
+  document.getElementById("spool-picker-modal")?.classList.add("hidden");
+  _spoolPickerCtx = null;
 }
 
 // --- Wiring overlay -------------------------------------------------------
@@ -3335,6 +3421,9 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("loadout-save-btn")?.addEventListener("click", saveLoadout);
   document.getElementById("loadout-name")?.addEventListener("keydown",
     (e) => { if (e.key === "Enter") saveLoadout(); });
+  document.getElementById("spool-picker-close")?.addEventListener("click", closeSpoolPicker);
+  document.getElementById("spool-picker-search")?.addEventListener("input",
+    (e) => renderSpoolPickerList(e.target.value));
   loadWebConfig();
   connectWS();
   startPrintPolling();

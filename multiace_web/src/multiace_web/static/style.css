@@ -1622,6 +1622,22 @@ body.multiace-embed { background: transparent; }
 .loadout-warnings { margin: 4px 0; padding-left: 1.1em; color: var(--warn); font-size: 0.85em; }
 .loadout-cmds { margin: 4px 0; padding-left: 1.4em; font-size: 0.85em; }
 .loadout-cmds code { background: var(--accent-soft); padding: 0 4px; border-radius: 4px; }
+
+/* FilamentHub spool picker modal */
+#spool-picker-search { width: 100%; box-sizing: border-box; margin: 8px 0; padding: 8px 10px; }
+.spool-picker-list { display: flex; flex-direction: column; gap: 4px; max-height: 60vh; overflow-y: auto; }
+.spool-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); cursor: pointer;
+}
+.spool-row:hover { border-color: var(--accent); background: var(--accent-soft); }
+.spool-row .color-swatch {
+  width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--fg-strong, #000) 25%, transparent);
+}
+.spool-row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.spool-row-main strong { overflow-wrap: anywhere; }
 .status-chip { padding: 2px 8px; border-radius: 10px; font-size: 0.82em; font-weight: 600; }
 .chip-green { background: #d4edda; color: #155724; }
 .chip-yellow { background: #fff3cd; color: #856404; }

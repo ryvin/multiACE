@@ -423,6 +423,12 @@ class AutodryConfigUpdate(BaseModel):
     keep_ready: Optional[bool] = None
 
 
+class AssignSpoolRequest(BaseModel):
+    """Body for POST /api/slots/{ace}/{slot}/assign — bind a FilamentHub spool
+    to the slot (same effect as a scan), no RFID needed."""
+    spool_id: int = Field(ge=1)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Wire up background tasks + Moonraker client."""
@@ -1029,6 +1035,32 @@ def create_app(
         return build_slots_payload(
             request.app.state.state,
             getattr(request.app.state, "spool_cache", {}) or {})
+
+    @app.get("/api/filamenthub/spools")
+    async def list_filamenthub_spools(request: Request) -> dict:
+        sm = getattr(request.app.state, "spoolman", None)
+        if sm is None:
+            return {"configured": False, "spools": []}
+        return {"configured": True, "spools": await sm.list_spools()}
+
+    @app.post("/api/slots/{ace}/{slot}/assign")
+    async def assign_slot_spool(request: Request, ace: int, slot: int,
+                                body: AssignSpoolRequest) -> dict:
+        sm = getattr(request.app.state, "spoolman", None)
+        if sm is None:
+            raise HTTPException(503, "FilamentHub not configured")
+        if not (0 <= ace <= 3 and 0 <= slot <= 3):
+            raise HTTPException(422, "ace and slot must be 0-3")
+        try:
+            location = await sm.assign_spool(body.spool_id, ace, slot)
+        except Exception as e:  # noqa: BLE001 — surface upstream failure to caller
+            raise HTTPException(502, f"FilamentHub assign failed: {e}")
+        # Refresh the binding cache so the slot reflects the new spool at once.
+        try:
+            request.app.state.spool_cache = await sm.list_all_bindings()
+        except Exception:
+            pass
+        return {"ok": True, "spool_id": body.spool_id, "location": location}
 
     @app.post("/api/dry/stop")
     async def post_dry_stop(request: Request, body: DryStopRequest) -> dict:
