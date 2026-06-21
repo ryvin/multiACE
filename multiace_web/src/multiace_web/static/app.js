@@ -1565,10 +1565,12 @@ function openFixLoadoutWizard(item) {
       <div class="fix-row-header">
         <strong>Tool ${idx}</strong>
         ${_colorSwatch(t.color)} ${t.type}
-        ${_matchIcon(t.match_quality)}
+        ${_matchIcon(t.match_quality)} ${_tierBadge(t)}
         ${t.match_quality === "ambiguous"
           ? `<span class="fix-hint">${t.candidates.length} candidates — pick one below</span>`
-          : `<span class="fix-hint">No matching spool found</span>`}
+          : t.match_quality === "approx" && t.resolved
+            ? `<span class="fix-hint">Matched by ${_tierLabel(t)} to ACE ${String.fromCharCode(65 + t.resolved.ace)} / Slot ${t.resolved.slot} — review or override</span>`
+            : `<span class="fix-hint">No matching spool found</span>`}
       </div>
       ${t.match_quality === "ambiguous" && t.candidates.length > 0
         ? `<div class="fix-candidates">
@@ -1658,8 +1660,36 @@ function _statusChip(status) {
 
 function _matchIcon(quality) {
   if (quality === "exact") return '<span class="match-ok" title="Matched">&#10003;</span>';
+  if (quality === "approx") return '<span class="match-warn" title="Approximate match">&#8776;</span>';
   if (quality === "ambiguous") return '<span class="match-warn" title="Ambiguous">?</span>';
   return '<span class="match-err" title="No match">!</span>';
+}
+
+// Human label for HOW a tool matched its spool (exact hex vs name/fuzzy).
+// Reflects the postprocessor sidecar `tier` produced by --fuzzy-color.
+function _tierLabel(t) {
+  if (!t) return "";
+  if (t.match_quality === "exact") return "exact";
+  if (t.match_quality === "approx") {
+    if (t.tier === "name_exact" || t.tier === "name_canon") return "name";
+    if (t.tier === "fuzzy") return "fuzzy";
+    return "approx";
+  }
+  if (t.match_quality === "ambiguous") return "ambiguous";
+  return "no match";
+}
+
+// Small coloured chip showing the match tier, used in the resolution table and
+// the fix-loadout wizard so a fuzzy/name match is reviewable at a glance.
+function _tierBadge(t) {
+  const label = _tierLabel(t);
+  const cls = {
+    "exact": "tier-exact", "name": "tier-approx", "fuzzy": "tier-approx",
+    "approx": "tier-approx", "ambiguous": "tier-warn", "no match": "tier-err",
+  }[label] || "tier-warn";
+  const title = t && t.match_quality === "approx"
+    ? `Matched approximately (${t.tier || "fuzzy"}) — review` : label;
+  return `<span class="tier-badge ${cls}" title="${title}">${label}</span>`;
 }
 
 function _colorSwatch(hex) {
@@ -1681,11 +1711,11 @@ function _renderResolutionTable(tools) {
       <td>${_colorSwatch(t.color)} ${t.type}</td>
       <td>${aceLabel}</td>
       <td>${spool}</td>
-      <td>${_matchIcon(t.match_quality)}</td>
+      <td>${_matchIcon(t.match_quality)} ${_tierBadge(t)}</td>
     </tr>`;
   }).join("");
   return `<table class="resolution-table">
-    <thead><tr><th>Tool</th><th>Filament</th><th>Slot</th><th>Spool</th><th></th></tr></thead>
+    <thead><tr><th>Tool</th><th>Filament</th><th>Slot</th><th>Spool</th><th>Match</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
