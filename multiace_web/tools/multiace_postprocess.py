@@ -89,10 +89,11 @@ class Candidate:
 @dataclass
 class ToolResolution:
     tool: ToolMeta
-    match_quality: str  # "exact" | "ambiguous" | "none"
+    match_quality: str  # "exact" | "approx" | "ambiguous" | "none"
     candidates: list[Candidate] = field(default_factory=list)
     resolved: Optional[Candidate] = None
     physical_head: Optional[int] = None   # set by plan_swaps
+    tier: Optional[str] = None  # exact_hex | name_exact | name_canon | fuzzy (None if unresolved)
 
 
 @dataclass
@@ -209,16 +210,164 @@ def query_slots(printer_url: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Color name / distance helpers (ported from decay71 0.98b)
+# ---------------------------------------------------------------------------
+
+# A coarse named-color palette. Slicer filament_colour hex rarely byte-matches a
+# spool's RFID hex, so the fuzzy fallback compares *nearest named colors* and
+# RGB distance instead of raw hex equality.
+_NAMED_COLORS = (
+    ("Black",      (0x00, 0x00, 0x00)),
+    ("White",      (0xFF, 0xFF, 0xFF)),
+    ("Gray",       (0x80, 0x80, 0x80)),
+    ("DarkGray",   (0x40, 0x40, 0x40)),
+    ("LightGray",  (0xD3, 0xD3, 0xD3)),
+    ("Silver",     (0xC0, 0xC0, 0xC0)),
+    ("Red",        (0xE0, 0x20, 0x20)),
+    ("DarkRed",    (0x8B, 0x00, 0x00)),
+    ("Pink",       (0xFF, 0xC0, 0xCB)),
+    ("Orange",     (0xFF, 0x8C, 0x00)),
+    ("Yellow",     (0xFF, 0xE0, 0x20)),
+    ("Gold",       (0xDA, 0xA5, 0x20)),
+    ("Brown",      (0x8B, 0x45, 0x13)),
+    ("Beige",      (0xE6, 0xD6, 0xA5)),
+    ("Green",      (0x20, 0xA0, 0x20)),
+    ("DarkGreen",  (0x00, 0x64, 0x00)),
+    ("LightGreen", (0x90, 0xEE, 0x90)),
+    ("Cyan",       (0x20, 0xD0, 0xD0)),
+    ("Blue",       (0x30, 0x50, 0xF0)),
+    ("DarkBlue",   (0x00, 0x00, 0x8B)),
+    ("LightBlue",  (0xAD, 0xD8, 0xE6)),
+    ("Purple",     (0x80, 0x20, 0x80)),
+    ("Magenta",    (0xE0, 0x20, 0xE0)),
+)
+
+_COLOR_QUALIFIERS = ("Dark", "Light")
+
+# Names that mean the same filament color for matching purposes.
+_COLOR_SYNONYMS = {
+    "Silver": "Gray",
+    "Gold": "Yellow",
+}
+
+# Default RGB euclidean-distance threshold for the fuzzy tier (0..441).
+DEFAULT_FUZZY_DISTANCE = 40.0
+
+
+def _hex_to_rgb(hex_str: str) -> Optional[tuple[int, int, int]]:
+    """('#rrggbb' or 'rrggbb') -> (r, g, b), or None if unparseable."""
+    s = (hex_str or "").strip().lower().lstrip("#")
+    if len(s) < 6:
+        return None
+    try:
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    except ValueError:
+        return None
+
+
+def approx_color_name(hex_str: str) -> str:
+    """Nearest named color from a hex string. Returns '?' for empty input and
+    the input unchanged if it cannot be parsed as #RRGGBB."""
+    if not hex_str:
+        return "?"
+    rgb = _hex_to_rgb(hex_str)
+    if rgb is None:
+        return hex_str
+    r, g, b = rgb
+    best, best_d = hex_str, 1 << 30
+    for name, (nr, ng, nb) in _NAMED_COLORS:
+        d = (r - nr) ** 2 + (g - ng) ** 2 + (b - nb) ** 2
+        if d < best_d:
+            best_d, best = d, name
+    return best
+
+
+def _strip_color_qualifier(name: str) -> str:
+    """'DarkRed' -> 'Red', 'LightBlue' -> 'Blue', otherwise unchanged."""
+    if not name:
+        return ""
+    for q in _COLOR_QUALIFIERS:
+        if name.startswith(q) and len(name) > len(q):
+            return name[len(q):]
+    return name
+
+
+def _canonical_color_name(name: str) -> str:
+    """Qualifier-strip + synonym table: 'DarkRed'->'Red', 'Silver'->'Gray',
+    'Gold'->'Yellow', 'LightGray'->'Gray'."""
+    base = _strip_color_qualifier(name)
+    return _COLOR_SYNONYMS.get(base, base)
+
+
+def color_distance(hex_a: str, hex_b: str) -> Optional[float]:
+    """RGB euclidean distance between two hex colors, or None if either is
+    unparseable. Range 0 (identical) .. ~441.7 (black vs white)."""
+    ra = _hex_to_rgb(hex_a)
+    rb = _hex_to_rgb(hex_b)
+    if ra is None or rb is None:
+        return None
+    return ((ra[0] - rb[0]) ** 2 + (ra[1] - rb[1]) ** 2 + (ra[2] - rb[2]) ** 2) ** 0.5
+
+
+# ---------------------------------------------------------------------------
 # Tool matching
 # ---------------------------------------------------------------------------
 
-def match_tools(tools: list[dict], slots_response: dict) -> list[ToolResolution]:
+def _fuzzy_resolve(
+    tmeta: ToolMeta,
+    same_material: list[Candidate],
+    cand_color: dict[int, str],
+    fuzzy_max_distance: float,
+) -> tuple[Optional[Candidate], Optional[str]]:
+    """Tiered fallback for a tool with no exact-hex match, scoped to spools of
+    the same material. Tries name_exact -> name_canon -> fuzzy, returning the
+    first tier that yields a candidate (nearest by RGB distance, tiebroken by
+    ace/slot) plus the tier name, or (None, None)."""
+    if not same_material:
+        return None, None
+    tool_name = approx_color_name(tmeta.color)
+    tool_canon = _canonical_color_name(tool_name)
+
+    def _nearest(cands: list[Candidate]) -> Candidate:
+        return min(
+            cands,
+            key=lambda c: (
+                color_distance(tmeta.color, cand_color[c.spool_id]) or 1e9,
+                c.ace, c.slot,
+            ),
+        )
+
+    name_exact = [c for c in same_material
+                  if approx_color_name(cand_color[c.spool_id]) == tool_name]
+    if name_exact:
+        return _nearest(name_exact), "name_exact"
+
+    name_canon = [c for c in same_material
+                  if _canonical_color_name(approx_color_name(cand_color[c.spool_id])) == tool_canon]
+    if name_canon:
+        return _nearest(name_canon), "name_canon"
+
+    within = [c for c in same_material
+              if (color_distance(tmeta.color, cand_color[c.spool_id]) or 1e9) <= fuzzy_max_distance]
+    if within:
+        return _nearest(within), "fuzzy"
+
+    return None, None
+
+
+def match_tools(tools: list[dict], slots_response: dict, *,
+                fuzzy: bool = False,
+                fuzzy_max_distance: float = DEFAULT_FUZZY_DISTANCE) -> list[ToolResolution]:
     """Match each slicer tool against bound spools using exact (type, color_hex).
 
     slots_response is the JSON from GET /api/slots:
       {"aces": [{"index": N, "slots": [{"slot": S, "spool": {...} | null}]}]}
 
     Returns one ToolResolution per tool (same order as input).
+
+    When ``fuzzy`` is True, tools with no exact hex match fall back to a tiered
+    color-name / RGB-distance match within the same material (tier recorded on
+    the resolution). Exact matches always win and are never overridden.
     """
     all_bindings: list[tuple[int, int, str, str, int, str]] = []
     for ace_block in (slots_response.get("aces") or []):
@@ -251,20 +400,33 @@ def match_tools(tools: list[dict], slots_response: dict) -> list[ToolResolution]
             if mat == tmeta.type and col == tmeta.color
         ]
         if len(candidates) == 1:
-            mq = "exact"
-            resolved = candidates[0]
+            mq, resolved, tier = "exact", candidates[0], "exact_hex"
         elif len(candidates) > 1:
-            mq = "ambiguous"
-            resolved = None
+            mq, resolved, tier = "ambiguous", None, None
         else:
-            mq = "none"
-            resolved = None
+            mq, resolved, tier = "none", None, None
+            if fuzzy:
+                same_material = [
+                    Candidate(ace=ace, slot=slot, spool_id=sid, spool_name=name)
+                    for ace, slot, mat, col, sid, name in all_bindings
+                    if mat == tmeta.type
+                ]
+                cand_color = {
+                    sid: col
+                    for ace, slot, mat, col, sid, name in all_bindings
+                    if mat == tmeta.type
+                }
+                resolved, tier = _fuzzy_resolve(
+                    tmeta, same_material, cand_color, fuzzy_max_distance)
+                if resolved is not None:
+                    mq, candidates = "approx", [resolved]
 
         resolutions.append(ToolResolution(
             tool=tmeta,
             match_quality=mq,
             candidates=candidates,
             resolved=resolved,
+            tier=tier,
         ))
     return resolutions
 
@@ -648,7 +810,9 @@ def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
         tools_dict[str(r.tool.index)] = {
             "type": r.tool.type,
             "color": r.tool.color,   # stored without leading # to match parse_header normalization
+            "color_name": approx_color_name(r.tool.color),
             "match_quality": r.match_quality,
+            "tier": r.tier,
             "candidates": [
                 {"ace": c.ace, "slot": c.slot, "spool_id": c.spool_id, "spool_name": c.spool_name}
                 for c in r.candidates
@@ -669,6 +833,11 @@ def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
         }
         for s in swaps
     ]
+    match_summary: dict[str, int] = {}
+    for r in resolutions:
+        key = r.tier if r.tier else r.match_quality
+        match_summary[key] = match_summary.get(key, 0) + 1
+
     data = {
         "schema": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -676,6 +845,7 @@ def write_sidecar(gcode_path: Path, resolutions: list[ToolResolution],
         "status": status,
         "reason": reason,
         "tools": tools_dict,
+        "match_summary": match_summary,
         "swaps": swaps_list,
         "errors": errors or [],
     }
@@ -748,6 +918,15 @@ def main(argv: Optional[list] = None) -> int:
               "are skipped. Default: off."),
     )
     parser.add_argument(
+        "--fuzzy-color", nargs="?", type=float, const=DEFAULT_FUZZY_DISTANCE,
+        default=None, metavar="DIST",
+        help=("Resolve tools whose slicer color does not byte-match a spool's "
+              "RFID hex by falling back to nearest-named-color and RGB-distance "
+              "matching within the same material. Optional DIST is the max RGB "
+              f"euclidean distance for the fuzzy tier (default {DEFAULT_FUZZY_DISTANCE:g} "
+              "when the flag is given). Default: off."),
+    )
+    parser.add_argument(
         "gcode_path",
         help="Path to the gcode file to process (in-place modification).",
     )
@@ -774,7 +953,14 @@ def main(argv: Optional[list] = None) -> int:
             slots_response = {"slots": []}
     else:
         slots_response = {"slots": []}
-    resolutions = match_tools(tools, slots_response)
+    if args.fuzzy_color is not None:
+        resolutions = match_tools(tools, slots_response,
+                                  fuzzy=True, fuzzy_max_distance=args.fuzzy_color)
+        approx_n = sum(1 for r in resolutions if r.match_quality == "approx")
+        if approx_n:
+            _info(f"fuzzy color match resolved {approx_n} tool(s) the exact pass missed")
+    else:
+        resolutions = match_tools(tools, slots_response)
 
     alias_decisions = None
     if args.optimize:
