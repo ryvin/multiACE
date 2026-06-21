@@ -10,6 +10,24 @@ DEFAULT_CONFIG = {
     'enable': True
 }
 
+
+def build_runout_message(name, head_index, head_source=None):
+    """Build an actionable, ACE/slot-aware runout message.
+
+    Kept Klipper-free so it can be unit-tested. ``head_source`` is the ace
+    module's head -> {'ace_index', 'slot', ...} map; when the source location
+    for ``head_index`` is known, the (ACE / Slot) origin is included so the
+    operator knows which spool to reload. ACE/slot labels are 0-based to match
+    the firmware SLOT param. Falls back to a plain message otherwise.
+    """
+    base = '[multiACE] %s runout' % name
+    src = (head_source or {}).get(head_index) or {}
+    ace_index, slot = src.get('ace_index'), src.get('slot')
+    loc = (' (ACE %s / Slot %s)' % (ace_index, slot)
+           if ace_index is not None and slot is not None else '')
+    return base + loc + ' - reload filament (printer display or web "Reload"), then RESUME'
+
+
 class RunoutHelper:
     def __init__(self, config):
         self.name = config.get_name().split()[-1]
@@ -74,6 +92,8 @@ class RunoutHelper:
         if ace is not None and getattr(ace, '_swap_in_progress', False):
             logging.info("[multiACE] filament_switch_sensor: blocking runout during swap")
             return
+        head_source = getattr(ace, '_head_source', None) if ace is not None else None
+        full_msg = build_runout_message(self.name, self.extruder_index, head_source)
         # Pausing from inside an event requires that the pause portion
         # of pause_resume execute immediately.
         pause_prefix = ""
@@ -83,7 +103,7 @@ class RunoutHelper:
                                         self.exception_manager.list.MODULE_ID_TOOLHEAD,
                                         self.extruder_index,
                                         self.exception_manager.list.CODE_TOOLHEAD_FILAMENT_RUNOUT,
-                                        '%s runout' % (self.name),
+                                        full_msg,
                                         2)
             pause_resume = self.printer.lookup_object('pause_resume')
             pause_resume.send_pause_command()
@@ -101,7 +121,7 @@ class RunoutHelper:
                         id = self.exception_manager.list.MODULE_ID_TOOLHEAD,
                         index = self.extruder_index,
                         code = self.exception_manager.list.CODE_TOOLHEAD_FILAMENT_RUNOUT,
-                        message = '%s runout' % (self.name),
+                        message = full_msg,
                         oneshot = 0,
                         level = 2)
 
