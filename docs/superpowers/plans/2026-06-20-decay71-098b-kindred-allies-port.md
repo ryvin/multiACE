@@ -146,7 +146,9 @@ All cleanly-portable, verifiable-without-hardware work is **shipped to `main`** 
 | 3.2 SVG wiring overlay | #12 | ✅ merged |
 | 3.3 Provenance badges (bound-spool surfacing) | #13 | ✅ merged (partial — see below) |
 
-**Test totals on `main`:** 70 firmware + 384 web, all green.
+| 6 (partial) Saveable loadout snapshots (`/api/snapshots`, Dashboard panel) | #15 | ✅ merged |
+
+**Test totals on `main`:** 70 firmware + 397 web, all green.
 
 ### Blocked on hardware (next session, with the ACE 2 + a print rig)
 
@@ -159,4 +161,4 @@ Not fabricated unverified — these require physical hardware and the plan's own
 ### Deferred (net-new, not clean ports)
 
 - **3.3 remainder** — cascading materials-DB picker + RFID-read round-trip. Needs a materials-DB backend endpoint + a firmware/Moonraker RFID-read flow that don't exist in this fork. (Slot `📖` FilamentHub deep-link picker already exists.)
-- **Wave 6** — editable command queue, saveable loadout snapshots, display mirror, online update. Large net-new web features (decay71's are Vue); each warrants its own design pass.
+- **Wave 6** — saveable loadout snapshots **shipped** (#15). Remaining: editable command queue (web, net-new, large), display mirror (`/screen` proxy — printer integration), online update (`multiace_update.sh` + on-device debug-mode — printer integration). Each warrants its own design pass.
