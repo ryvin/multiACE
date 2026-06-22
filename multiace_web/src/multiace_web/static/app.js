@@ -2415,6 +2415,21 @@ function renderSlotCard(ace, slotIdx) {
   chevron.disabled = (filled === false) || state.swap_in_progress;
   chevron.addEventListener("click", () => openHeadTargetMenu(chevron, ace, slotIdx));
 
+  // Reseat: the ACE reports this slot empty (gate_status 0) but the operator
+  // may know filament is physically loaded — its tail has drifted off the
+  // ACE's inlet sensor (classic coupling drift). Offer a nudge that retracts
+  // the tail back onto the sensor so the ACE re-detects it. Only meaningful on
+  // the active ACE (gate_status reflects only it; ACE_RETRACT acts on it).
+  if (isActive && filled === false) {
+    const reseatBtn = setEl(actions, "button", { textContent: "↺ Reseat" });
+    reseatBtn.className = "ghost-btn slot-reseat-btn";
+    reseatBtn.title = "Filament loaded but reads empty? Nudge the slot so the "
+      + "ACE re-detects it. If it stays empty the filament is past the drive "
+      + "wheel — reseat it by hand.";
+    reseatBtn.disabled = state.swap_in_progress;
+    reseatBtn.addEventListener("click", () => reseatSlot(ace, slotIdx, reseatBtn));
+  }
+
   if (loadedToEntry) {
     const unloadBtn = setEl(actions, "button", { textContent: `Unload ${tName(loadedToHead)}` });
     unloadBtn.dataset.cmd = `ACEC__Unload_T${loadedToHead}`;
@@ -2658,6 +2673,44 @@ async function clearSlot() {
     fetchState();
   } catch (e) {
     toast("Clear failed.", "error");
+  }
+}
+
+/**
+ * Reseat an empty-reading slot: ask the server to nudge it (a small retract)
+ * and report whether the ACE then re-detects filament. Drives a motor, so it
+ * confirms first. Result feedback comes straight from the endpoint, which reads
+ * gate_status back live after the nudge.
+ */
+async function reseatSlot(ace, slotIdx, btn) {
+  const label = `ACE ${String.fromCharCode(65 + ace)} / ${slotName(slotIdx)}`;
+  const ok = await confirmDialog(
+    `Reseat ${label}?\n\nThis nudges the slot (a small retract) so the ACE can `
+    + `re-detect filament that reads empty. It moves the slot motor.`);
+  if (!ok) return;
+  if (btn) { btn.disabled = true; btn.textContent = "↺ Reseating…"; }
+  toast(`Reseating ${label}…`);
+  try {
+    const r = await fetch(api(`api/slots/${ace}/${slotIdx}/reseat`),
+                          { method: "POST", headers: authHeader() });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      toast(`Reseat failed: ${body.detail || body.error || r.status}`, "error");
+      return;
+    }
+    if (body.detected === true) {
+      toast(`${label} detected — gate is now available.`);
+    } else if (body.detected === false) {
+      toast(`${label} still reads empty — filament is likely past the drive `
+            + `wheel. Reseat it by hand at the printer.`, "error");
+    } else {
+      toast(`Nudged ${label} — couldn't confirm; watch the slot chip.`);
+    }
+    fetchState();
+  } catch (e) {
+    toast("Reseat failed.", "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "↺ Reseat"; }
   }
 }
 

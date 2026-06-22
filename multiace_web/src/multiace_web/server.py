@@ -56,6 +56,17 @@ _HUMIDITY_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
 _HUMIDITY_PER_ACE_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
 _HUMIDITY_TTL_SEC = 30.0
 
+# Slot reseat: nudge an empty-reading slot so the ACE re-detects filament.
+# A small retract drags the filament tail back toward the ACE's inlet presence
+# sensor (the sensor that drives slots[i].status -> gate_status). Kept short to
+# limit cross-slot coupling drift and avoid pulling the tail past the drive
+# wheel. Only effective while the wheel still grips; past-the-wheel drift needs
+# a manual reseat. SETTLE gives the firmware's 1 Hz heartbeat a cycle to refresh
+# gate_status from the ACE before we read it back.
+RESEAT_RETRACT_MM = 15
+RESEAT_RETRACT_SPEED = 20
+RESEAT_SETTLE_S = 1.5
+
 
 def _derive_sensors_url(single_url: str) -> str:
     """Map a configured /sensor URL to its sibling /sensors. Returns the input
@@ -1078,6 +1089,61 @@ def create_app(
         except Exception:
             pass
         return {"ok": True, "cleared_spool_id": cleared}
+
+    @app.post("/api/slots/{ace}/{slot}/reseat")
+    async def reseat_slot(request: Request, ace: int, slot: int) -> dict:
+        """Re-detect filament in a slot the ACE reports empty.
+
+        Issues a small ACE_RETRACT to drag the filament tail back onto the
+        ACE's inlet sensor, waits one heartbeat, then reads gate_status back
+        from the live `ace` object. ACE_RETRACT acts on the active device and
+        gate_status reflects only the active ACE, so this is restricted to the
+        active ACE (the UI only offers it there).
+
+        Returns ``detected``: True if the gate flipped to available, False if
+        it stayed empty (filament likely past the drive wheel -> hand-reseat),
+        or None if the retract ran but the gate read-back was unavailable.
+        """
+        if not (0 <= ace <= 3 and 0 <= slot <= 3):
+            raise HTTPException(422, "ace and slot must be 0-3")
+        state = request.app.state.state
+        active = int(getattr(state, "active_device", 0) or 0) if state else 0
+        if ace != active:
+            raise HTTPException(
+                409,
+                f"Reseat only works on the active ACE (currently ACE {active}). "
+                f"Switch to ACE {ace} first.",
+            )
+        mr = request.app.state.moonraker
+        gcode = (
+            f"ACE_RETRACT INDEX={slot} "
+            f"LENGTH={RESEAT_RETRACT_MM} SPEED={RESEAT_RETRACT_SPEED}"
+        )
+        try:
+            await mr.run_gcode(gcode)
+        except MoonrakerError as e:
+            raise HTTPException(502, f"reseat retract failed: {e}")
+        # Let the 1 Hz firmware heartbeat refresh the ACE's per-slot status,
+        # then read gate_status live from the `ace` object.
+        if RESEAT_SETTLE_S:
+            await asyncio.sleep(RESEAT_SETTLE_S)
+        detected: Optional[bool] = None
+        gate: Optional[int] = None
+        try:
+            ace_obj = (await mr.query_objects(["ace"])).get("ace") or {}
+            gs = ace_obj.get("gate_status") or []
+            if slot < len(gs):
+                gate = gs[slot]
+                detected = (gs[slot] == 1)
+            # The reseat emits no STATE audit line, so the log tailer won't
+            # refresh CurrentState.gate_status on its own — the slot chip would
+            # stay "Empty" even on success. Write the just-read array back so
+            # the UI's next /api/state reflects the flip immediately.
+            if isinstance(gs, list) and gs and state is not None:
+                state.gate_status = list(gs)
+        except MoonrakerError:
+            pass  # retract happened; we just couldn't confirm the result
+        return {"ok": True, "detected": detected, "gate_status": gate, "gcode": gcode}
 
     @app.post("/api/dry/stop")
     async def post_dry_stop(request: Request, body: DryStopRequest) -> dict:
