@@ -120,6 +120,15 @@ button.primary {
 }
 button.primary:hover:not([disabled]) { filter: brightness(1.06); }
 
+.dash-slots-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+#sync-filament-btn { white-space: nowrap; flex: 0 0 auto; }
+
 button.slot-reseat-btn {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 32%, var(--border));

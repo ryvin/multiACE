@@ -50,6 +50,7 @@ class SpoolBinding:
     material: str | None
     color: str | None
     weight_remaining_g: float | None
+    vendor: str | None = None
 
 
 class SpoolmanClient:
@@ -94,12 +95,15 @@ class SpoolmanClient:
                 continue
 
             fil = sp.get("filament") or {}
+            ven = fil.get("vendor")
+            vendor = ven.get("name") if isinstance(ven, dict) else ven
             binding = SpoolBinding(
                 spool_id=int(sp["id"]),
                 name=fil.get("name"),
                 material=fil.get("material"),
                 color=fil.get("color_hex"),
                 weight_remaining_g=sp.get("remaining_weight"),
+                vendor=vendor,
             )
             out.setdefault(ace, {})[slot] = binding
         return out

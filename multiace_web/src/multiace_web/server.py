@@ -174,6 +174,76 @@ def build_slots_payload(state, spool_cache) -> dict:
     return {"aces": aces}
 
 
+def _resolve_head_filaments(state, spool_cache) -> dict:
+    """Map each loaded toolhead to the FilamentHub spool bound to its source slot.
+
+    Returns ``{head: SpoolBinding}`` for heads that have a head_source AND a
+    spool bound at that (ace, slot). The printer recognizes filament from
+    Klipper's print_task_config, which only RFID populates; for tagless 3rd-party
+    spools that stays blank, so we bridge it from the FilamentHub bindings.
+    """
+    out: dict = {}
+    head_source = getattr(state, "head_source", {}) or {}
+    cache = spool_cache or {}
+
+    def _slot_map(ace):
+        # cache keys are ints, but tolerate str keys from any JSON round-trip.
+        return cache.get(ace) or cache.get(str(ace)) or {}
+
+    for head in range(4):
+        src = head_source.get(head)
+        if src is None:
+            src = head_source.get(str(head))
+        if not src:
+            continue
+        ace = src.get("ace")
+        slot = src.get("slot")
+        if ace is None or slot is None:
+            continue
+        slots = _slot_map(int(ace))
+        binding = slots.get(int(slot))
+        if binding is None:
+            binding = slots.get(str(slot))
+        if binding is not None:
+            out[head] = binding
+    return out
+
+
+def _filament_config_gcode(head: int, binding) -> str:
+    """Build the SET_PRINT_FILAMENT_CONFIG line for a head from a SpoolBinding.
+
+    Color is normalized to 6-hex RGB (the macro appends the alpha), matching
+    the firmware's own rgb2hex-based RFID push.
+    """
+    material = (getattr(binding, "material", None) or "PLA")
+    vendor = (getattr(binding, "vendor", None) or "Generic")
+    color6 = (getattr(binding, "color", None) or "").lstrip("#")[:6] or "000000"
+    return (
+        f"SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER={head} "
+        f'FILAMENT_TYPE="{material}" FILAMENT_COLOR_RGBA={color6} '
+        f'VENDOR="{vendor}" FILAMENT_SUBTYPE=""'
+    )
+
+
+async def _push_filament_configs(moonraker, head_bindings: dict) -> dict:
+    """Push SET_PRINT_FILAMENT_CONFIG for each head; collect per-head results."""
+    pushed: list = []
+    failed: list = []
+    for head in sorted(head_bindings):
+        binding = head_bindings[head]
+        try:
+            await moonraker.run_gcode(_filament_config_gcode(head, binding))
+            pushed.append({
+                "head": head,
+                "material": getattr(binding, "material", None),
+                "color": getattr(binding, "color", None),
+                "vendor": getattr(binding, "vendor", None),
+            })
+        except MoonrakerError as e:
+            failed.append({"head": head, "error": str(e)})
+    return {"ok": not failed, "count": len(pushed), "pushed": pushed, "failed": failed}
+
+
 def _state_payload(app: Any) -> dict:
     """Build the WS 'state' payload — CurrentState.to_dict + spool_cache.
 
@@ -1071,6 +1141,21 @@ def create_app(
             request.app.state.spool_cache = await sm.list_all_bindings()
         except Exception:
             pass
+        # Auto-sync: if a head is currently loaded from this (ace, slot), push the
+        # new filament's config to the printer so it recognizes it without a
+        # manual sync. Best-effort — never fail the assign on a push error.
+        try:
+            cache = getattr(request.app.state, "spool_cache", {}) or {}
+            resolved = _resolve_head_filaments(request.app.state.state, cache)
+            for_this_slot = {
+                h: b for h, b in resolved.items()
+                if (request.app.state.state.head_source.get(h) or {}).get("ace") == ace
+                and (request.app.state.state.head_source.get(h) or {}).get("slot") == slot
+            }
+            if for_this_slot:
+                await _push_filament_configs(request.app.state.moonraker, for_this_slot)
+        except Exception:
+            pass
         return {"ok": True, "spool_id": body.spool_id, "location": location}
 
     @app.delete("/api/slots/{ace}/{slot}/assign")
@@ -1089,6 +1174,18 @@ def create_app(
         except Exception:
             pass
         return {"ok": True, "cleared_spool_id": cleared}
+
+    @app.post("/api/filament/sync")
+    async def sync_filament(request: Request) -> dict:
+        """Push FilamentHub-designated material/color/vendor into the printer's
+        print_task_config for every loaded head, so the printer recognizes
+        tagless 3rd-party filament at print start (the ACE reads no RFID for it).
+        """
+        state = request.app.state.state
+        cache = getattr(request.app.state, "spool_cache", {}) or {}
+        head_bindings = _resolve_head_filaments(state, cache)
+        result = await _push_filament_configs(request.app.state.moonraker, head_bindings)
+        return result
 
     @app.post("/api/slots/{ace}/{slot}/reseat")
     async def reseat_slot(request: Request, ace: int, slot: int) -> dict:

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
   <title>multiACE</title>
-  <link rel="stylesheet" href="static/style.css?v=0.8.6" />
-  <script defer src="static/app.js?v=0.8.6"></script>
+  <link rel="stylesheet" href="static/style.css?v=0.8.7" />
+  <script defer src="static/app.js?v=0.8.7"></script>
   <script defer src="static/hardware-twin.js?v=0.7.2"></script>
 </head>
 <body>
@@ -71,9 +71,15 @@
         </section>
 
         <section class="dash-slots">
-          <div class="view-head dash-section-head">
-            <h3>ACE slots</h3>
-            <p class="muted small">Filament gates across all detected ACE Pro units.</p>
+          <div class="view-head dash-section-head dash-slots-head">
+            <div>
+              <h3>ACE slots</h3>
+              <p class="muted small">Filament gates across all detected ACE Pro units.</p>
+            </div>
+            <button id="sync-filament-btn" class="ghost-btn"
+                    title="Push the FilamentHub material/color of every loaded head into the printer so it recognizes filament at print start (needed for tagless 3rd-party spools the ACE can't read by RFID).">
+              ⇪ Sync filament → printer
+            </button>
           </div>
           <div id="slots-grid"></div>
         </section>
