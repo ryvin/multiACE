@@ -176,6 +176,10 @@ Recurring problem: a slot physically loaded but the ACE reports it empty (tail d
 
 **Two non-obvious facts surfaced:** (1) recovery direction is **retract**, not feed — a forward feed pushes the tail *away* from the inlet sensor (live-confirmed: the earlier 12mm `ACE_FEED` did nothing; a 15mm `ACE_RETRACT` recovered it). Only works while the wheel still grips; past-the-wheel drift needs hand-reseat. (2) `gate_status` only reaches the web via STATE **audit lines** (the tailer) — `ACE_HEAD_STATUS`/`ACE_RETRACT` emit none, so any endpoint that changes ACE state must write `CurrentState.gate_status` itself or the UI stays stale.
 
+### Field feature — FilamentHub → printer recognition sync (#26, deployed v0.8.7)
+
+Reported: filament loaded + types designated in the app, but the printer says "filament not recognized" at print start. Root cause: **three disconnected filament-type notions** — the ACE RFID read (tagless 3rd-party spools → `rfid=1`, blank), the FilamentHub binding (what the app shows), and Klipper's `print_task_config` (what the printer checks). The firmware only fills `print_task_config` from an RFID read; the FilamentHub picker wrote the Spoolman binding but never called `SET_PRINT_FILAMENT_CONFIG`. Fix: for each loaded head, map `head_source` → (ace, slot) → the bound spool and push `SET_PRINT_FILAMENT_CONFIG` (the same call the RFID path makes). `POST /api/filament/sync` does all heads; assign auto-syncs the affected head; a "⇪ Sync filament → printer" button covers the post-Klipper-restart case (print_task_config isn't persisted). Live-verified: `filament_type` `["","","","NONE"]` → `["PLA","PLA","PLA","PLA"]` with colors+vendors; also pushed live to unblock the user's print. This is the long-deferred "3.3 remainder — RFID-read round-trip," solved from FilamentHub instead of physical tags.
+
 ### Blocked on hardware (next session, with the ACE 2 + a print rig)
 
 Not fabricated unverified — these require physical hardware and the plan's own gates:
