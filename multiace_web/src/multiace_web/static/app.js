@@ -2714,6 +2714,39 @@ async function reseatSlot(ace, slotIdx, btn) {
   }
 }
 
+/**
+ * Push FilamentHub material/color/vendor for every loaded head into the
+ * printer's print_task_config, so the printer recognizes tagless 3rd-party
+ * filament at print start (the ACE reads no RFID for it). Assigning a spool
+ * already auto-syncs the affected head; this re-pushes every loaded head (e.g.
+ * after a Klipper restart, which clears print_task_config).
+ */
+async function syncFilament(ev) {
+  const btn = ev?.currentTarget || document.getElementById("sync-filament-btn");
+  if (btn) { btn.disabled = true; }
+  try {
+    const r = await fetch(api("api/filament/sync"),
+                          { method: "POST", headers: authHeader() });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      toast(`Sync failed: ${body.detail || body.error || r.status}`, "error");
+      return;
+    }
+    const n = body.count || 0;
+    if (n === 0) {
+      toast("Nothing to sync — no loaded head has a FilamentHub spool bound.", "error");
+    } else if (body.failed && body.failed.length) {
+      toast(`Synced ${n} head${n === 1 ? "" : "s"}; ${body.failed.length} failed.`, "error");
+    } else {
+      toast(`Synced ${n} head${n === 1 ? "" : "s"} to the printer.`);
+    }
+  } catch (e) {
+    toast("Sync failed.", "error");
+  } finally {
+    if (btn) { btn.disabled = false; }
+  }
+}
+
 function closeSpoolPicker() {
   document.getElementById("spool-picker-modal")?.classList.add("hidden");
   _spoolPickerCtx = null;
@@ -3521,6 +3554,7 @@ document.addEventListener("DOMContentLoaded", () => {
     (e) => { if (e.key === "Enter") saveLoadout(); });
   document.getElementById("spool-picker-close")?.addEventListener("click", closeSpoolPicker);
   document.getElementById("spool-picker-clear")?.addEventListener("click", clearSlot);
+  document.getElementById("sync-filament-btn")?.addEventListener("click", syncFilament);
   document.getElementById("spool-picker-search")?.addEventListener("input",
     (e) => renderSpoolPickerList(e.target.value));
   loadWebConfig();
