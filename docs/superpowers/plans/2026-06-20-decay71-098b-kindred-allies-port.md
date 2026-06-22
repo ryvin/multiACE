@@ -170,6 +170,12 @@ Live-verified on Davinci-U1 (`state=standby`): 0.8.4 bundle loaded, clear button
 
 Reported: loading **B3** grabbed B3 but advanced **B2**. Root cause: the slot-card **Load** button chose `lowestFreeHead()` as the load target, violating the splitter wiring (T`N` joins A`N`/B`N`, so slot N reaches toolhead N only). Loading B3 with head 2 free emitted `ACE_LOAD_HEAD HEAD=2 ACE=1 SLOT=3` → ACE pushed B3 while toolhead 2 (wired to B2) pulled → B2 advanced. The chevron menu already enforced `head === slotIdx`; only the quick Load button bypassed it. Fix: Load button now targets the mate head (direct load if empty, else defer to swap menu); `lowestFreeHead()` removed. Live-verified every Load emission uses `head === slot`.
 
+### Field feature — per-slot Reseat for empty-reading slots (#25, deployed v0.8.6)
+
+Recurring problem: a slot physically loaded but the ACE reports it empty (tail drifted off the ACE inlet sensor — coupling drift). `ACE_LOAD_HEAD` refuses on an empty gate, so there was no software recovery. Added `↺ Reseat` on empty-reading active-ACE slots → `POST /api/slots/{ace}/{slot}/reseat` issues a bounded `ACE_RETRACT` (15mm/20mm·s⁻¹) to drag the tail back onto the inlet sensor, waits one heartbeat, reads `gate_status` back live from the `ace` object, and writes it into `CurrentState` so the chip refreshes. Restricted to the active ACE (409 otherwise). Live-verified: reseating B3 flipped `gate_status[3]` 0→1 and fixed it in place.
+
+**Two non-obvious facts surfaced:** (1) recovery direction is **retract**, not feed — a forward feed pushes the tail *away* from the inlet sensor (live-confirmed: the earlier 12mm `ACE_FEED` did nothing; a 15mm `ACE_RETRACT` recovered it). Only works while the wheel still grips; past-the-wheel drift needs hand-reseat. (2) `gate_status` only reaches the web via STATE **audit lines** (the tailer) — `ACE_HEAD_STATUS`/`ACE_RETRACT` emit none, so any endpoint that changes ACE state must write `CurrentState.gate_status` itself or the UI stays stale.
+
 ### Blocked on hardware (next session, with the ACE 2 + a print rig)
 
 Not fabricated unverified — these require physical hardware and the plan's own gates:
