@@ -120,6 +120,15 @@ button.primary {
 }
 button.primary:hover:not([disabled]) { filter: brightness(1.06); }
 
+button.slot-reseat-btn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 32%, var(--border));
+}
+button.slot-reseat-btn:hover:not([disabled]) {
+  background: var(--warn-soft);
+  border-color: var(--warn);
+}
+
 button.danger {
   background: var(--surface); color: var(--bad);
   border-color: color-mix(in srgb, var(--bad) 30%, var(--border));
