@@ -59,9 +59,12 @@ rm -f "$EXTRAS_DIR/filament_switch_sensor_ace.py"
 rm -f "$EXTRAS_DIR/filament_feed_pre_multiace.py"
 rm -f "$EXTRAS_DIR/filament_switch_sensor_pre_multiace.py"
 rm -f "$EXTRAS_DIR/ace.py"
+rm -f "$EXTRAS_DIR/ace_keepalive.py"
+rm -f "$EXTRAS_DIR/ace_status.py"
 rm -f "$EXTRAS_DIR/ace_protocol.py"
 rm -f "$EXTRAS_DIR/ace_protocol_v1.py"
 rm -f "$EXTRAS_DIR/ace_protocol_v2.py"
+rm -f "$EXTRAS_DIR/manual_heads.py"
 rm -f "$KINEMATICS_DIR/extruder_ace.py"
 rm -f "$KINEMATICS_DIR/extruder_pre_multiace.py"
 rm -f "$CONFIG_DIR/ace_pre_multiace.cfg"
@@ -85,6 +88,7 @@ fi
 
 # --- Clear Python cache ---
 find "$EXTRAS_DIR/__pycache__" -name "ace*" -delete 2>/dev/null
+find "$EXTRAS_DIR/__pycache__" -name "manual_heads*" -delete 2>/dev/null
 find "$EXTRAS_DIR/__pycache__" -name "filament_feed*" -delete 2>/dev/null
 find "$EXTRAS_DIR/__pycache__" -name "filament_switch_sensor*" -delete 2>/dev/null
 find "$KINEMATICS_DIR/__pycache__" -name "extruder*" -delete 2>/dev/null
