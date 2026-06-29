@@ -3123,7 +3123,11 @@ class BunnyAce:
             'gate_status': self.gate_status,
             'active_device': self._active_device_index + 1,
             'device_count': len(self._ace_devices),
-            'head_source': self._head_source,
+            # orjson (newer PAXX firmware, json_compat.dumps_bytes) rejects
+            # non-str dict keys. self._head_source is int-keyed ({0: ...}); JSON
+            # consumers (poller.py via Moonraker) already receive string keys, so
+            # stringify here to stay compatible without changing in-process callers.
+            'head_source': {str(h): src for h, src in self._head_source.items()},
             'manual_heads': sorted(self._manual_heads),
             'slots': self._info.get('slots', []),
         }
