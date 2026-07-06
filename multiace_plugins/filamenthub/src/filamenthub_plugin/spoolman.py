@@ -109,11 +109,16 @@ class SpoolmanClient:
             out.setdefault(ace, {})[slot] = binding
         return out
 
-    async def list_spools(self) -> list[dict]:
+    async def list_spools(self, *, raise_on_error: bool = False) -> list[dict]:
         """Return all (non-archived) spools for the FilamentHub picker, each as
         ``{spool_id, name, material, color, vendor, weight_remaining_g,
         location}`` where ``location`` is ``{ace, slot}`` if the spool is placed
-        on *this* printer, else ``None``."""
+        on *this* printer, else ``None``.
+
+        If ``raise_on_error`` is True, a FilamentHub network/HTTP failure is
+        re-raised instead of being swallowed into an empty list — callers that
+        need to distinguish "FilamentHub unreachable" from "no spools" should
+        pass this."""
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.get(f"{self._base}/api/v1/spool")
@@ -121,6 +126,8 @@ class SpoolmanClient:
                 spools = resp.json()
         except (httpx.HTTPError, ValueError) as e:
             log.warning("list_spools failed: %s", e)
+            if raise_on_error:
+                raise
             return []
 
         out: list[dict] = []
@@ -173,12 +180,16 @@ class SpoolmanClient:
             await self._set_location(client, spool_id, location)
         return location
 
-    async def unassign_slot(self, ace: int, slot: int):
+    async def unassign_slot(self, ace: int, slot: int, *, raise_on_error: bool = False):
         """Make a slot blank: clear the location of whatever spool is currently
         bound to (ace, slot) on this printer. Returns the cleared spool_id, or
-        None if the slot was already empty."""
+        None if the slot was already empty.
+
+        ``raise_on_error`` is forwarded to the internal ``list_spools()`` call
+        so a FilamentHub outage can be surfaced instead of read as "empty"."""
         want = {"ace": int(ace), "slot": int(slot)}
-        target = next((s for s in await self.list_spools() if s["location"] == want), None)
+        spools = await self.list_spools(raise_on_error=raise_on_error)
+        target = next((s for s in spools if s["location"] == want), None)
         if target is None:
             return None
         async with httpx.AsyncClient(timeout=self._timeout) as client:

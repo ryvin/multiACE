@@ -52,7 +52,6 @@ def test_assign_writes_both_sides(client):
     body = r.json()
     assert body["ok"] is True
     assert body["location"] == {"printer": "davinci-u1", "ace": 1, "slot": 2}
-    import json
     sent = json.loads(ov_route.calls.last.request.content)
     assert sent["color"] == "#0000ff" and sent["brand"] == "Generic"
 
@@ -75,6 +74,33 @@ def test_assign_multiace_failure_502(client):
     r = client.post("/assign", json={"spool_id": 7, "ace": 1, "slot": 2})
     assert r.status_code == 502
     assert "multiace" in r.json()["detail"].lower()
+
+
+@respx.mock
+def test_assign_502_when_filamenthub_unreachable(client):
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(500))
+    r = client.post("/assign", json={"spool_id": 7, "ace": 1, "slot": 2})
+    assert r.status_code == 502
+
+
+@respx.mock
+def test_assign_502_when_filamenthub_write_fails(client):
+    _spool_route()
+    respx.get("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(
+        200, json={"id": 7, "extra": {}}))
+    respx.patch("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(500))
+    r = client.post("/assign", json={"spool_id": 7, "ace": 1, "slot": 2})
+    assert r.status_code == 502
+
+
+@respx.mock
+def test_unassign_502_when_filamenthub_unreachable_and_does_not_clear_multiace(client):
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(500))
+    delete_route = respx.delete("http://ma.test/api/slot-override/1/2").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    r = client.post("/unassign", json={"ace": 1, "slot": 2})
+    assert r.status_code == 502
+    assert not delete_route.called
 
 
 @respx.mock

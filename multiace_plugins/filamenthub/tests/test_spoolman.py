@@ -67,6 +67,14 @@ async def test_list_spools_empty_on_error():
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_list_spools_raises_when_requested():
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(500))
+    with pytest.raises(httpx.HTTPError):
+        await _client().list_spools(raise_on_error=True)
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_assign_spool_patches_double_encoded_location():
     respx.get("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(
         200, json={"id": 7, "extra": {}}))
