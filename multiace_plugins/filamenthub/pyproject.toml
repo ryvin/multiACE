@@ -20,5 +20,5 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 filterwarnings = [
     # third-party: starlette TestClient's own httpx deprecation, not our code
-    "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
 ]
