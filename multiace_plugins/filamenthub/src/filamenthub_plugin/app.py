@@ -16,4 +16,11 @@ def create_app(cfg: Config) -> FastAPI:
     def integration_manifest():
         return MANIFEST
 
+    from .spoolman import SpoolmanClient
+
+    @app.get("/spools")
+    async def spools():
+        sm = SpoolmanClient(cfg.filamenthub_url, cfg.printer_id)
+        return {"spools": await sm.list_spools()}
+
     return app
