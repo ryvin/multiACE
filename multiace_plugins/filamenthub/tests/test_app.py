@@ -1,4 +1,6 @@
 # License: GPL-3.0
+import json
+
 import httpx
 import respx
 
@@ -73,3 +75,23 @@ def test_assign_multiace_failure_502(client):
     r = client.post("/assign", json={"spool_id": 7, "ace": 1, "slot": 2})
     assert r.status_code == 502
     assert "multiace" in r.json()["detail"].lower()
+
+
+@respx.mock
+def test_unassign_clears_both_sides(client):
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(
+        200, json=[{"id": 7, "archived": False, "remaining_weight": 800.0,
+                    "extra": {"filamenthub": json.dumps(json.dumps(
+                        {"schema": 1, "location":
+                         {"printer": "davinci-u1", "ace": 1, "slot": 2}}))},
+                    "filament": {"name": "Galaxy Blue", "material": "PLA",
+                                 "color_hex": "0000ff",
+                                 "vendor": {"name": "Generic"}}}]))
+    respx.get("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(
+        200, json={"id": 7, "extra": {}}))
+    respx.patch("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(200))
+    respx.delete("http://ma.test/api/slot-override/1/2").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    r = client.post("/unassign", json={"ace": 1, "slot": 2})
+    assert r.status_code == 200
+    assert r.json()["cleared_spool_id"] == 7

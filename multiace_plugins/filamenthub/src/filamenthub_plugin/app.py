@@ -18,6 +18,11 @@ class AssignReq(BaseModel):
     slot: int
 
 
+class UnassignReq(BaseModel):
+    ace: int
+    slot: int
+
+
 def create_app(cfg: Config) -> FastAPI:
     app = FastAPI(title="FilamentHub Plugin")
     app.state.cfg = cfg
@@ -53,5 +58,20 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(status_code=502,
                 detail=f"multiACE slot-override failed (FilamentHub already updated): {e}")
         return {"ok": True, "location": location, "override": override}
+
+    @app.post("/unassign")
+    async def unassign(req: UnassignReq):
+        sm = SpoolmanClient(cfg.filamenthub_url, cfg.printer_id)
+        try:
+            cleared = await sm.unassign_slot(req.ace, req.slot)
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"FilamentHub clear failed: {e}")
+        ma = MultiAceClient(cfg.multiace_url)
+        try:
+            await ma.clear_override(req.ace, req.slot)
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502,
+                detail=f"multiACE clear failed (FilamentHub already cleared): {e}")
+        return {"ok": True, "cleared_spool_id": cleared}
 
     return app
