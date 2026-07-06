@@ -21,9 +21,22 @@ async function jpost(url, body) {
 function slotCard(ace, slot, occupied, label, color) {
   const el = document.createElement("button");
   el.className = "slot" + (occupied ? "" : " empty");
-  el.innerHTML = `<span class="swatch" style="background:${color || "transparent"}"></span>
-    <span class="name">${label || "empty"}</span>
-    <span class="meta">ACE ${ace + 1} · slot ${slot + 1}</span>`;
+
+  const swatch = document.createElement("span");
+  swatch.className = "swatch";
+  swatch.style.backgroundColor = color || "transparent";
+  el.appendChild(swatch);
+
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = label || "empty";
+  el.appendChild(name);
+
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = `ACE ${ace + 1} · slot ${slot + 1}`;
+  el.appendChild(meta);
+
   el.addEventListener("click", () => openPicker(ace, slot));
   return el;
 }
@@ -66,8 +79,20 @@ function renderSpoolList(q) {
     .forEach((s) => {
       const color = s.color ? (s.color.startsWith("#") ? s.color : `#${s.color}`) : "transparent";
       const li = document.createElement("li");
-      li.innerHTML = `<span class="swatch" style="background:${color}"></span>
-        <span><strong>${s.name || "?"}</strong> — ${s.material || ""} ${s.vendor ? "· " + s.vendor : ""}</span>`;
+
+      const swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.style.backgroundColor = color;
+      li.appendChild(swatch);
+
+      const info = document.createElement("span");
+      const strong = document.createElement("strong");
+      strong.textContent = s.name || "?";
+      info.appendChild(strong);
+      info.appendChild(document.createTextNode(
+        ` — ${s.material || ""} ${s.vendor ? "· " + s.vendor : ""}`));
+      li.appendChild(info);
+
       li.addEventListener("click", () => assign(s.spool_id));
       ul.appendChild(li);
     });

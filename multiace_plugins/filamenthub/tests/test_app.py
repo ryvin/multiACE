@@ -89,8 +89,11 @@ def test_assign_502_when_filamenthub_write_fails(client):
     respx.get("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(
         200, json={"id": 7, "extra": {}}))
     respx.patch("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(500))
+    ov_route = respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True, "key": "1_2"}))
     r = client.post("/assign", json={"spool_id": 7, "ace": 1, "slot": 2})
     assert r.status_code == 502
+    assert not ov_route.called
 
 
 @respx.mock

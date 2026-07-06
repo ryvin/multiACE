@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import httpx
 
-log = logging.getLogger("multiace.spoolman")
+log = logging.getLogger("filamenthub.spoolman")
 
 
 def _decode_fh(raw) -> dict:
