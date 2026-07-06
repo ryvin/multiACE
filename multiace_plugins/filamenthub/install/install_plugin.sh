@@ -11,9 +11,10 @@ echo "== Deploying to $APP_DIR =="
 mkdir -p "$APP_DIR"
 cp -r "$SRC/src" "$SRC/pyproject.toml" "$APP_DIR/"
 
-echo "== Python venv + deps =="
-python3 -m venv "$APP_DIR/.venv"
-"$APP_DIR/.venv/bin/pip" install --no-input fastapi "uvicorn[standard]" httpx "pydantic>=2"
+echo "== Checking system python3 deps (reused from decay71 — no venv/pip) =="
+PYTHONPATH="/home/lava/.local/lib/python3.11/site-packages" \
+  /usr/bin/python3 -c 'import fastapi,uvicorn,httpx,pydantic; print("  deps OK", fastapi.__version__, pydantic.VERSION)' \
+  || { echo "  ERROR: system python3 is missing fastapi/uvicorn/httpx/pydantic (decay71 web console must be installed first)"; exit 1; }
 
 echo "== Registering init script =="
 cp "$SRC/install/S66filamenthub-plugin" /etc/init.d/S66filamenthub-plugin

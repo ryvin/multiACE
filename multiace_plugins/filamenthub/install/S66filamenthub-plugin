@@ -1,19 +1,21 @@
 #!/bin/sh
 # FilamentHub multiACE plugin — BusyBox sysvinit
 APP_DIR=/userdata/filamenthub-plugin
-VENV=$APP_DIR/.venv
+# Reuse the system python3 that decay71 already runs on — it has fastapi/
+# uvicorn/httpx/pydantic in /home/lava/.local; no venv / pip / native build.
+PY=/usr/bin/python3
 LOGFILE=/home/lava/printer_data/logs/filamenthub-plugin.log
 PIDFILE=/var/run/filamenthub-plugin.pid
 export FILAMENTHUB_URL="${FILAMENTHUB_URL:-https://filamenthub.pinedamail.com}"
 export MULTIACE_PRINTER_ID="${MULTIACE_PRINTER_ID:-u1-1}"
 export MULTIACE_URL="${MULTIACE_URL:-http://127.0.0.1:7126}"
 export FILAMENTHUB_PLUGIN_PORT="${FILAMENTHUB_PLUGIN_PORT:-8089}"
-export PYTHONPATH="$APP_DIR/src"
+export PYTHONPATH="$APP_DIR/src:/home/lava/.local/lib/python3.11/site-packages"
 
 start() {
   echo "Starting filamenthub-plugin"
   start-stop-daemon -S -b -m -p "$PIDFILE" \
-    -x "$VENV/bin/python" -- -m filamenthub_plugin >>"$LOGFILE" 2>&1
+    -x "$PY" -- -m filamenthub_plugin >>"$LOGFILE" 2>&1
 }
 stop() {
   echo "Stopping filamenthub-plugin"
