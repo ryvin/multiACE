@@ -1,3 +1,4 @@
+# License: GPL-3.0
 import pytest
 from fastapi.testclient import TestClient
 from filamenthub_plugin.config import Config

@@ -1,3 +1,4 @@
+# License: GPL-3.0
 """FilamentHub plugin FastAPI app: manifest + (later) picker endpoints."""
 from __future__ import annotations
 from fastapi import FastAPI

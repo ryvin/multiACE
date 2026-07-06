@@ -1,3 +1,4 @@
+# License: GPL-3.0
 import os
 from filamenthub_plugin.config import load_config
 

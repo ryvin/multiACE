@@ -1,3 +1,4 @@
+# License: GPL-3.0
 """Environment configuration for the FilamentHub plugin."""
 from __future__ import annotations
 import os
