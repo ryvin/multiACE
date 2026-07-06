@@ -2,8 +2,10 @@
 """FilamentHub plugin FastAPI app: manifest + (later) picker endpoints."""
 from __future__ import annotations
 import logging
+from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from .config import Config
 from .multiace_client import MultiAceClient
@@ -85,4 +87,6 @@ def create_app(cfg: Config) -> FastAPI:
                 detail="multiACE clear failed (FilamentHub already cleared)")
         return {"ok": True, "cleared_spool_id": cleared}
 
+    static_dir = Path(__file__).parent / "static"
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     return app

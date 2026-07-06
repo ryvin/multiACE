@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FilamentHub</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="fh-head">
+    <h1>FilamentHub → ACE slots</h1>
+    <button id="refresh" class="btn">Refresh</button>
+  </header>
+  <p id="status" class="status" role="status"></p>
+  <section id="grid" class="grid" aria-label="ACE slots"></section>
+
+  <dialog id="picker" class="picker">
+    <h2 id="picker-title">Pick a spool</h2>
+    <input id="filter" class="filter" type="search" placeholder="Filter by name / material / vendor…" autocomplete="off">
+    <ul id="spool-list" class="spool-list"></ul>
+    <menu class="picker-actions">
+      <button id="clear-slot" class="btn btn-ghost">Clear slot</button>
+      <button id="cancel" class="btn btn-ghost" value="cancel">Cancel</button>
+    </menu>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

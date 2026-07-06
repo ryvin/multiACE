@@ -121,3 +121,9 @@ def test_unassign_clears_both_sides(client):
     r = client.post("/unassign", json={"ace": 1, "slot": 2})
     assert r.status_code == 200
     assert r.json()["cleared_spool_id"] == 7
+
+
+def test_root_serves_ui(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "FilamentHub" in r.text
