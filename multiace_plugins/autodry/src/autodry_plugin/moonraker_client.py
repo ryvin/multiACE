@@ -70,25 +70,55 @@ class AceLiveSnapshot:
 def parse_ace_object(obj: dict[str, Any]) -> dict[int, AceLiveSnapshot]:
     """Extract per-ACE humidity snapshots from the `ace` Klipper object.
 
-    Two shapes are supported, most-specific first:
+    Three shapes are supported, most-specific first:
 
-    1. Per-unit (`obj["units"]`, a list of dicts with
+    1. Real decay71 shape (VERIFIED against a live decay71 0.99.2b printer
+       on 2026-07-08): `obj["aces"]` is a list, one entry per ACE, each with
+       an explicit `idx` (0-based) and a top-level `humidity` field (plus
+       `temp`, `connected`, `dryer_status`, `slots`, ...). `humidity` is
+       reported per ACE regardless of which one is currently active.
+
+       CAVEAT: on that live check `aces[i].humidity` was **None** at idle
+       (temp read fine). The ACE Pro's built-in humidity appears null when
+       idle, so auto-trigger stays inert (humidity_ok=False) until a real
+       reading arrives — manual `/dry` is unaffected. Confirm on hardware
+       whether/when `humidity` becomes non-null (dry cycle active, humidity-
+       capable unit, or an external sensor bridge this sidecar doesn't yet
+       vendor — see README "Known limitations").
+
+    2. Per-unit (`obj["units"]`, a list of dicts with
        `environment: {humidity_pct, has_humidity}` — the SP2/SP3 HelixScreen
-       contract already shipped in this repo's ace_status.py). Preferred:
-       gives independent humidity per ACE regardless of which one is
-       currently "active" on the single serial connection.
-    2. Legacy single-active shape: only the currently-active ACE (from
-       `active_device`, 1-based) has usable sensor data; every other index
-       is reported as humidity_ok=False (unknown) rather than guessed.
-
-    NOTE: decay71's exact `ace` object shape wasn't available to verify
-    against real hardware while building this plugin (out of tree, not
-    vendored into this repo) — shape (1) mirrors this repo's own
-    ace_status.py `units[]` contract; shape (2) is the safe fallback if
-    decay71 exposes something else. Worth confirming against a live decay71
-    printer before relying on multi-ACE (non-active) auto-trigger.
+       contract in this repo's ace_status.py). Kept for that surface.
+    3. Legacy single-active shape: only the currently-active ACE (from
+       `active_device`, 1-based) is addressed; humidity reported unknown.
     """
     out: dict[int, AceLiveSnapshot] = {}
+
+    # 1. Real decay71 shape: obj["aces"] list, keyed by explicit idx.
+    aces = obj.get("aces")
+    if isinstance(aces, list) and aces:
+        for i, a in enumerate(aces):
+            if not isinstance(a, dict):
+                continue
+            try:
+                idx = int(a.get("idx", i))
+            except (TypeError, ValueError):
+                idx = i
+            hum = a.get("humidity")
+            humidity_ok = False
+            pct = 0.0
+            if hum is not None:
+                try:
+                    pct = float(hum)
+                    humidity_ok = 0.0 <= pct <= 100.0
+                except (TypeError, ValueError):
+                    pct = 0.0
+            out[idx] = AceLiveSnapshot(
+                humidity_ok=humidity_ok,
+                humidity_pct=pct,
+                connected=bool(a.get("connected", True)),
+            )
+        return out
 
     units = obj.get("units")
     if isinstance(units, list) and units:

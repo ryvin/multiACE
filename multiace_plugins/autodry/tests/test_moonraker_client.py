@@ -79,6 +79,41 @@ def test_parse_ace_object_units_shape_gives_independent_per_ace_humidity():
     assert snaps[1].humidity_ok is False
 
 
+def test_parse_ace_object_decay71_aces_shape_keyed_by_idx_with_populated_humidity():
+    # Real decay71 0.99.2b shape (verified live 2026-07-08): obj["aces"] list.
+    obj = {"device_count": 2, "active_device": 1, "aces": [
+        {"idx": 0, "humidity": 41.0, "temp": 33, "connected": True,
+         "dryer_status": {"status": "stop"}},
+        {"idx": 1, "humidity": 22, "temp": 30, "connected": True,
+         "dryer_status": {"status": "stop"}},
+    ]}
+    snaps = parse_ace_object(obj)
+    assert set(snaps.keys()) == {0, 1}
+    assert snaps[0].humidity_ok is True and snaps[0].humidity_pct == 41.0
+    assert snaps[1].humidity_ok is True and snaps[1].humidity_pct == 22.0
+
+
+def test_parse_ace_object_decay71_aces_null_humidity_at_idle_is_not_ok():
+    # The ACE Pro reports humidity=None when idle — auto-trigger must stay inert.
+    obj = {"aces": [
+        {"idx": 0, "humidity": None, "temp": 33, "connected": True},
+        {"idx": 1, "humidity": None, "temp": 29, "connected": True},
+    ]}
+    snaps = parse_ace_object(obj)
+    assert set(snaps.keys()) == {0, 1}
+    assert snaps[0].humidity_ok is False and snaps[0].humidity_pct == 0.0
+    assert snaps[1].humidity_ok is False
+
+
+def test_parse_ace_object_aces_shape_takes_precedence_over_units():
+    obj = {
+        "aces": [{"idx": 0, "humidity": 30.0, "connected": True}],
+        "units": [{"unit_index": 0, "environment": {"humidity_pct": 99.0, "has_humidity": True}}],
+    }
+    snaps = parse_ace_object(obj)
+    assert snaps[0].humidity_pct == 30.0  # aces[] wins, not units[]
+
+
 def test_parse_ace_object_legacy_shape_only_active_reported_and_unknown_humidity():
     obj = {"active_device": 2, "dryer_status": {"status": "stop"}}
     snaps = parse_ace_object(obj)
