@@ -36,6 +36,16 @@ class Config:
     max_run_min: int
     daily_duty_max_min: int
     min_delta_pct: int
+    # External Govee-bridge humidity source (see humidity_bridge.py). Empty
+    # humidity_url means the bridge is disabled — auto-trigger stays inert
+    # (humidity_ok=False), manual /dry is unaffected. The ACE Pro's own
+    # humidity reading is unusable (verified null on live hardware, both
+    # idle and mid-dry), so this bridge is the only viable humidity source
+    # for auto-trigger today.
+    humidity_url: str = ""
+    humidity_sensors_url: str = ""
+    humidity_auth: str = ""
+    humidity_label: str = ""
 
 
 def load_config() -> Config:
@@ -73,4 +83,8 @@ def load_config() -> Config:
         max_run_min=int(os.environ.get("AUTODRY_MAX_RUN_MIN", "720")),
         daily_duty_max_min=int(os.environ.get("AUTODRY_DAILY_DUTY_MAX_MIN", "1080")),
         min_delta_pct=int(os.environ.get("AUTODRY_MIN_DELTA_PCT", "3")),
+        humidity_url=os.environ.get("MULTIACE_HUMIDITY_URL", "").strip(),
+        humidity_sensors_url=os.environ.get("MULTIACE_HUMIDITY_SENSORS_URL", "").strip(),
+        humidity_auth=os.environ.get("MULTIACE_HUMIDITY_AUTH", "").strip(),
+        humidity_label=os.environ.get("MULTIACE_HUMIDITY_LABEL", "").strip(),
     )

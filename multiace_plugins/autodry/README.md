@@ -50,14 +50,66 @@ read live.
 | `AUTODRY_MAX_RUN_MIN` | `720` | Safety cap on one drying run |
 | `AUTODRY_DAILY_DUTY_MAX_MIN` | `1080` | Cap on total drying minutes per 24h, per ACE |
 | `AUTODRY_MIN_DELTA_PCT` | `3` | Minimum humidity drop required by end of a full-duration run, else FAULTED |
+| `MULTIACE_HUMIDITY_URL` | *(unset)* | Single-sensor Govee-bridge `/sensor` URL. Setting this is what enables the bridge — see "External humidity bridge" below. |
+| `MULTIACE_HUMIDITY_SENSORS_URL` | derived | Per-ACE `/sensors` URL. If unset, derived from `MULTIACE_HUMIDITY_URL` by replacing a trailing `/sensor` with `/sensors`. |
+| `MULTIACE_HUMIDITY_AUTH` | *(unset)* | Sent verbatim as the bridge request's `Authorization` header, if set. |
+| `MULTIACE_HUMIDITY_LABEL` | `ACE` | Display label prefix for bridge readings (e.g. `"ACE 0"`, `"ACE 1"`). |
 
 `load_config()` fails fast (raises) on an out-of-range plugin port, a
 negative tick interval, or an out-of-range default target percentage.
 
+## External humidity bridge (required for auto-trigger)
+
+**The ACE Pro's built-in humidity reading is unusable.** Verified on live
+decay71 hardware (2026-07-08): `ace.aces[i].humidity` is `None` both at idle
+and mid-dry-cycle. Without an external sensor, the auto-dry FSM has no
+humidity signal to arm on — `WATCHING` never accumulates above-threshold
+ticks, so it never reaches `DRYING` on its own.
+
+This plugin talks to a small local Govee-bridge HTTP shim (a BLE-to-HTTP
+relay for Govee H5075-class humidity/temperature sensors — the same bridge
+contract as the `multiace_web` fork's `_read_humidity_per_ace`, vendored
+here in `humidity_bridge.py` rather than imported). Point it at the
+bridge's per-sensor endpoint:
+
+```sh
+export MULTIACE_HUMIDITY_URL="http://<bridge-host>:<port>/sensor"
+# Optional:
+export MULTIACE_HUMIDITY_SENSORS_URL="http://<bridge-host>:<port>/sensors"  # else derived
+export MULTIACE_HUMIDITY_AUTH="Bearer <token>"
+export MULTIACE_HUMIDITY_LABEL="ACE"
+```
+
+The bridge's `/sensors` endpoint returns
+`{mac: {temperature, humidity, battery, rssi, name, age_s} | None, ...}` in
+`GOVEE_BRIDGE_MACS` config order (the bridge's own config, not this
+plugin's — Python dict insertion order is what makes this reliable). This
+plugin maps that dict **positionally**: the 1st MAC's reading feeds ACE 0,
+the 2nd feeds ACE 1, and so on. There is no MAC-to-ACE identity in the
+payload itself — get `GOVEE_BRIDGE_MACS`' order right on the bridge side to
+match the physical ACE arrangement.
+
+If `MULTIACE_HUMIDITY_URL` is unset, the bridge is disabled: every ACE's
+`humidity_ok` stays `False`, auto-trigger stays permanently inert, and
+`POST /dry` (manual trigger) is unaffected — this matches the plugin's
+prior "no bridge" behavior. On a bridge fetch error (timeout, connection
+refused, bad response), every configured ACE slot reports
+`{configured: true, ok: false, error: ...}` — treated as a stale/missed
+sample by the FSM, not a silent opt-out, so a transient bridge outage
+doesn't quietly disable auto-dry until manually re-enabled. Readings are
+cached for 30s (matching the fork's TTL), so a 30s tick interval issues at
+most one bridge HTTP call per tick.
+
+`GET /status` surfaces `humidity_source: "bridge"` when an ACE's displayed
+`humidity_pct` came from the bridge, or `"none"` otherwise (bridge
+unconfigured, bridge reading unusable this tick, or the legacy ACE-object
+`units[]` humidity shape below is displayed for continuity but not treated
+as an auto-trigger source — see "Known limitations").
+
 ## API
 
 - `GET /integration-manifest` → `{"name":"autodry","label":"Auto-Dry","version":"0.1.0","ui_url":"/"}`
-- `GET /status` → `{"aces":[{ace, enabled, state, target_pct, temp_c, duration_min, humidity_pct, remaining_min, fault, last_run}, …]}`
+- `GET /status` → `{"aces":[{ace, enabled, state, target_pct, temp_c, duration_min, humidity_pct, humidity_source, remaining_min, fault, last_run}, …]}`
 - `POST /config {ace, target_pct?, temp?, duration_min?, enabled?}` → set per-ACE params, persisted immediately
 - `POST /dry {ace}` → trigger a manual dry now (proxies to Moonraker's `ACE_DRY` macro, using that ACE's configured temp/duration); `409` if already drying
 - `POST /reset-fault {ace}` → clear a `FAULTED` FSM back to `IDLE`
@@ -72,11 +124,6 @@ negative tick interval, or an out-of-range default target percentage.
   usable humidity reading (everything else shows `humidity_pct: null` in
   `/status` and its FSM just never arms) — safe degrade, but confirm the
   live shape on hardware before trusting non-active-ACE auto-dry.
-- **No external humidity-sensor bridge.** The source fork
-  (`multiace_web/autodryer.py` + `poller.py`) also reads an external Govee/
-  SwitchBot sensor bridge over HTTP as an alternative to ACE-native
-  humidity. That's out of scope here — vendoring it would pull in a whole
-  separate HTTP integration surface for a "bounded, one-time" plugin.
 - **No filament-type-driven profile selection.** The source FSM picks
   temp/duration from a per-filament-type profile table keyed off what's
   loaded in the ACE's slots (`head_source`). This plugin's `/config`

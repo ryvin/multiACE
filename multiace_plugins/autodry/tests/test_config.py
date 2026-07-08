@@ -8,6 +8,8 @@ _ALL_VARS = (
     "AUTODRY_DEFAULT_TEMP_C", "AUTODRY_DEFAULT_DURATION_MIN", "AUTODRY_HYSTERESIS_PP",
     "AUTODRY_COOLDOWN_MIN", "AUTODRY_DEBOUNCE_REQUIRED", "AUTODRY_MAX_RUN_MIN",
     "AUTODRY_DAILY_DUTY_MAX_MIN", "AUTODRY_MIN_DELTA_PCT",
+    "MULTIACE_HUMIDITY_URL", "MULTIACE_HUMIDITY_SENSORS_URL",
+    "MULTIACE_HUMIDITY_AUTH", "MULTIACE_HUMIDITY_LABEL",
 )
 
 
@@ -83,3 +85,25 @@ def test_load_config_malformed_port_raises_value_error(monkeypatch):
     monkeypatch.setenv("AUTODRY_PLUGIN_PORT", "not-a-number")
     with pytest.raises(ValueError):
         load_config()
+
+
+def test_load_config_humidity_bridge_defaults_to_unconfigured(monkeypatch):
+    _clear_env(monkeypatch)
+    cfg = load_config()
+    assert cfg.humidity_url == ""
+    assert cfg.humidity_sensors_url == ""
+    assert cfg.humidity_auth == ""
+    assert cfg.humidity_label == ""
+
+
+def test_load_config_reads_humidity_bridge_env(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("MULTIACE_HUMIDITY_URL", "http://govee.local:8100/sensor")
+    monkeypatch.setenv("MULTIACE_HUMIDITY_SENSORS_URL", "http://govee.local:8100/sensors")
+    monkeypatch.setenv("MULTIACE_HUMIDITY_AUTH", "Bearer abc123")
+    monkeypatch.setenv("MULTIACE_HUMIDITY_LABEL", "Dryer")
+    cfg = load_config()
+    assert cfg.humidity_url == "http://govee.local:8100/sensor"
+    assert cfg.humidity_sensors_url == "http://govee.local:8100/sensors"
+    assert cfg.humidity_auth == "Bearer abc123"
+    assert cfg.humidity_label == "Dryer"
