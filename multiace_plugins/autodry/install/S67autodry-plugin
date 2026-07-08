@@ -1,0 +1,30 @@
+#!/bin/sh
+# Auto-Dry multiACE plugin — BusyBox sysvinit
+APP_DIR=/userdata/autodry-plugin
+# Reuse the system python3 that decay71 already runs on — it has fastapi/
+# uvicorn/httpx/pydantic in /home/lava/.local; no venv / pip / native build.
+PY=/usr/bin/python3
+LOGFILE=/home/lava/printer_data/logs/autodry-plugin.log
+PIDFILE=/var/run/autodry-plugin.pid
+export MOONRAKER_URL="${MOONRAKER_URL:-http://127.0.0.1:7125}"
+export MULTIACE_URL="${MULTIACE_URL:-http://127.0.0.1:7126}"
+export AUTODRY_PLUGIN_PORT="${AUTODRY_PLUGIN_PORT:-8090}"
+export AUTODRY_ROUND_ROBIN="${AUTODRY_ROUND_ROBIN:-0}"
+export PYTHONPATH="$APP_DIR/src:/home/lava/.local/lib/python3.11/site-packages"
+
+start() {
+  echo "Starting autodry-plugin"
+  start-stop-daemon -S -b -m -p "$PIDFILE" \
+    -x "$PY" -- -m autodry_plugin >>"$LOGFILE" 2>&1
+}
+stop() {
+  echo "Stopping autodry-plugin"
+  start-stop-daemon -K -p "$PIDFILE" 2>/dev/null
+  rm -f "$PIDFILE"
+}
+case "$1" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
