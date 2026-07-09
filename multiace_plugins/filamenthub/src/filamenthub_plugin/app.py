@@ -122,7 +122,12 @@ def create_app(cfg: Config) -> FastAPI:
             current = await ma.list_overrides()
         except httpx.HTTPError as e:
             raise HTTPException(status_code=502, detail=f"multiACE unreachable: {e}")
-        to_apply, to_clear = plan_reconcile(winners, current.keys(), brand_by_spool_id)
+        disputed_keys = {
+            (d["ace"], d["slot"]) for d in disputed
+            if d.get("ace") is not None and d.get("slot") is not None
+        }
+        to_apply, to_clear = plan_reconcile(
+            winners, current.keys(), brand_by_spool_id, disputed_keys)
 
         # 4. Execute — collect failures, never abort mid-loop.
         applied, cleared, errors = [], [], []

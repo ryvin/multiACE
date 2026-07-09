@@ -27,7 +27,9 @@ def plan_reconcile(
     winners: list[dict],
     current_override_keys: Iterable[str],
     brand_by_spool_id: dict[int, str],
+    disputed_keys: set[tuple[int, int]] | None = None,
 ) -> tuple[list[dict], list[tuple[int, int]]]:
+    disputed_keys = disputed_keys or set()
     desired: set[tuple[int, int]] = set()
     to_apply: list[dict] = []
     for row in winners:
@@ -45,6 +47,11 @@ def plan_reconcile(
         if parsed is None:
             continue
         ace, slot = parsed
+        # A disputed slot's winner can transiently drop out of `winners`; never
+        # delete a contested label on that account. Disputes are shown, never
+        # written — and clearing an override IS a write.
+        if (ace, slot) in disputed_keys:
+            continue
         if ace in known_aces and (ace, slot) not in desired:
             to_clear.append((ace, slot))
     to_clear.sort()

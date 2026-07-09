@@ -157,9 +157,12 @@ def test_pull_applies_winner_and_clears_vacated(client):
         return_value=httpx.Response(200, json=_ace_state_body()))
     respx.get("http://fh.test/api/v1/spool").mock(
         return_value=httpx.Response(200, json=_spools_body()))
-    # multiACE currently has an extra label at (0,1) that is no longer a winner.
+    # multiACE currently labels: (0,0) still-winner, (0,1) disputed, and (0,2)
+    # genuinely vacated (not a winner, not disputed). Only (0,2) may be cleared;
+    # the disputed (0,1) must be preserved.
     respx.get("http://ma.test/api/slot-override").mock(
-        return_value=httpx.Response(200, json={"overrides": {"0_0": {}, "0_1": {}}}))
+        return_value=httpx.Response(200,
+            json={"overrides": {"0_0": {}, "0_1": {}, "0_2": {}}}))
     post = respx.post("http://ma.test/api/slot-override").mock(
         return_value=httpx.Response(200, json={"ok": True, "key": "0_0"}))
     delete = respx.delete(url__regex=r"http://ma\.test/api/slot-override/\d+/\d+").mock(
@@ -171,7 +174,7 @@ def test_pull_applies_winner_and_clears_vacated(client):
     assert data["applied"] == [{"ace": 0, "slot": 0, "material": "PLA",
                                 "brand": "PolyTerra", "subtype": "PolyTerra Green",
                                 "color": "#00ff00"}]
-    assert data["cleared"] == [{"ace": 0, "slot": 1}]
+    assert data["cleared"] == [{"ace": 0, "slot": 2}]
     assert data["disputed"][0]["winner_spool_id"] == 42
     assert data["errors"] == []
     assert post.called and delete.called
