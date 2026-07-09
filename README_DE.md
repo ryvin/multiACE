@@ -71,6 +71,15 @@ Die Fluidd-Makros **ACEA__Switch_0..3** verwenden um zwischen ACE-Einheiten umzu
 - **PAXX Firmware kompatibel** - Funktioniert mit PAXX-Firmware die Display-Spiegelung bietet, für vollständige Lade-/Entladesteuerung vom Computer
 - **Saubere Installation/Deinstallation** - Ein-Befehl-Skripte mit automatischer Sicherung und Wiederherstellung
 
+## Sidecar-Plugins (optional)
+
+`multiace_plugins/` enthält eigenständige Sidecar-Dienste, die die GUI erweitern, ohne an die Firmware oder die Web-Konsole gekoppelt zu sein. Auf einem decay71-basierten Build werden sie automatisch erkannt (decay71 scannt die Plugin-Ports 8089–8098 nach `GET /integration-manifest` und stellt jedes als iframe-Tab dar); decay71-Updates fassen sie nie an. Jedes kommuniziert ausschließlich über HTTP (Moonraker + die `/api` der Web-Konsole), niemals durch Import von multiACE-Python.
+
+- **FilamentHub** (`multiace_plugins/filamenthub/`, Port 8089) — fügt einen FilamentHub-Tab hinzu: eine Spule aus dem FilamentHub/Spoolman-Bestand für einen ACE-Slot auswählen; der Slot wird in multiACE beschriftet und der Spulenort in FilamentHub gespeichert. Die Aktion **Pull from FilamentHub** spiegelt FilamentHubs maßgebliche Ladekonfiguration in die multiACE-Slot-Labels — **nur Labels, keine Filamentbewegung**. Siehe `multiace_plugins/filamenthub/README.md`.
+- **Auto-Dry** (`multiace_plugins/autodry/`, Port 8090) — pro-ACE feuchtigkeitsgesteuerte Trocknung, vollständig über Moonraker, mit einer FSM je ACE (`IDLE → WATCHING → DRYING → COOLDOWN`, klebendes `FAULTED`). Benötigt eine externe Feuchtigkeitsbrücke (der eingebaute Feuchtigkeitswert des ACE Pro ist unbrauchbar). Siehe `multiace_plugins/autodry/README.md`.
+
+Jedes Plugin hat ein eigenes `README.md`, eine pytest-Suite und `install/install_plugin.sh`. Nur installieren, wenn kein Druck läuft.
+
 ## Voraussetzungen
 
 - Snapmaker U1 Drucker

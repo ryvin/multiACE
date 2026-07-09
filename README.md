@@ -105,6 +105,15 @@ The console installs automatically when you run `install_multiace.sh`. See `mult
 - `hardware-bluetooth.md` — wiring a Govee BLE sensor + USB BT dongle for humidity-driven monitoring
 - `auto-dry-design.md` — design notes for the upcoming humidity-driven auto-dry FSM
 
+## Sidecar Plugins (optional)
+
+`multiace_plugins/` holds standalone sidecar services that extend the GUI without being coupled to the firmware or the web console. On a decay71-based build they are auto-discovered (decay71 scans plugin ports 8089–8098 for a `GET /integration-manifest` and renders each as an iframe tab); decay71 upgrades never touch them. Each communicates only over HTTP (Moonraker + the multiACE web `/api`), never by importing multiACE Python.
+
+- **FilamentHub** (`multiace_plugins/filamenthub/`, port 8089) — adds a FilamentHub tab: pick a spool from FilamentHub/Spoolman inventory for an ACE slot, which labels the slot in multiACE and records the spool's location back in FilamentHub. Its **Pull from FilamentHub** action mirrors FilamentHub's authoritative loaded config into multiACE slot labels — **label-only, zero filament motion** (auto-pull-on-open is additive; destructive clears require the explicit Pull button). See `multiace_plugins/filamenthub/README.md`.
+- **Auto-Dry** (`multiace_plugins/autodry/`, port 8090) — per-ACE humidity-triggered drying driven entirely over Moonraker, with a per-ACE FSM (`IDLE → WATCHING → DRYING → COOLDOWN`, sticky `FAULTED`). Requires an external humidity bridge (the ACE Pro's built-in humidity reading is unusable). See `multiace_plugins/autodry/README.md`.
+
+Each plugin has its own `README.md`, pytest suite, and `install/install_plugin.sh`. Install per-plugin on the printer only when no print is active.
+
 ## Requirements
 
 - Snapmaker U1 printer

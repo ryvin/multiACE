@@ -6,12 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 multiACE is a Klipper extension that enables multiple Anycubic ACE Pro filament changers on a Snapmaker U1 3D printer. It extends the SnapACE project with multi-device support, auto-load, RFID handling, per-ACE dryer settings, and print-start safety checks. Current version: 0.81b (Beta).
 
-The repo has **two cooperating subprojects**:
+The repo has **three cooperating subprojects**:
 
 - `multiace/` — Klipper firmware extension (Python modules + Klipper config + installer). Runs on the printer inside Klipper.
 - `multiace_web/` — Optional FastAPI web console (`http://<printer-ip>/multiace/`) that observes multiACE state and proxies macros to Moonraker. Runs as a separate uvicorn service on the printer; installed automatically by the main installer.
+- `multiace_plugins/` — Optional standalone sidecar plugins (`filamenthub/`, `autodry/`), each its own FastAPI/uvicorn service. On a decay71-based build they are auto-discovered (decay71 scans plugin ports 8089–8098 for `GET /integration-manifest` and renders each as an iframe tab under `/plugin/<name>/`); decay71 upgrades never touch them. Each is installed independently via its own `install/install_plugin.sh`.
 
-The two communicate only via the filesystem (multiACE writes `multiace_state.log`, the web console tails it) and via Moonraker HTTP. There is no direct Python import across the boundary.
+The firmware and web console communicate only via the filesystem (multiACE writes `multiace_state.log`, the web console tails it) and via Moonraker HTTP. The sidecar plugins are even more loosely coupled — they never import multiACE Python and talk only over HTTP (Moonraker + the web console's `/api`). There is no direct Python import across any of these boundaries.
 
 ## Repository Structure
 
@@ -40,6 +41,15 @@ The two communicate only via the filesystem (multiACE writes `multiace_state.log
 - `install/` — Printer-side install: `install_web.sh`, `S62multiace-web` (BusyBox sysvinit), `nginx-multiace.conf` snippet.
 - `tools/visual_regression.py` — Playwright-based read-only screenshot capture across viewports (Dashboard / Activity / Dryer / Config / Diag at 1280×900 and 390×844). Also captures the `Activity → ACE A` filter chip state and the `Diag → ACE B` dropdown selection.
 - `tools/e2e_dual_ace.py` — Manual Playwright golden-path for the dual-ACE GUI: verifies both ACE blocks render, the FilamentHub `📖` deep-link opens with `?picker=ace&printer=&ace=&slot=` query params, and issuing `ACE_LOAD_HEAD HEAD=0 ACE=1 SLOT=0` via the chevron menu makes `head_source[0]` resolve. Pre-flights `print_stats.state`; aborts unless safe.
+
+### Sidecar plugins (`multiace_plugins/`)
+
+Each plugin is a self-contained FastAPI/uvicorn service with its own `pyproject.toml`, `src/<pkg>/`, `tests/` (pytest + respx), `static/` frontend, and `install/` (BusyBox init script `S6x<name>-plugin` + `install_plugin.sh`). They never import multiACE Python — HTTP only.
+
+- `filamenthub/` — port **8089**. Adds a FilamentHub tab: pick a spool from FilamentHub/Spoolman inventory for an ACE slot (`POST /assign`/`/unassign` write both sides). The Phase-4 **`POST /pull`** mirrors FilamentHub's `GET /fleet/api/ace-state` winners into multiACE `/api/slot-override` labels — **label-only, zero filament motion**. Auto-pull-on-open sends `prune=false` (additive; reports would-be clears as `stale`); the explicit Pull button sends `prune=true` (full reconcile, scoped to ACEs the seam covers). Deployed + live-verified on Davinci-U1.
+- `autodry/` — port **8090**. Per-ACE humidity-triggered drying over Moonraker only. Each ACE has its own FSM (`IDLE → WATCHING → DRYING → COOLDOWN`, sticky `FAULTED`); `POST /dry` triggers a manual cycle, `POST /config` sets per-ACE `target_pct`/`temp`/`duration_min`/`enabled`, `POST /reset-fault` clears a fault. Requires an external Govee humidity bridge (`MULTIACE_HUMIDITY_URL`) — the ACE Pro's built-in humidity reading is unusable. Built + tested in-repo; deploy status tracked in project memory.
+
+See each plugin's `README.md` for env vars and install steps. Design/plan docs live under `docs/superpowers/{specs,plans}/`.
 
 ## Common commands
 
@@ -72,6 +82,18 @@ python multiace_web/tools/visual_regression.py http://<printer-ip>/multiace/
 ```
 
 The script is hard-coded to navigate read-only — it must NOT click Save & Restart in the Config tab, slot Load/Unload buttons, or `/api/dry`. Per the project's e2e testing rule, use this (or a Playwright session) to verify UI changes against real hardware before declaring a task complete.
+
+### Sidecar plugins — local dev/test
+
+```bash
+cd multiace_plugins/filamenthub          # or multiace_plugins/autodry
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+pytest                                    # filamenthub: 54 tests; autodry: pytest suite
+python -m filamenthub_plugin              # serves 127.0.0.1:8089 (autodry: 8090)
+```
+
+Printer install (per-plugin, only when no print is active): copy the folder over and run `sh install/install_plugin.sh`. It deploys to `/userdata/<name>-plugin`, registers `/etc/init.d/S6x<name>-plugin`, ensures an nginx `location /plugin/` route, starts the sidecar, and confirms the manifest.
 
 ### Firmware side — no build/test/lint
 
