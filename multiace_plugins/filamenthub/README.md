@@ -16,6 +16,7 @@ upgrades never touch this plugin.
 | `MULTIACE_PRINTER_ID` | `u1-1` | id used in `extra.filamenthub.location.printer` (must match your FilamentHub bindings) |
 | `MULTIACE_URL` | `http://127.0.0.1:7126` | local multiACE web |
 | `FILAMENTHUB_PLUGIN_PORT` | `8089` | must be within decay71 `MULTIACE_PLUGIN_PORTS` (8089–8098) |
+| `FILAMENTHUB_ACE_STATE_URL` | `${FILAMENTHUB_URL}/fleet/api/ace-state` | ace-state read seam (Phase 4 puller) |
 
 ## Local dev
 
@@ -27,6 +28,24 @@ pytest
 FILAMENTHUB_URL=https://filamenthub.pinedamail.com MULTIACE_PRINTER_ID=u1-1 \
   python -m filamenthub_plugin        # serves 127.0.0.1:8089
 ```
+
+## Pull from FilamentHub (Phase 4)
+
+The **Pull from FilamentHub** button (and auto-pull on tab open) mirrors
+FilamentHub's authoritative loaded configuration into multiACE's slot labels —
+**label-only, no filament motion**. It reads FilamentHub's
+`GET /fleet/api/ace-state?printer=<MULTIACE_PRINTER_ID>` seam (one winner per
+slot, `disputed` losers shown but never written), enriches brand from the spool
+list, and reconciles multiACE's `/api/slot-override` labels — clearing vacated
+slots only on ACEs FilamentHub reports.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `FILAMENTHUB_ACE_STATE_URL` | `${FILAMENTHUB_URL}/fleet/api/ace-state` | ace-state read seam |
+
+If Pull reports "ace-state not enabled (watcher provider unwired)", the
+FilamentHub watcher hasn't injected its `ace_state_provider` — that's a
+FilamentHub-side fix (`ryvin/FilamentHub`), not a multiACE change.
 
 ## Printer install
 
