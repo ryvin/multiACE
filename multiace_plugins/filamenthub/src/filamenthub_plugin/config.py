@@ -11,12 +11,18 @@ class Config:
     printer_id: str
     multiace_url: str
     port: int
+    ace_state_url: str
 
 
 def load_config() -> Config:
+    filamenthub_url = os.environ["FILAMENTHUB_URL"]
     return Config(
-        filamenthub_url=os.environ["FILAMENTHUB_URL"],
+        filamenthub_url=filamenthub_url,
         printer_id=os.environ["MULTIACE_PRINTER_ID"],
         multiace_url=os.environ.get("MULTIACE_URL", "http://127.0.0.1:7126"),
         port=int(os.environ.get("FILAMENTHUB_PLUGIN_PORT", "8089")),
+        ace_state_url=os.environ.get(
+            "FILAMENTHUB_ACE_STATE_URL",
+            f"{filamenthub_url.rstrip('/')}/fleet/api/ace-state",
+        ),
     )

@@ -11,6 +11,7 @@ def cfg():
         printer_id="davinci-u1",
         multiace_url="http://ma.test",
         port=8089,
+        ace_state_url="http://fh.test/fleet/api/ace-state",
     )
 
 @pytest.fixture
