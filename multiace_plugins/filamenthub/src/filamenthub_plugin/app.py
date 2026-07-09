@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from .config import Config
 from .multiace_client import MultiAceClient
 from .mapping import spool_to_override
+from .ace_state import AceStateClient, AceStateError
+from .reconcile import plan_reconcile
 
 log = logging.getLogger("filamenthub.plugin")
 
@@ -86,6 +88,61 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(status_code=502,
                 detail="multiACE clear failed (FilamentHub already cleared)")
         return {"ok": True, "cleared_spool_id": cleared}
+
+    @app.get("/ace-state")
+    async def ace_state():
+        client = AceStateClient(cfg.ace_state_url)
+        try:
+            return await client.get_ace_state(cfg.printer_id)
+        except AceStateError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+    @app.post("/pull")
+    async def pull():
+        # 1. Desired state from FilamentHub's priority-resolved seam.
+        try:
+            state = await AceStateClient(cfg.ace_state_url).get_ace_state(cfg.printer_id)
+        except AceStateError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        winners = state.get("slots", [])
+        disputed = state.get("disputed", [])
+
+        # 2. Brand enrichment from the spool inventory (ace-state has no vendor).
+        sm = SpoolmanClient(cfg.filamenthub_url, cfg.printer_id)
+        try:
+            spools = await sm.list_spools(raise_on_error=True)
+            brand_by_spool_id = {s["spool_id"]: (s.get("vendor") or "") for s in spools}
+        except httpx.HTTPError as e:
+            log.warning("brand enrichment failed, proceeding blank: %s", e)
+            brand_by_spool_id = {}
+
+        # 3. Current multiACE overrides -> scoped reconcile plan.
+        ma = MultiAceClient(cfg.multiace_url)
+        try:
+            current = await ma.list_overrides()
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"multiACE unreachable: {e}")
+        to_apply, to_clear = plan_reconcile(winners, current.keys(), brand_by_spool_id)
+
+        # 4. Execute — collect failures, never abort mid-loop.
+        applied, cleared, errors = [], [], []
+        for payload in to_apply:
+            try:
+                await ma.set_override(**payload)
+                applied.append(payload)
+            except httpx.HTTPError as e:
+                errors.append({"action": "apply", "ace": payload["ace"],
+                               "slot": payload["slot"], "error": str(e)})
+        for ace_idx, slot_idx in to_clear:
+            try:
+                await ma.clear_override(ace_idx, slot_idx)
+                cleared.append({"ace": ace_idx, "slot": slot_idx})
+            except httpx.HTTPError as e:
+                errors.append({"action": "clear", "ace": ace_idx,
+                               "slot": slot_idx, "error": str(e)})
+
+        return {"applied": applied, "cleared": cleared,
+                "disputed": disputed, "errors": errors}
 
     static_dir = Path(__file__).parent / "static"
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

@@ -130,3 +130,86 @@ def test_root_serves_ui(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "FilamentHub" in r.text
+
+
+def _ace_state_body():
+    return {"schema": 1, "printer": "davinci-u1", "ts": 1,
+            "slots": [{"ace": 0, "slot": 0, "spool_id": 42, "material": "PLA",
+                       "color": "#00ff00", "name": "PolyTerra Green",
+                       "asserted_by": "user:assign", "asserted_at": "z"}],
+            "disputed": [{"ace": 0, "slot": 1, "spool_id": 7, "material": "PETG",
+                          "color": "#ff0000", "name": "X",
+                          "asserted_by": "watcher:rfid", "asserted_at": "y",
+                          "winner_spool_id": 42}]}
+
+
+def _spools_body():
+    return [{"id": 42, "archived": False,
+             "filament": {"name": "PolyTerra Green", "material": "PLA",
+                          "color_hex": "00ff00", "vendor": {"name": "PolyTerra"}},
+             "remaining_weight": 800,
+             "extra": {"filamenthub": '"{\\"location\\": {\\"printer\\": \\"davinci-u1\\", \\"ace\\": 0, \\"slot\\": 0}}"'}}]
+
+
+@respx.mock
+def test_pull_applies_winner_and_clears_vacated(client):
+    respx.get("http://fh.test/fleet/api/ace-state").mock(
+        return_value=httpx.Response(200, json=_ace_state_body()))
+    respx.get("http://fh.test/api/v1/spool").mock(
+        return_value=httpx.Response(200, json=_spools_body()))
+    # multiACE currently has an extra label at (0,1) that is no longer a winner.
+    respx.get("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"overrides": {"0_0": {}, "0_1": {}}}))
+    post = respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True, "key": "0_0"}))
+    delete = respx.delete(url__regex=r"http://ma\.test/api/slot-override/\d+/\d+").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+
+    r = client.post("/pull")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["applied"] == [{"ace": 0, "slot": 0, "material": "PLA",
+                                "brand": "PolyTerra", "subtype": "PolyTerra Green",
+                                "color": "#00ff00"}]
+    assert data["cleared"] == [{"ace": 0, "slot": 1}]
+    assert data["disputed"][0]["winner_spool_id"] == 42
+    assert data["errors"] == []
+    assert post.called and delete.called
+
+
+@respx.mock
+def test_pull_collects_partial_errors(client):
+    respx.get("http://fh.test/fleet/api/ace-state").mock(
+        return_value=httpx.Response(200, json=_ace_state_body()))
+    respx.get("http://fh.test/api/v1/spool").mock(
+        return_value=httpx.Response(200, json=_spools_body()))
+    respx.get("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"overrides": {}}))
+    respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(502))
+
+    r = client.post("/pull")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["applied"] == []
+    assert len(data["errors"]) == 1
+    assert data["errors"][0]["action"] == "apply"
+    assert data["errors"][0]["ace"] == 0 and data["errors"][0]["slot"] == 0
+
+
+@respx.mock
+def test_pull_maps_seam_disabled_to_502(client):
+    respx.get("http://fh.test/fleet/api/ace-state").mock(
+        return_value=httpx.Response(503))
+    r = client.post("/pull")
+    assert r.status_code == 502
+    assert "not enabled" in r.json()["detail"]
+
+
+@respx.mock
+def test_get_ace_state_passthrough(client):
+    respx.get("http://fh.test/fleet/api/ace-state").mock(
+        return_value=httpx.Response(200, json=_ace_state_body()))
+    r = client.get("/ace-state")
+    assert r.status_code == 200
+    assert r.json()["slots"][0]["spool_id"] == 42
