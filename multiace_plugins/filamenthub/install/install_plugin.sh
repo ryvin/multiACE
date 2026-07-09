@@ -38,4 +38,9 @@ fi
 echo "== Starting plugin =="
 /etc/init.d/S66filamenthub-plugin restart
 sleep 2
-curl -s http://127.0.0.1:8089/integration-manifest && echo && echo "Install OK."
+# Fetch with whatever the box has — PAXX ships wget, not always curl.
+if command -v curl >/dev/null 2>&1; then
+  curl -s http://127.0.0.1:8089/integration-manifest && echo && echo "Install OK."
+else
+  wget -qO- --timeout=5 http://127.0.0.1:8089/integration-manifest && echo && echo "Install OK."
+fi
