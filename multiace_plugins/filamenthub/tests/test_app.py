@@ -181,6 +181,34 @@ def test_pull_applies_winner_and_clears_vacated(client):
 
 
 @respx.mock
+def test_pull_prune_false_is_additive_only(client):
+    # Passive auto-pull-on-open sends prune=false: it applies/updates labels but
+    # NEVER deletes. Guards against churn when the live seam transiently drops a
+    # slot (a destructive clear on every tab-open would delete valid labels).
+    respx.get("http://fh.test/fleet/api/ace-state").mock(
+        return_value=httpx.Response(200, json=_ace_state_body()))
+    respx.get("http://fh.test/api/v1/spool").mock(
+        return_value=httpx.Response(200, json=_spools_body()))
+    respx.get("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200,
+            json={"overrides": {"0_0": {}, "0_2": {}}}))
+    post = respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True, "key": "0_0"}))
+    delete = respx.delete(url__regex=r"http://ma\.test/api/slot-override/\d+/\d+").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+
+    r = client.post("/pull", json={"prune": False})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["applied"] == [{"ace": 0, "slot": 0, "material": "PLA",
+                                "brand": "PolyTerra", "subtype": "PolyTerra Green",
+                                "color": "#00ff00"}]
+    assert data["cleared"] == []          # nothing deleted
+    assert data["stale"] == [{"ace": 0, "slot": 2}]  # reported, not acted on
+    assert post.called and not delete.called
+
+
+@respx.mock
 def test_pull_collects_partial_errors(client):
     respx.get("http://fh.test/fleet/api/ace-state").mock(
         return_value=httpx.Response(200, json=_ace_state_body()))

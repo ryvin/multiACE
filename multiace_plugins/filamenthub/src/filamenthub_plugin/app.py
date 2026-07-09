@@ -30,6 +30,14 @@ class UnassignReq(BaseModel):
     slot: int
 
 
+class PullReq(BaseModel):
+    # prune=True runs a full reconcile including destructive clears of vacated
+    # slots (explicit "Pull" button). prune=False is additive-only — applies /
+    # updates labels but never deletes — used by the passive auto-pull-on-open so
+    # a transient seam drop can't churn or delete valid labels.
+    prune: bool = True
+
+
 def create_app(cfg: Config) -> FastAPI:
     app = FastAPI(title="FilamentHub Plugin")
     app.state.cfg = cfg
@@ -98,7 +106,7 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(e))
 
     @app.post("/pull")
-    async def pull():
+    async def pull(req: PullReq = PullReq()):
         # 1. Desired state from FilamentHub's priority-resolved seam.
         try:
             state = await AceStateClient(cfg.ace_state_url).get_ace_state(cfg.printer_id)
@@ -130,7 +138,7 @@ def create_app(cfg: Config) -> FastAPI:
             winners, current.keys(), brand_by_spool_id, disputed_keys)
 
         # 4. Execute — collect failures, never abort mid-loop.
-        applied, cleared, errors = [], [], []
+        applied, cleared, errors, stale = [], [], [], []
         for payload in to_apply:
             try:
                 await ma.set_override(**payload)
@@ -138,15 +146,21 @@ def create_app(cfg: Config) -> FastAPI:
             except httpx.HTTPError as e:
                 errors.append({"action": "apply", "ace": payload["ace"],
                                "slot": payload["slot"], "error": str(e)})
-        for ace_idx, slot_idx in to_clear:
-            try:
-                await ma.clear_override(ace_idx, slot_idx)
-                cleared.append({"ace": ace_idx, "slot": slot_idx})
-            except httpx.HTTPError as e:
-                errors.append({"action": "clear", "ace": ace_idx,
-                               "slot": slot_idx, "error": str(e)})
+        if req.prune:
+            for ace_idx, slot_idx in to_clear:
+                try:
+                    await ma.clear_override(ace_idx, slot_idx)
+                    cleared.append({"ace": ace_idx, "slot": slot_idx})
+                except httpx.HTTPError as e:
+                    errors.append({"action": "clear", "ace": ace_idx,
+                                   "slot": slot_idx, "error": str(e)})
+        else:
+            # Additive-only: report what a full reconcile WOULD prune, but do not
+            # delete — the seam can't reliably distinguish "empty" from
+            # "transiently absent".
+            stale = [{"ace": a, "slot": s} for a, s in to_clear]
 
-        return {"applied": applied, "cleared": cleared,
+        return {"applied": applied, "cleared": cleared, "stale": stale,
                 "disputed": disputed, "errors": errors}
 
     static_dir = Path(__file__).parent / "static"

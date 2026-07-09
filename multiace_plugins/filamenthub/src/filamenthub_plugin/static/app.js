@@ -134,14 +134,19 @@ function renderDisputes(disputed) {
   box.appendChild(ul);
 }
 
-async function pull() {
-  setStatus("Pulling from FilamentHub…");
+// prune=true → full reconcile incl. destructive clears (explicit button).
+// prune=false → additive-only, used by auto-pull-on-open so a transient seam
+// drop can't churn or delete valid labels.
+async function pull(prune = true) {
+  setStatus(prune ? "Pulling from FilamentHub…" : "Syncing labels…");
   try {
-    const res = await jpost(`${PLUGIN}pull`, {});
+    const res = await jpost(`${PLUGIN}pull`, { prune });
     renderDisputes(res.disputed);
-    const parts = [`applied ${res.applied.length}`, `cleared ${res.cleared.length}`];
+    const parts = [`applied ${res.applied.length}`];
+    if (prune) parts.push(`cleared ${res.cleared.length}`);
+    else if (res.stale && res.stale.length) parts.push(`${res.stale.length} stale (not cleared)`);
     if (res.errors.length) parts.push(`errors ${res.errors.length}`);
-    setStatus(`Pull complete: ${parts.join(", ")}`);
+    setStatus(`${prune ? "Pull" : "Sync"} complete: ${parts.join(", ")}`);
     await render();   // refresh the grid to show the new labels
   } catch (e) {
     setStatus(`Pull failed: ${e.message}`);
@@ -152,5 +157,5 @@ $("#refresh").addEventListener("click", render);
 $("#filter").addEventListener("input", (e) => renderSpoolList(e.target.value));
 $("#clear-slot").addEventListener("click", clearSlot);
 $("#cancel").addEventListener("click", () => $("#picker").close());
-$("#pull").addEventListener("click", pull);
-render().then(pull);
+$("#pull").addEventListener("click", () => pull(true));
+render().then(() => pull(false));
