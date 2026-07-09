@@ -1,0 +1,24 @@
+[project]
+name = "autodry-plugin"
+version = "0.1.0"
+description = "Per-ACE auto-dry -> multiACE decay71 plugin (Moonraker-only sidecar)"
+requires-python = ">=3.11"
+dependencies = ["fastapi", "uvicorn[standard]", "httpx", "pydantic>=2"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "respx", "httpx"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+filterwarnings = [
+    # third-party: starlette TestClient's own httpx deprecation, not our code
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
