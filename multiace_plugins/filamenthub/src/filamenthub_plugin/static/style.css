@@ -34,3 +34,15 @@ h1 { font-size: 1.15rem; margin: 0; }
 .spool-list li:hover { background: var(--bg); }
 .spool-list .swatch { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--line); flex: none; }
 .picker-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 12px 0 0; }
+.disputes {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid #d97706;
+  background: color-mix(in oklab, #d97706 12%, transparent);
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+.disputes ul { margin: 0.25rem 0 0; padding-left: 1.2rem; }
+#pull { background: #2563eb; color: #fff; }
+#pull:hover { background: #1d4ed8; }
+#pull:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }

@@ -9,9 +9,11 @@
 <body>
   <header class="fh-head">
     <h1>FilamentHub → ACE slots</h1>
+    <button id="pull" class="btn">Pull from FilamentHub</button>
     <button id="refresh" class="btn">Refresh</button>
   </header>
   <p id="status" class="status" role="status"></p>
+  <section id="disputes" class="disputes" aria-label="Disputed slots" hidden></section>
   <section id="grid" class="grid" aria-label="ACE slots"></section>
 
   <dialog id="picker" class="picker">

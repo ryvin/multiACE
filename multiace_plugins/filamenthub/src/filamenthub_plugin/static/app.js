@@ -116,8 +116,41 @@ async function clearSlot() {
   } catch (e) { setStatus(`Clear failed: ${e.message}`); }
 }
 
+function renderDisputes(disputed) {
+  const box = $("#disputes");
+  box.innerHTML = "";
+  if (!disputed || !disputed.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const h = document.createElement("strong");
+  h.textContent = `${disputed.length} disputed slot(s) — resolve in FilamentHub:`;
+  box.appendChild(h);
+  const ul = document.createElement("ul");
+  disputed.forEach((d) => {
+    const li = document.createElement("li");
+    li.textContent = `ACE ${d.ace + 1} · slot ${d.slot + 1}: spool ${d.spool_id} ` +
+                     `also claims this (winner: ${d.winner_spool_id})`;
+    ul.appendChild(li);
+  });
+  box.appendChild(ul);
+}
+
+async function pull() {
+  setStatus("Pulling from FilamentHub…");
+  try {
+    const res = await jpost(`${PLUGIN}pull`, {});
+    renderDisputes(res.disputed);
+    const parts = [`applied ${res.applied.length}`, `cleared ${res.cleared.length}`];
+    if (res.errors.length) parts.push(`errors ${res.errors.length}`);
+    setStatus(`Pull complete: ${parts.join(", ")}`);
+    await render();   // refresh the grid to show the new labels
+  } catch (e) {
+    setStatus(`Pull failed: ${e.message}`);
+  }
+}
+
 $("#refresh").addEventListener("click", render);
 $("#filter").addEventListener("input", (e) => renderSpoolList(e.target.value));
 $("#clear-slot").addEventListener("click", clearSlot);
 $("#cancel").addEventListener("click", () => $("#picker").close());
-render();
+$("#pull").addEventListener("click", pull);
+render().then(pull);
