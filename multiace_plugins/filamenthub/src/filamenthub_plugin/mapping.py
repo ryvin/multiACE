@@ -29,3 +29,19 @@ def spool_to_override(spool: dict, ace: int, slot: int) -> dict:
         "subtype": spool.get("name") or "",
         "color": normalize_color(spool.get("color")),
     }
+
+
+def ace_state_row_to_override(row: dict, brand: str) -> dict:
+    """Map one FilamentHub ace-state slot row to a multiACE slot-override payload.
+
+    ``brand`` is passed in (the ace-state row has no vendor); callers enrich it
+    from the spool list. ``name`` is the most informative subtype we have.
+    """
+    return {
+        "ace": int(row["ace"]),
+        "slot": int(row["slot"]),
+        "material": row.get("material") or "",
+        "brand": brand or "",
+        "subtype": row.get("name") or "",
+        "color": normalize_color(row.get("color")),
+    }

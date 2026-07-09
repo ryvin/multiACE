@@ -1,5 +1,9 @@
 # License: GPL-3.0
-from filamenthub_plugin.mapping import normalize_color, spool_to_override
+from filamenthub_plugin.mapping import (
+    ace_state_row_to_override,
+    normalize_color,
+    spool_to_override,
+)
 
 
 def test_normalize_color_adds_hash():
@@ -34,3 +38,19 @@ def test_spool_to_override_handles_missing_fields():
     ov = spool_to_override({"spool_id": 1}, ace=0, slot=0)
     assert ov == {"ace": 0, "slot": 0, "material": "",
                   "brand": "", "subtype": "", "color": ""}
+
+
+def test_ace_state_row_to_override_maps_fields_and_brand():
+    row = {"ace": 1, "slot": 2, "spool_id": 42, "material": "PLA",
+           "color": "00ff00", "name": "PolyTerra Green", "asserted_by": "user:assign"}
+    out = ace_state_row_to_override(row, brand="PolyTerra")
+    assert out == {"ace": 1, "slot": 2, "material": "PLA", "brand": "PolyTerra",
+                   "subtype": "PolyTerra Green", "color": "#00ff00"}
+
+
+def test_ace_state_row_to_override_blank_fields_default_to_empty_string():
+    row = {"ace": 0, "slot": 0, "spool_id": 1, "material": None,
+           "color": None, "name": None}
+    out = ace_state_row_to_override(row, brand="")
+    assert out == {"ace": 0, "slot": 0, "material": "", "brand": "",
+                   "subtype": "", "color": ""}
