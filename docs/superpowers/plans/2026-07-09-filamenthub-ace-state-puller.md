@@ -502,7 +502,8 @@ Create `multiace_plugins/filamenthub/tests/test_reconcile.py`:
 from filamenthub_plugin.reconcile import plan_reconcile
 
 
-def _row(ace, slot, spool_id, material="PLA", color="#fff", name="n"):
+def _row(ace, slot, spool_id, material="PLA", color="#ffffff", name="n"):
+    # 6-digit hex: normalize_color rejects 3-digit shorthand (returns "").
     return {"ace": ace, "slot": slot, "spool_id": spool_id,
             "material": material, "color": color, "name": name}
 
