@@ -23,3 +23,9 @@ class MultiAceClient:
             r = await c.delete(f"{self._base}/api/slot-override/{ace}/{slot}")
             r.raise_for_status()
             return r.json()
+
+    async def list_overrides(self) -> dict[str, dict]:
+        async with httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.get(f"{self._base}/api/slot-override")
+            r.raise_for_status()
+            return r.json().get("overrides", {})

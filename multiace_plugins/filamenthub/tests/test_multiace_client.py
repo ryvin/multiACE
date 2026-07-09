@@ -42,3 +42,23 @@ async def test_set_override_raises_on_5xx():
     with pytest.raises(httpx.HTTPStatusError):
         await ma.set_override(ace=0, slot=0, material="", brand="",
                               subtype="", color="")
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_list_overrides_returns_map():
+    respx.get("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"overrides": {
+            "0_0": {"material": "PLA"}, "1_2": {"material": "PETG"}}}))
+    ma = MultiAceClient("http://ma.test")
+    out = await ma.list_overrides()
+    assert set(out.keys()) == {"0_0", "1_2"}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_list_overrides_missing_key_is_empty():
+    respx.get("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={}))
+    ma = MultiAceClient("http://ma.test")
+    assert await ma.list_overrides() == {}
