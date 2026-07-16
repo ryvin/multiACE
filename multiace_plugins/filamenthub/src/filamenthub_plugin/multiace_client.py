@@ -29,3 +29,9 @@ class MultiAceClient:
             r = await c.get(f"{self._base}/api/slot-override")
             r.raise_for_status()
             return r.json().get("overrides", {})
+
+    async def get_state(self) -> dict:
+        async with httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.get(f"{self._base}/api/plugin-api/state")
+            r.raise_for_status()
+            return r.json()

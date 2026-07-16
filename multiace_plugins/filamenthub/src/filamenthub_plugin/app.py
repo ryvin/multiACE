@@ -9,9 +9,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from .config import Config
 from .multiace_client import MultiAceClient
-from .mapping import spool_to_override
+from .mapping import ace_state_row_to_override, spool_to_override
 from .ace_state import AceStateClient, AceStateError
-from .reconcile import plan_reconcile
+from .desired_store import load_desired, save_desired
+from .reconcile import plan_reconcile, reconcile_slots
 
 log = logging.getLogger("filamenthub.plugin")
 
@@ -97,6 +98,19 @@ def create_app(cfg: Config) -> FastAPI:
                 detail="multiACE clear failed (FilamentHub already cleared)")
         return {"ok": True, "cleared_spool_id": cleared}
 
+    @app.get("/slots")
+    async def slots():
+        desired = load_desired(cfg.desired_state_path)
+        ma = MultiAceClient(cfg.multiace_url)
+        try:
+            state = await ma.get_state()
+            observed_ok = True
+        except Exception as e:  # noqa: BLE001 - degrade to desired-only view
+            log.warning("plugin-api/state fetch failed: %s", e)
+            state, observed_ok = {}, False
+        return {"slots": reconcile_slots(desired, state.get("aces", [])),
+                "observed_ok": observed_ok}
+
     @app.get("/ace-state")
     async def ace_state():
         client = AceStateClient(cfg.ace_state_url)
@@ -160,8 +174,46 @@ def create_app(cfg: Config) -> FastAPI:
             # "transiently absent".
             stale = [{"ace": a, "slot": s} for a, s in to_clear]
 
+        # Persist desired (durable; survives decay71 eject-debounce GC).
+        winner_desired = {}
+        for row in winners:
+            if row.get("slot") is None:
+                continue
+            a, s = int(row["ace"]), int(row["slot"])
+            payload = ace_state_row_to_override(
+                row, brand_by_spool_id.get(row.get("spool_id"), ""))
+            payload["spool_id"] = row.get("spool_id")
+            winner_desired[f"{a}_{s}"] = payload
+        covered = set(state.get("aces_covered") or [])
+        if not covered:
+            covered = {int(r["ace"]) for r in winners if r.get("slot") is not None}
+        merged = dict(load_desired(cfg.desired_state_path))
+        merged.update(winner_desired)
+        for k in list(merged.keys()):
+            a = int(k.split("_")[0])
+            if a in covered and k not in winner_desired:
+                del merged[k]
+        save_desired(cfg.desired_state_path, cfg.printer_id, merged)
+
+        warning = None
+        if "aces_covered" in state and not state.get("aces_covered"):
+            warning = "FilamentHub reported no coverage; clears skipped"
+
+        recon = {"verified": 0, "asserted": 0, "expected_not_loaded": 0,
+                 "unknown_loaded": 0, "conflict": 0}
+        try:
+            st = await ma.get_state()
+            for rr in reconcile_slots(merged, st.get("aces", [])):
+                key = rr["recon_state"].lower()
+                if key in recon:
+                    recon[key] += 1
+        except Exception as e:  # noqa: BLE001 - recon summary is cosmetic; never fail the pull
+            log.warning("reconciliation summary skipped: %s", e)
+            recon = None
+
         return {"applied": applied, "cleared": cleared, "stale": stale,
-                "disputed": disputed, "errors": errors}
+                "disputed": disputed, "errors": errors,
+                "reconciliation": recon, "warning": warning}
 
     static_dir = Path(__file__).parent / "static"
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

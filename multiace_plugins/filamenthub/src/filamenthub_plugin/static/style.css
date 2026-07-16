@@ -46,3 +46,17 @@ h1 { font-size: 1.15rem; margin: 0; }
 #pull { background: #2563eb; color: #fff; }
 #pull:hover { background: #1d4ed8; }
 #pull:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+
+/* Reconciliation states (desired-vs-observed): ghost = expected but not
+   loaded, unknown = occupied with no desired label, conflict = RFID
+   disagrees with the desired label. */
+.slot.ghost { border-style: dashed; opacity: .7; }
+.slot.ghost .swatch.desaturated { filter: grayscale(1) opacity(.6); }
+.slot.unknown { border-left: 3px solid #d97706; }
+.slot.unknown .name { color: #d97706; }
+.slot.conflict { border-left: 3px solid #dc2626; }
+.slot.conflict .name { color: #f87171; }
+.dot-unverified {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--muted); margin-left: 6px; vertical-align: middle;
+}

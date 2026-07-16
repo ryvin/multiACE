@@ -167,6 +167,8 @@ def test_pull_applies_winner_and_clears_vacated(client):
         return_value=httpx.Response(200, json={"ok": True, "key": "0_0"}))
     delete = respx.delete(url__regex=r"http://ma\.test/api/slot-override/\d+/\d+").mock(
         return_value=httpx.Response(200, json={"ok": True}))
+    respx.get("http://ma.test/api/plugin-api/state").mock(
+        return_value=httpx.Response(200, json={"aces": []}))
 
     r = client.post("/pull")
     assert r.status_code == 200
@@ -196,6 +198,8 @@ def test_pull_prune_false_is_additive_only(client):
         return_value=httpx.Response(200, json={"ok": True, "key": "0_0"}))
     delete = respx.delete(url__regex=r"http://ma\.test/api/slot-override/\d+/\d+").mock(
         return_value=httpx.Response(200, json={"ok": True}))
+    respx.get("http://ma.test/api/plugin-api/state").mock(
+        return_value=httpx.Response(200, json={"aces": []}))
 
     r = client.post("/pull", json={"prune": False})
     assert r.status_code == 200
@@ -218,6 +222,8 @@ def test_pull_collects_partial_errors(client):
         return_value=httpx.Response(200, json={"overrides": {}}))
     respx.post("http://ma.test/api/slot-override").mock(
         return_value=httpx.Response(502))
+    respx.get("http://ma.test/api/plugin-api/state").mock(
+        return_value=httpx.Response(200, json={"aces": []}))
 
     r = client.post("/pull")
     assert r.status_code == 200
@@ -244,3 +250,52 @@ def test_get_ace_state_passthrough(client):
     r = client.get("/ace-state")
     assert r.status_code == 200
     assert r.json()["slots"][0]["spool_id"] == 42
+
+
+def _plugin_state_body(slots):
+    return {"aces": [{"idx": 0, "slots": slots}]}
+
+
+@respx.mock
+def test_slots_reconciles_desired_vs_observed(client, cfg):
+    from filamenthub_plugin.desired_store import save_desired
+    save_desired(cfg.desired_state_path, "davinci-u1",
+        {"0_2": {"ace": 0, "slot": 2, "spool_id": 110, "material": "PLA",
+                 "brand": "Snapmaker", "subtype": "SnapSpeed Red", "color": "#FF0000"}})
+    respx.get("http://ma.test/api/plugin-api/state").mock(return_value=httpx.Response(
+        200, json=_plugin_state_body([{"idx": 2, "state": "empty", "rfid": 0,
+                                       "material": "", "color": None}])))
+    r = client.get("/slots")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["observed_ok"] is True
+    row = next(x for x in body["slots"] if (x["ace"], x["slot"]) == (0, 2))
+    assert row["recon_state"] == "EXPECTED_NOT_LOADED"
+    assert row["display_name"] == "SnapSpeed Red"
+
+
+@respx.mock
+def test_slots_degrades_when_state_unreachable(client, cfg):
+    respx.get("http://ma.test/api/plugin-api/state").mock(return_value=httpx.Response(502))
+    r = client.get("/slots")
+    assert r.status_code == 200
+    assert r.json()["observed_ok"] is False
+
+
+@respx.mock
+def test_pull_persists_desired(client, cfg):
+    respx.get("http://fh.test/fleet/api/ace-state").mock(
+        return_value=httpx.Response(200, json=_ace_state_body()))
+    respx.get("http://fh.test/api/v1/spool").mock(
+        return_value=httpx.Response(200, json=_spools_body()))
+    respx.get("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"overrides": {}}))
+    respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    respx.get("http://ma.test/api/plugin-api/state").mock(
+        return_value=httpx.Response(200, json=_plugin_state_body([])))
+    r = client.post("/pull")
+    assert r.status_code == 200
+    assert "reconciliation" in r.json()
+    from filamenthub_plugin.desired_store import load_desired
+    assert "0_0" in load_desired(cfg.desired_state_path)   # winner (ace0 slot0) persisted

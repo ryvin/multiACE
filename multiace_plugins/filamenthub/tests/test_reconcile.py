@@ -1,6 +1,6 @@
 # License: GPL-3.0
 """Unit tests for the pure reconcile planner."""
-from filamenthub_plugin.reconcile import plan_reconcile
+from filamenthub_plugin.reconcile import plan_reconcile, reconcile_slots
 
 
 def _row(ace, slot, spool_id, material="PLA", color="#ffffff", name="n"):
@@ -68,3 +68,45 @@ def test_ignores_malformed_override_keys():
     winners = [_row(0, 0, 42)]
     _, to_clear = plan_reconcile(winners, ["0_0", "bogus", "0_x"], {})
     assert to_clear == []
+
+
+def _obs(idx, slots):
+    return [{"idx": idx, "slots": slots}]
+
+def _slot(i, state, material="", color=None, rfid=0):
+    return {"idx": i, "state": state, "material": material, "color": color, "rfid": rfid}
+
+_RED = {"ace": 0, "slot": 2, "spool_id": 110, "material": "PLA",
+        "brand": "Snapmaker", "subtype": "SnapSpeed Red", "color": "#FF0000"}
+_WHITE = {"ace": 0, "slot": 3, "spool_id": 91, "material": "PLA",
+          "brand": "Snapmaker", "subtype": "SnapSpeed Pearl White", "color": "#F8F8FF"}
+
+def test_expected_not_loaded_when_desired_but_empty():
+    rows = reconcile_slots({"0_2": _RED}, _obs(0, [_slot(2, "empty")]))
+    r = next(x for x in rows if (x["ace"], x["slot"]) == (0, 2))
+    assert r["recon_state"] == "EXPECTED_NOT_LOADED"
+    assert r["display_name"] == "SnapSpeed Red"
+
+def test_unknown_loaded_when_occupied_no_desired():
+    rows = reconcile_slots({}, _obs(0, [_slot(0, "ready", rfid=1)]))
+    r = rows[0]
+    assert r["recon_state"] == "UNKNOWN_LOADED"
+
+def test_verified_when_rfid_matches_desired():
+    rows = reconcile_slots({"0_3": _WHITE},
+                           _obs(0, [_slot(3, "ready", material="PLA", color="#F8F8FF", rfid=1)]))
+    assert rows[0]["recon_state"] == "VERIFIED"
+
+def test_asserted_when_occupied_desired_no_rfid_identity():
+    rows = reconcile_slots({"0_3": _WHITE},
+                           _obs(0, [_slot(3, "ready", material="", color=None, rfid=1)]))
+    assert rows[0]["recon_state"] == "ASSERTED"
+
+def test_conflict_when_rfid_disagrees():
+    rows = reconcile_slots({"0_3": _WHITE},
+                           _obs(0, [_slot(3, "ready", material="PETG", color="#000000", rfid=1)]))
+    assert rows[0]["recon_state"] == "CONFLICT"
+
+def test_empty_when_neither():
+    rows = reconcile_slots({}, _obs(0, [_slot(1, "empty")]))
+    assert rows[0]["recon_state"] == "EMPTY"

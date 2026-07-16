@@ -12,6 +12,7 @@ class Config:
     multiace_url: str
     port: int
     ace_state_url: str
+    desired_state_path: str
 
 
 def load_config() -> Config:
@@ -25,4 +26,6 @@ def load_config() -> Config:
             "FILAMENTHUB_ACE_STATE_URL",
             f"{filamenthub_url.rstrip('/')}/fleet/api/ace-state",
         ),
+        desired_state_path=os.environ.get(
+            "FILAMENTHUB_DESIRED_PATH", ".filamenthub_desired.json"),
     )
