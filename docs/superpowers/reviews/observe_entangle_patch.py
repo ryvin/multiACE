@@ -80,9 +80,20 @@ def _read(path):
 
 
 def _write(path, text):
+    # Preserve the existing file's owner+mode. Klipper runs as `lava`; a naive
+    # mkstemp+replace leaves the file root:root 0600 -> Klipper can't read it ->
+    # PermissionError on the next restart. Copy the original stat onto the temp
+    # before the atomic replace.
+    st = os.stat(path) if os.path.exists(path) else None
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         f.write(text)
+    if st is not None:
+        try:
+            os.chmod(tmp, st.st_mode & 0o777)
+            os.chown(tmp, st.st_uid, st.st_gid)
+        except OSError:
+            pass
     os.replace(tmp, path)
 
 
