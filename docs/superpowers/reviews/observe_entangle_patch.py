@@ -62,6 +62,26 @@ DET_REPL_3 = (
     '            if is_tangled:\n'
     '                self.printer.send_event("print_stats:update_exception_info",\n')
 
+# --- Detector patch 4: dump ALL wheel channels for the active head every 5s,
+#     to find whether any channel actually advances during extrusion ---
+DET_FIND_4 = (
+    '                logging.info(f"[entangle] e[{self.extruder_index}], pos:{new_position}, whl:{new_wheel_counts}, whl2:{new_wheel_2_counts} "\n'
+    '                             f"whl_time:{wheel_data_update_time:0.4f}, whl2_time:{wheel_2_data_update_time:0.4f}, cur_time:{self.reactor.monotonic():0.4f}")')
+DET_REPL_4 = DET_FIND_4 + (
+    '\n'
+    '                try:\n'
+    '                    _fm = self.filament_feed_module\n'
+    '                    _all = []\n'
+    '                    for _ch in range(8):\n'
+    '                        try:\n'
+    '                            _all.append("w%d=%d/w2=%d" % (_ch, _fm.wheel[_ch].get_counts(), _fm.wheel_2[_ch].get_counts()))\n'
+    '                        except Exception:\n'
+    '                            break\n'
+    '                    logging.warning("[entangle-ALLCH] e[%d] sel_ch=%s pos:%.2f | %s" % (\n'
+    '                        self.extruder_index, self.filament_feed_channel, new_position, " ".join(_all)))\n'
+    '                except Exception as _e:\n'
+    '                    logging.warning("[entangle-ALLCH] e[%d] dump-failed: %s" % (self.extruder_index, _e))')
+
 # --- ace.py patch: no-op decay71's blanket disable so the detector stays live ---
 ACE_FIND = ("    def _disable_stock_entangle_detect(self):\n"
             "        for head in range(4):\n")
@@ -114,7 +134,8 @@ def apply():
         print("Detector already patched; nothing to do. (use --revert to undo)")
         return
     # detector
-    if DET_ANCHOR_1 not in det or DET_FIND_2 not in det or DET_FIND_3 not in det:
+    if (DET_ANCHOR_1 not in det or DET_FIND_2 not in det
+            or DET_FIND_3 not in det or DET_FIND_4 not in det):
         sys.exit("ERROR: detector anchors not found — deployed file differs from "
                  "expected decay71 0.99.2b. Aborting (no changes written).")
     # insert flag on the line after the MIN_CNT constant's line
@@ -129,6 +150,7 @@ def apply():
     det = "".join(out)
     det = det.replace(DET_FIND_2, DET_REPL_2, 1)
     det = det.replace(DET_FIND_3, DET_REPL_3, 1)
+    det = det.replace(DET_FIND_4, DET_REPL_4, 1)
     # ace.py
     ace = _read(ACE)
     if ACE_FIND not in ace:
