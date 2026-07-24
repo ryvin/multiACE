@@ -112,3 +112,18 @@ def test_write_ace_config_appends_unknown_key_inside_ace_section(tmp_path: Path)
     macro_pos = text.find("[gcode_macro SET_ACE_MODE]")
     assert new_key_pos > 0 and macro_pos > 0
     assert new_key_pos < macro_pos
+
+
+def test_write_ace_config_rejects_nonfinite(tmp_path):
+    """A NaN in a numeric field once bricked Klipper startup; the writer must
+    refuse non-finite values and leave the config untouched."""
+    import pytest
+    from multiace_web.config_io import write_ace_config
+
+    p = tmp_path / "ace.cfg"
+    p.write_text("[ace]\nswap_retract_length: 900\n")
+    for bad in ("NaN", "nan", "inf", "-inf", "Infinity"):
+        with pytest.raises(ValueError):
+            write_ace_config(p, {"swap_retract_length": bad})
+    # guard fires before any write — original value preserved
+    assert "swap_retract_length: 900" in p.read_text()

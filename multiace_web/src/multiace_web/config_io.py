@@ -19,6 +19,27 @@ _KV_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^#\n]*?)\s*(?:#.*)?$")
 _SECTION_RE = re.compile(r"^\[([^\]]+)\]\s*$")
 ACE_SECTION = "ace"
 
+# Klipper's config parser fatally rejects these tokens (getfloat raises), and a
+# halted Klipper takes the whole printer offline. A NaN written here once did
+# exactly that (swap_retract_length: NaN → "Unable to parse option"). Refuse to
+# persist any such value so a bad UI input can't brick startup.
+_NONFINITE_VALUES = frozenset(
+    {"nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity"}
+)
+
+
+def _reject_nonfinite(updates: dict[str, str]) -> None:
+    bad = {
+        k: v for k, v in updates.items()
+        if str(v).strip().lower() in _NONFINITE_VALUES
+    }
+    if bad:
+        raise ValueError(
+            "refusing to write non-finite config value(s) that would break "
+            "Klipper's config parse: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(bad.items()))
+        )
+
 
 def _is_ace_section(name: str) -> bool:
     return name.strip() == ACE_SECTION
@@ -57,6 +78,7 @@ def write_ace_config(path: Path, updates: dict[str, str]) -> None:
     Updates that don't match an existing [ace] key are appended just before the next section
     header (or EOF if [ace] is the last section).
     """
+    _reject_nonfinite(updates)
     text = path.read_text()
     backup_path = path.with_suffix(path.suffix + ".bak")
     # Atomic backup: copy to tmp then replace
