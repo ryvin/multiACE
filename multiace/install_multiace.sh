@@ -177,6 +177,24 @@ rm -rf "$EXTRAS_DIR/__pycache__"
 rm -rf "$KINEMATICS_DIR/__pycache__"
 log "Python cache deleted"
 
+# --- Install boot page-cache prewarm hook (S59, before S60klipper) ---
+# Ported from decay71 0.99.6.2b: reads the klipper tree into page cache at boot
+# so cold page faults don't trip the multi-MCU homing window ("Timer too close"
+# / 0003). Opt-out: touch "$MULTIACE_DIR/prewarm.disabled". Needs root for
+# /etc/init.d; a non-root (web-context) install skips it with a note.
+if [ "$(id -u)" = "0" ]; then
+    if [ -f "$INSTALL_DIR/deploy/S59multiace-prewarm" ]; then
+        cp "$INSTALL_DIR/deploy/S59multiace-prewarm" /etc/init.d/S59multiace-prewarm
+        sed -i 's/\r$//' /etc/init.d/S59multiace-prewarm
+        chmod 755 /etc/init.d/S59multiace-prewarm
+        log "  Installed boot prewarm hook: /etc/init.d/S59multiace-prewarm"
+    else
+        log "  Prewarm hook source not found (deploy/S59multiace-prewarm); skipping"
+    fi
+else
+    log "  Skipped prewarm hook (need root for /etc/init.d); rerun as root to enable"
+fi
+
 # --- Optional: Install web console ---
 WEB_INSTALL_DIR="${INSTALL_DIR%/multiace}/multiace_web"
 if [ -d "$WEB_INSTALL_DIR/install" ] && [ -f "$WEB_INSTALL_DIR/install/install_web.sh" ]; then
