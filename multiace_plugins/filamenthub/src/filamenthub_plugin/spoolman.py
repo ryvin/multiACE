@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx
 
@@ -42,6 +43,21 @@ def _encode_fh(fh: dict) -> str:
     a JSON string whose content is the object's JSON text (double-encoded), so
     a scan and an assign produce byte-compatible values."""
     return json.dumps(json.dumps(fh))
+
+
+# FilamentHub's provenance tag for a location set by a deliberate user pick.
+ASSERTED_BY_ASSIGN = "user:assign"
+
+
+def _std_location(printer: str, ace: int, slot) -> str:
+    """Spoolman's standard ``location`` string, formatted exactly as FilamentHub
+    ``spool_watcher.write_location`` does: ``"<printer>/ace<n> T<slot>"`` for a
+    non-zero ACE, else ``"<printer> T<slot>"``. (FilamentHub additionally gates
+    the ``/ace<n>`` form on the printer being multi-ACE; ace > 0 already
+    implies that here.)"""
+    if ace > 0:
+        return f"{printer}/ace{ace} T{slot}"
+    return f"{printer} T{slot}"
 
 
 @dataclass
@@ -160,21 +176,41 @@ class SpoolmanClient:
         return out
 
     async def _set_location(self, client, spool_id, location) -> None:
-        """GET a spool, set its ``extra.filamenthub`` location (preserving the
-        other fields like ``schema``/``td``), and PATCH it back. ``location``
-        is a {printer, ace, slot} dict to bind, or None to clear."""
+        """GET a spool, set its ``extra.filamenthub`` location, and PATCH it
+        back — mirroring FilamentHub ``spool_watcher.write_location``.
+
+        ``location`` is a {printer, ace, slot} dict to bind, or None to clear.
+        The PATCH carries *every* pre-existing ``extra`` key (``card_uid``,
+        ``tags``, ``pressure_advance_matrix``, ...) unchanged, replacing only
+        ``filamenthub``; inside it, other fields (``td``, ``color_measured``,
+        ``virtual_tag``, ...) are kept. Spoolman's standard top-level
+        ``location`` string is set too (cleared to "" on unbind)."""
         resp = await client.get(f"{self._base}/api/v1/spool/{spool_id}")
         resp.raise_for_status()
-        fh = _decode_fh((resp.json().get("extra") or {}).get("filamenthub"))
-        fh.setdefault("schema", 1)
-        fh["location"] = location
-        patch = {"extra": {"filamenthub": _encode_fh(fh)}}
+        existing_extra = dict(resp.json().get("extra") or {})
+        fh = {**_decode_fh(existing_extra.get("filamenthub")), "schema": 1}
+        if location is None:
+            fh["location"] = None
+            std_location = ""
+        else:
+            fh["location"] = {
+                **location,
+                "asserted_at": datetime.now(timezone.utc).isoformat(),
+                "asserted_by": ASSERTED_BY_ASSIGN,
+            }
+            std_location = _std_location(
+                location["printer"], int(location.get("ace", 0)), location["slot"])
+        patch = {
+            "location": std_location,
+            "extra": {**existing_extra, "filamenthub": _encode_fh(fh)},
+        }
         presp = await client.patch(f"{self._base}/api/v1/spool/{spool_id}", json=patch)
         presp.raise_for_status()
 
     async def assign_spool(self, spool_id: int, ace: int, slot: int) -> dict:
         """Bind a spool to (ace, slot) on this printer — the same effect as an
-        RFID scan. Returns the written location dict."""
+        RFID scan. Returns the {printer, ace, slot} location that was bound
+        (the stored copy additionally carries asserted_at/asserted_by)."""
         location = {"printer": self._printer_id, "ace": int(ace), "slot": int(slot)}
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             await self._set_location(client, spool_id, location)
