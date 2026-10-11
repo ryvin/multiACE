@@ -3,6 +3,7 @@ import json
 
 import httpx
 import respx
+from filamenthub_plugin.desired_store import load_desired, save_desired
 
 
 def test_manifest_shape(client):
@@ -347,7 +348,7 @@ def test_assign_profile_writes_override_and_desired_only(client, cfg):
     assert body["spool_id"] is None and body["location"] is None
     sent = json.loads(ov_route.calls.last.request.content)
     assert sent == {"ace": 1, "slot": 2, "material": "PLA", "brand": "Sunlu",
-                    "subtype": "Matte Black", "color": "#000000"}
+                    "subtype": "", "color": "#000000"}
     assert body["override"] == {"ok": True, "key": "1_2"}
     assert not spool_post.called and not spool_patch.called  # no FH location write
     d = load_desired(cfg.desired_state_path)
@@ -441,3 +442,79 @@ def test_assign_profile_create_spool_502_when_create_fails(client):
     assert r.status_code == 502
     assert "create" in r.json()["detail"].lower()
     assert not ov_route.called
+
+# --- integration wiring (post-merge of WP2 + WP3/4) -------------------------
+
+_MATERIALS = {"db": {"PLA": {"Generic": ["Matte", "Silk"]}}}
+
+
+def _assign_routes():
+    _spool_route()
+    respx.get("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(
+        200, json={"id": 7, "extra": {}}))
+    respx.patch("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(200))
+    return respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True, "key": "1_2"}))
+
+
+@respx.mock
+def test_assign_records_desired_entry(client, cfg):
+    _assign_routes()
+    r = client.post("/assign", json={"spool_id": 7, "ace": 1, "slot": 2})
+    assert r.status_code == 200
+    desired = load_desired(cfg.desired_state_path)
+    assert desired["1_2"]["spool_id"] == 7
+    assert desired["1_2"]["material"] == "PLA"
+
+
+@respx.mock
+def test_assign_uses_materials_db_for_subtype(client):
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(
+        200, json=[{"id": 7, "archived": False, "remaining_weight": 800.0, "extra": {},
+                    "filament": {"name": "Matte Black", "material": "PLA",
+                                 "color_hex": "000000", "vendor": {"name": "Generic"}}}]))
+    respx.get("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(
+        200, json={"id": 7, "extra": {}}))
+    respx.patch("http://fh.test/api/v1/spool/7").mock(return_value=httpx.Response(200))
+    respx.get("http://ma.test/api/materials").mock(
+        return_value=httpx.Response(200, json=_MATERIALS))
+    ov = respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True, "key": "1_2"}))
+    r = client.post("/assign", json={"spool_id": 7, "ace": 1, "slot": 2})
+    assert r.status_code == 200
+    assert json.loads(ov.calls.last.request.content)["subtype"] == "Matte"
+
+
+@respx.mock
+def test_unassign_removes_desired_entry(client, cfg):
+    save_desired(cfg.desired_state_path, cfg.printer_id,
+                 {"1_2": {"ace": 1, "slot": 2, "material": "PLA"},
+                  "0_0": {"ace": 0, "slot": 0, "material": "PETG"}})
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(200, json=[]))
+    respx.delete("http://ma.test/api/slot-override/1/2").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    r = client.post("/unassign", json={"ace": 1, "slot": 2})
+    assert r.status_code == 200
+    desired = load_desired(cfg.desired_state_path)
+    assert "1_2" not in desired and "0_0" in desired
+
+
+@respx.mock
+def test_pull_clears_covered_ace_without_winners(client):
+    body = _ace_state_body()
+    body["aces_covered"] = [0, 1]
+    respx.get("http://fh.test/fleet/api/ace-state").mock(
+        return_value=httpx.Response(200, json=body))
+    respx.get("http://fh.test/api/v1/spool").mock(
+        return_value=httpx.Response(200, json=_spools_body()))
+    respx.get("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"overrides": {"0_0": {}, "1_3": {}}}))
+    respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True, "key": "0_0"}))
+    respx.delete(url__regex=r"http://ma\.test/api/slot-override/\d+/\d+").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    respx.get("http://ma.test/api/plugin-api/state").mock(
+        return_value=httpx.Response(200, json={"aces": []}))
+    r = client.post("/pull")
+    assert r.status_code == 200
+    assert {"ace": 1, "slot": 3} in r.json()["cleared"]

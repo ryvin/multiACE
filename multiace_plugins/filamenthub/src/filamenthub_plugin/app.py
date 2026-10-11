@@ -84,8 +84,9 @@ def create_app(cfg: Config) -> FastAPI:
             log.warning("FilamentHub write failed: %s", e)
             raise HTTPException(status_code=502, detail="FilamentHub write failed")
         # 2. label the slot in multiACE
-        payload = spool_to_override(spool, ace, slot)
         ma = MultiAceClient(cfg.multiace_url)
+        payload = spool_to_override(spool, ace, slot,
+                                    materials_db=await ma.get_materials())
         try:
             override = await ma.set_override(**payload)
         except httpx.HTTPError as e:
@@ -102,7 +103,8 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/assign")
     async def assign(req: AssignReq):
-        location, _payload, override = await _assign_spool(req.spool_id, req.ace, req.slot)
+        location, payload, override = await _assign_spool(req.spool_id, req.ace, req.slot)
+        _record_desired(payload, spool_id=req.spool_id, filament_id=None)
         return {"ok": True, "location": location, "override": override}
 
     @app.get("/filaments")
@@ -137,8 +139,9 @@ def create_app(cfg: Config) -> FastAPI:
             # (there is no spool to place).
             spool_id, location = None, None
             summary = filament_summary(fil)
-            payload = spool_to_override(summary, req.ace, req.slot)
             ma = MultiAceClient(cfg.multiace_url)
+            payload = spool_to_override(summary, req.ace, req.slot,
+                                        materials_db=await ma.get_materials())
             try:
                 override = await ma.set_override(**payload)
             except httpx.HTTPError as e:
@@ -164,6 +167,9 @@ def create_app(cfg: Config) -> FastAPI:
             log.warning("multiACE clear failed: %s", e)
             raise HTTPException(status_code=502,
                 detail="multiACE clear failed (FilamentHub already cleared)")
+        merged = dict(load_desired(cfg.desired_state_path))
+        if merged.pop(f"{req.ace}_{req.slot}", None) is not None:
+            save_desired(cfg.desired_state_path, cfg.printer_id, merged)
         return {"ok": True, "cleared_spool_id": cleared}
 
     @app.get("/slots")
@@ -216,8 +222,10 @@ def create_app(cfg: Config) -> FastAPI:
             (d["ace"], d["slot"]) for d in disputed
             if d.get("ace") is not None and d.get("slot") is not None
         }
+        materials_db = await ma.get_materials()
         to_apply, to_clear = plan_reconcile(
-            winners, current.keys(), brand_by_spool_id, disputed_keys)
+            winners, current.keys(), brand_by_spool_id, disputed_keys,
+            aces_covered=state.get("aces_covered"), materials_db=materials_db)
 
         # 4. Execute — collect failures, never abort mid-loop.
         applied, cleared, errors, stale = [], [], [], []
@@ -249,7 +257,8 @@ def create_app(cfg: Config) -> FastAPI:
                 continue
             a, s = int(row["ace"]), int(row["slot"])
             payload = ace_state_row_to_override(
-                row, brand_by_spool_id.get(row.get("spool_id"), ""))
+                row, brand_by_spool_id.get(row.get("spool_id"), ""),
+                materials_db=materials_db)
             payload["spool_id"] = row.get("spool_id")
             winner_desired[f"{a}_{s}"] = payload
         covered = set(state.get("aces_covered") or [])

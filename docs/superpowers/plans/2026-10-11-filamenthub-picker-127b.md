@@ -87,7 +87,7 @@ Parallelism:
 
 ## Unverified assumptions
 
-- Spoolman 0.23 PATCH replaces `extra` rather than merging it.
+- ~~Spoolman 0.23 PATCH replaces `extra`.~~ **Verified 2026-10-11, false:** a probe on scratch spool 122 (created and then deleted) showed a PATCH of `{extra:{filamenthub}}` kept `card_uid` and `tags`, so PATCH **merges** `extra` per key. A PATCH of `location: ""` is accepted. Extra keys must be registered fields; FilamentHub's Spoolman has `filamenthub`, `card_uid` and `tags`.
 - `/home/lava/.local` still holds fastapi, uvicorn, httpx and pydantic.
 - nginx still has no `/plugin/` location.
 - `auth_check` exists.
