@@ -13,6 +13,8 @@ from .mapping import ace_state_row_to_override, spool_to_override
 from .ace_state import AceStateClient, AceStateError
 from .desired_store import load_desired, save_desired
 from .reconcile import plan_reconcile, reconcile_slots
+from .filaments import (create_spool_from_filament, fetch_filaments,
+                        filament_summary, list_filaments)
 
 log = logging.getLogger("filamenthub.plugin")
 
@@ -24,6 +26,15 @@ class AssignReq(BaseModel):
     spool_id: int
     ace: int
     slot: int
+
+
+class AssignProfileReq(BaseModel):
+    filament_id: int
+    ace: int
+    slot: int
+    # False: label the slot from the profile only (no FilamentHub write).
+    # True: mint a new spool of this filament (virtual RFID tag) and assign it.
+    create_spool: bool = False
 
 
 class UnassignReq(BaseModel):
@@ -54,32 +65,89 @@ def create_app(cfg: Config) -> FastAPI:
         sm = SpoolmanClient(cfg.filamenthub_url, cfg.printer_id)
         return {"spools": await sm.list_spools()}
 
-    @app.post("/assign")
-    async def assign(req: AssignReq):
+    async def _assign_spool(spool_id: int, ace: int, slot: int) -> tuple[dict, dict, dict]:
+        """Shared /assign path: FilamentHub location write, then multiACE label.
+        Returns (location, override_payload, override_response)."""
         sm = SpoolmanClient(cfg.filamenthub_url, cfg.printer_id)
         try:
             spools = await sm.list_spools(raise_on_error=True)
         except httpx.HTTPError as e:
             log.warning("FilamentHub inventory lookup failed: %s", e)
             raise HTTPException(status_code=502, detail="FilamentHub unreachable")
-        spool = next((s for s in spools if s["spool_id"] == req.spool_id), None)
+        spool = next((s for s in spools if s["spool_id"] == spool_id), None)
         if spool is None:
             raise HTTPException(status_code=404, detail="spool not found in FilamentHub")
         # 1. write-back to FilamentHub
         try:
-            location = await sm.assign_spool(req.spool_id, req.ace, req.slot)
+            location = await sm.assign_spool(spool_id, ace, slot)
         except httpx.HTTPError as e:
             log.warning("FilamentHub write failed: %s", e)
             raise HTTPException(status_code=502, detail="FilamentHub write failed")
         # 2. label the slot in multiACE
+        payload = spool_to_override(spool, ace, slot)
         ma = MultiAceClient(cfg.multiace_url)
         try:
-            override = await ma.set_override(**spool_to_override(spool, req.ace, req.slot))
+            override = await ma.set_override(**payload)
         except httpx.HTTPError as e:
             log.warning("multiACE slot-override failed: %s", e)
             raise HTTPException(status_code=502,
                 detail="multiACE slot-override failed (FilamentHub already updated)")
+        return location, payload, override
+
+    def _record_desired(payload: dict, *, spool_id, filament_id) -> None:
+        entry = dict(payload, spool_id=spool_id, filament_id=filament_id)
+        merged = dict(load_desired(cfg.desired_state_path))
+        merged[f"{payload['ace']}_{payload['slot']}"] = entry
+        save_desired(cfg.desired_state_path, cfg.printer_id, merged)
+
+    @app.post("/assign")
+    async def assign(req: AssignReq):
+        location, _payload, override = await _assign_spool(req.spool_id, req.ace, req.slot)
         return {"ok": True, "location": location, "override": override}
+
+    @app.get("/filaments")
+    async def filaments():
+        try:
+            return {"filaments": await list_filaments(cfg.filamenthub_url)}
+        except httpx.HTTPError as e:
+            log.warning("FilamentHub filament list failed: %s", e)
+            raise HTTPException(status_code=502, detail="FilamentHub unreachable")
+
+    @app.post("/assign-profile")
+    async def assign_profile(req: AssignProfileReq):
+        try:
+            raw = await fetch_filaments(cfg.filamenthub_url)
+        except httpx.HTTPError as e:
+            log.warning("FilamentHub filament lookup failed: %s", e)
+            raise HTTPException(status_code=502, detail="FilamentHub unreachable")
+        fil = next((f for f in raw if isinstance(f, dict) and f.get("id") == req.filament_id),
+                   None)
+        if fil is None:
+            raise HTTPException(status_code=404, detail="filament not found in FilamentHub")
+
+        if req.create_spool:
+            try:
+                spool_id = await create_spool_from_filament(cfg.filamenthub_url, fil)
+            except httpx.HTTPError as e:
+                log.warning("FilamentHub spool create failed: %s", e)
+                raise HTTPException(status_code=502, detail="FilamentHub spool create failed")
+            location, payload, override = await _assign_spool(spool_id, req.ace, req.slot)
+        else:
+            # Profile-only: label the slot; FilamentHub location is NOT written
+            # (there is no spool to place).
+            spool_id, location = None, None
+            summary = filament_summary(fil)
+            payload = spool_to_override(summary, req.ace, req.slot)
+            ma = MultiAceClient(cfg.multiace_url)
+            try:
+                override = await ma.set_override(**payload)
+            except httpx.HTTPError as e:
+                log.warning("multiACE slot-override failed: %s", e)
+                raise HTTPException(status_code=502, detail="multiACE slot-override failed")
+
+        _record_desired(payload, spool_id=spool_id, filament_id=req.filament_id)
+        return {"ok": True, "spool_id": spool_id, "location": location,
+                "override": override}
 
     @app.post("/unassign")
     async def unassign(req: UnassignReq):
