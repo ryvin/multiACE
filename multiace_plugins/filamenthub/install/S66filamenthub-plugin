@@ -1,19 +1,36 @@
 #!/bin/sh
-# FilamentHub multiACE plugin — BusyBox sysvinit
+# License: GPL-3.0
+# FilamentHub multiACE plugin - BusyBox sysvinit.
+# Everything it needs lives on /userdata (survives PAXX overlay wipes):
+#   $APP_DIR/src    plugin code     $APP_DIR/deps   vendored fastapi/uvicorn/httpx/pydantic
+#   $APP_DIR/state  desired.json    $APP_DIR/env    optional KEY=value overrides
+# If this file vanishes after a firmware update, run $APP_DIR/install/restore.sh.
 APP_DIR=/userdata/filamenthub-plugin
-# Reuse the system python3 that decay71 already runs on — it has fastapi/
-# uvicorn/httpx/pydantic in /home/lava/.local; no venv / pip / native build.
 PY=/usr/bin/python3
-LOGFILE=/home/lava/printer_data/logs/filamenthub-plugin.log
+LOGDIR=/home/lava/printer_data/logs
+LOGFILE=$LOGDIR/filamenthub-plugin.log
 PIDFILE=/var/run/filamenthub-plugin.pid
-export FILAMENTHUB_URL="${FILAMENTHUB_URL:-https://filamenthub.pinedamail.com}"
-export MULTIACE_PRINTER_ID="${MULTIACE_PRINTER_ID:-u1-1}"
+
+# Optional per-printer overrides (plain KEY=value lines), applied before defaults.
+if [ -f "$APP_DIR/env" ]; then
+  set -a
+  . "$APP_DIR/env"
+  set +a
+fi
+
+# Defaults - keep in sync with src/filamenthub_plugin/config.py (tests/test_config.py
+# fails on drift).
+export FILAMENTHUB_URL="${FILAMENTHUB_URL:-http://192.168.1.174:3000}"
+export MULTIACE_PRINTER_ID="${MULTIACE_PRINTER_ID:-u1-b}"
 export MULTIACE_URL="${MULTIACE_URL:-http://127.0.0.1:7126}"
 export FILAMENTHUB_PLUGIN_PORT="${FILAMENTHUB_PLUGIN_PORT:-8089}"
-export PYTHONPATH="$APP_DIR/src:/home/lava/.local/lib/python3.11/site-packages"
+export FILAMENTHUB_DESIRED_PATH="${FILAMENTHUB_DESIRED_PATH:-/userdata/filamenthub-plugin/state/desired.json}"
+# Vendored deps first; /home/lava/.local is a last-resort fallback (overlay, may be wiped).
+export PYTHONPATH="$APP_DIR/src:$APP_DIR/deps:/home/lava/.local/lib/python3.11/site-packages"
 
 start() {
   echo "Starting filamenthub-plugin"
+  mkdir -p "$(dirname "$FILAMENTHUB_DESIRED_PATH")" "$LOGDIR"
   start-stop-daemon -S -b -m -p "$PIDFILE" \
     -x "$PY" -- -m filamenthub_plugin >>"$LOGFILE" 2>&1
 }
@@ -22,9 +39,18 @@ stop() {
   start-stop-daemon -K -p "$PIDFILE" 2>/dev/null
   rm -f "$PIDFILE"
 }
+status() {
+  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    echo "filamenthub-plugin running (pid $(cat "$PIDFILE"))"
+  else
+    echo "filamenthub-plugin not running"
+    return 1
+  fi
+}
 case "$1" in
   start) start ;;
   stop) stop ;;
   restart) stop; sleep 1; start ;;
-  *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+  status) status ;;
+  *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac

@@ -37,7 +37,8 @@ def test_desired_state_path_default(monkeypatch):
     monkeypatch.setenv("MULTIACE_PRINTER_ID", "u1-1")
     monkeypatch.delenv("FILAMENTHUB_DESIRED_PATH", raising=False)
     from filamenthub_plugin.config import load_config
-    assert load_config().desired_state_path == ".filamenthub_desired.json"
+    assert load_config().desired_state_path == \
+        "/userdata/filamenthub-plugin/state/desired.json"
 
 
 def test_desired_state_path_override(monkeypatch):
@@ -46,3 +47,43 @@ def test_desired_state_path_override(monkeypatch):
     monkeypatch.setenv("FILAMENTHUB_DESIRED_PATH", "/tmp/d.json")
     from filamenthub_plugin.config import load_config
     assert load_config().desired_state_path == "/tmp/d.json"
+
+
+_ALL_VARS = ("FILAMENTHUB_URL", "MULTIACE_PRINTER_ID", "MULTIACE_URL",
+             "FILAMENTHUB_PLUGIN_PORT", "FILAMENTHUB_ACE_STATE_URL",
+             "FILAMENTHUB_DESIRED_PATH")
+
+
+def test_deploy_defaults_when_env_unset(monkeypatch):
+    # A bare `python -m filamenthub_plugin` on the printer must target u1-b
+    # on the LAN FilamentHub and persist desired state on /userdata.
+    for var in _ALL_VARS:
+        monkeypatch.delenv(var, raising=False)
+    cfg = load_config()
+    assert cfg.filamenthub_url == "http://192.168.1.174:3000"
+    assert cfg.printer_id == "u1-b"
+    assert cfg.multiace_url == "http://127.0.0.1:7126"
+    assert cfg.port == 8089
+    assert cfg.ace_state_url == "http://192.168.1.174:3000/fleet/api/ace-state"
+    assert cfg.desired_state_path == "/userdata/filamenthub-plugin/state/desired.json"
+
+
+def _init_script_default(text: str, var: str) -> str:
+    marker = "${" + var + ":-"
+    start = text.find(marker)
+    assert start != -1, f"{var} default missing from S66filamenthub-plugin"
+    start += len(marker)
+    return text[start:text.index("}", start)]
+
+
+def test_init_script_defaults_match_config():
+    # Guard against drift between the BusyBox init script and config.py.
+    import pathlib
+    from filamenthub_plugin import config as cfgmod
+    s66 = (pathlib.Path(__file__).resolve().parents[1]
+           / "install" / "S66filamenthub-plugin").read_text()
+    assert _init_script_default(s66, "FILAMENTHUB_URL") == cfgmod.DEFAULT_FILAMENTHUB_URL
+    assert _init_script_default(s66, "MULTIACE_PRINTER_ID") == cfgmod.DEFAULT_PRINTER_ID
+    assert _init_script_default(s66, "MULTIACE_URL") == cfgmod.DEFAULT_MULTIACE_URL
+    assert _init_script_default(s66, "FILAMENTHUB_PLUGIN_PORT") == str(cfgmod.DEFAULT_PORT)
+    assert _init_script_default(s66, "FILAMENTHUB_DESIRED_PATH") == cfgmod.DEFAULT_DESIRED_PATH
