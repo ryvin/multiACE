@@ -28,7 +28,16 @@ def plan_reconcile(
     current_override_keys: Iterable[str],
     brand_by_spool_id: dict[int, str],
     disputed_keys: set[tuple[int, int]] | None = None,
+    aces_covered: Iterable[int] | None = None,
+    materials_db: dict | None = None,
 ) -> tuple[list[dict], list[tuple[int, int]]]:
+    """Plan the apply/clear actions.
+
+    Clear scope: with ``aces_covered`` (ace-state schema 2) only those ACEs
+    are pruned -- including a covered ACE with no winners at all, and never
+    an uncovered one, and ``[]`` prunes nothing. Without it (schema 1) the
+    legacy rule applies: only ACEs that have at least one winner.
+    """
     disputed_keys = disputed_keys or set()
     desired: set[tuple[int, int]] = set()
     to_apply: list[dict] = []
@@ -36,11 +45,14 @@ def plan_reconcile(
         if row.get("slot") is None:
             continue
         brand = brand_by_spool_id.get(row.get("spool_id"), "")
-        payload = ace_state_row_to_override(row, brand)
+        payload = ace_state_row_to_override(row, brand, materials_db)
         desired.add((payload["ace"], payload["slot"]))
         to_apply.append(payload)
 
-    known_aces = {ace for ace, _ in desired}
+    if aces_covered is not None:
+        known_aces = {int(a) for a in aces_covered}
+    else:
+        known_aces = {ace for ace, _ in desired}
     to_clear: list[tuple[int, int]] = []
     for key in current_override_keys:
         parsed = _parse_key(key)

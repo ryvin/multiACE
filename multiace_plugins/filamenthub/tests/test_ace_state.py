@@ -73,3 +73,27 @@ async def test_schema_mismatch_still_returns_but_warns(caplog):
     out = await AceStateClient(URL).get_ace_state("davinci-u1")
     assert out["slots"] == []
     assert any("schema" in r.message.lower() for r in caplog.records)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_schema_2_accepted_without_warning(caplog):
+    body = {"schema": 2, "printer": "u1-b", "ts": 1, "aces_covered": [0, 1],
+            "slots": [{"ace": 1, "slot": 2, "spool_id": 5, "material": "PLA",
+                       "color": "#fff", "name": "n", "asserted_by": "user:assign",
+                       "asserted_at": "2026-10-11T00:00:00Z"}],
+            "disputed": []}
+    respx.get(url__startswith=URL).mock(return_value=httpx.Response(200, json=body))
+    out = await AceStateClient(URL).get_ace_state("u1-b")
+    assert out["aces_covered"] == [0, 1]
+    assert out["slots"][0]["spool_id"] == 5
+    assert not any("schema" in r.message.lower() for r in caplog.records)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_schema_1_accepted_without_warning(caplog):
+    body = {"schema": 1, "printer": "u1-b", "ts": 1, "slots": [], "disputed": []}
+    respx.get(url__startswith=URL).mock(return_value=httpx.Response(200, json=body))
+    await AceStateClient(URL).get_ace_state("u1-b")
+    assert not any("schema" in r.message.lower() for r in caplog.records)
