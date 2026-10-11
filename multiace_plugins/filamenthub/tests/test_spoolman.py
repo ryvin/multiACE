@@ -6,6 +6,7 @@ listing/parsing spools, location detection for this printer, the
 double-encoded ``extra.filamenthub`` round-trip on assign, and unassign.
 """
 import json
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -84,7 +85,8 @@ async def test_assign_spool_patches_double_encoded_location():
     assert location == {"printer": PRINTER, "ace": 1, "slot": 2}
     sent = json.loads(patch_route.calls.last.request.content)
     # extra.filamenthub is double-encoded: decode back to the object
-    assert _decode_fh(sent["extra"]["filamenthub"])["location"] == location
+    written = _decode_fh(sent["extra"]["filamenthub"])["location"]
+    assert {k: written[k] for k in ("printer", "ace", "slot")} == location
 
 
 @respx.mock
@@ -108,3 +110,123 @@ async def test_unassign_slot_none_when_empty():
     respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(
         200, json=[_spool(7, location={"printer": PRINTER, "ace": 0, "slot": 0})]))
     assert await _client().unassign_slot(ace=3, slot=3) is None
+
+
+# --- WP1: write hardening -------------------------------------------------
+# Spoolman PATCH may replace `extra` wholesale (unverified on 0.23; see plan),
+# so every write must carry ALL pre-existing extra keys, not only `filamenthub`.
+
+_RICH_FH = {"schema": 1, "td": 3.4, "color_measured": "FF00AA",
+            "virtual_tag": False, "location": None}
+
+
+def _rich_extra(fh=None):
+    return {
+        "card_uid": json.dumps("04:AB:CD:EF"),
+        "tags": json.dumps(json.dumps(["dry", "favourite"])),
+        "pressure_advance_matrix": json.dumps(json.dumps({"0.4": 0.035})),
+        "filamenthub": _encode_fh(_RICH_FH if fh is None else fh),
+    }
+
+
+def _mock_single(spool_id, extra):
+    respx.get(f"http://fh.test/api/v1/spool/{spool_id}").mock(
+        return_value=httpx.Response(200, json={"id": spool_id, "extra": extra}))
+    return respx.patch(f"http://fh.test/api/v1/spool/{spool_id}").mock(
+        return_value=httpx.Response(200))
+
+
+def _sent_body(route):
+    return json.loads(route.calls.last.request.content)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_assign_preserves_all_other_extra_keys_verbatim():
+    extra = _rich_extra()
+    patch_route = _mock_single(7, extra)
+    await _client().assign_spool(7, ace=1, slot=2)
+    sent = _sent_body(patch_route)["extra"]
+    assert set(sent) == set(extra)
+    for key in ("card_uid", "tags", "pressure_advance_matrix"):
+        assert sent[key] == extra[key]          # untouched, byte-for-byte
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_assign_preserves_other_filamenthub_fields():
+    patch_route = _mock_single(7, _rich_extra())
+    await _client().assign_spool(7, ace=1, slot=2)
+    fh = _decode_fh(_sent_body(patch_route)["extra"]["filamenthub"])
+    assert fh["td"] == 3.4
+    assert fh["color_measured"] == "FF00AA"
+    assert fh["virtual_tag"] is False
+    assert fh["schema"] == 1
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_assign_writes_asserted_by_and_utc_iso_asserted_at():
+    patch_route = _mock_single(7, _rich_extra())
+    before = datetime.now(timezone.utc)
+    await _client().assign_spool(7, ace=1, slot=2)
+    loc = _decode_fh(_sent_body(patch_route)["extra"]["filamenthub"])["location"]
+    assert {k: loc[k] for k in ("printer", "ace", "slot")} == {
+        "printer": PRINTER, "ace": 1, "slot": 2}
+    assert loc["asserted_by"] == "user:assign"
+    ts = datetime.fromisoformat(loc["asserted_at"])
+    assert ts.utcoffset() == timedelta(0)       # timezone-aware UTC
+    assert before - timedelta(seconds=1) <= ts <= datetime.now(timezone.utc)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_assign_keeps_double_encoding():
+    patch_route = _mock_single(7, _rich_extra())
+    await _client().assign_spool(7, ace=1, slot=2)
+    once = json.loads(_sent_body(patch_route)["extra"]["filamenthub"])
+    assert isinstance(once, str)                # wire value decodes to a string...
+    assert isinstance(json.loads(once), dict)   # ...whose content is the object
+
+
+@pytest.mark.parametrize("ace,slot,expected", [
+    (1, 2, f"{PRINTER}/ace1 T2"),
+    (3, 0, f"{PRINTER}/ace3 T0"),
+    (0, 2, f"{PRINTER} T2"),
+])
+@respx.mock
+@pytest.mark.asyncio
+async def test_assign_sets_standard_location_string(ace, slot, expected):
+    patch_route = _mock_single(7, _rich_extra())
+    await _client().assign_spool(7, ace=ace, slot=slot)
+    assert _sent_body(patch_route)["location"] == expected
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_unassign_preserves_extra_and_clears_both_locations():
+    bound = dict(_RICH_FH, location={"printer": PRINTER, "ace": 1, "slot": 2})
+    extra = _rich_extra(bound)
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(
+        200, json=[{"id": 7, "extra": extra, "filament": {}}]))
+    patch_route = _mock_single(7, extra)
+    assert await _client().unassign_slot(ace=1, slot=2) == 7
+    body = _sent_body(patch_route)
+    assert body["location"] == ""
+    sent = body["extra"]
+    assert set(sent) == set(extra)
+    for key in ("card_uid", "tags", "pressure_advance_matrix"):
+        assert sent[key] == extra[key]
+    fh = _decode_fh(sent["filamenthub"])
+    assert fh["location"] is None
+    assert fh["td"] == 3.4 and fh["color_measured"] == "FF00AA"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_assign_does_not_mutate_get_response_extra():
+    extra = _rich_extra()
+    snapshot = json.loads(json.dumps(extra))
+    _mock_single(7, extra)
+    await _client().assign_spool(7, ace=1, slot=2)
+    assert extra == snapshot
