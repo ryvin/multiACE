@@ -12,7 +12,7 @@ def test_apply_maps_winners_with_brand():
     winners = [_row(0, 0, 42)]
     to_apply, to_clear = plan_reconcile(winners, [], {42: "PolyTerra"})
     assert to_apply == [{"ace": 0, "slot": 0, "material": "PLA",
-                         "brand": "PolyTerra", "subtype": "n", "color": "#ffffff"}]
+                         "brand": "PolyTerra", "subtype": "", "color": "#ffffff"}]
     assert to_clear == []
 
 
@@ -68,6 +68,50 @@ def test_ignores_malformed_override_keys():
     winners = [_row(0, 0, 42)]
     _, to_clear = plan_reconcile(winners, ["0_0", "bogus", "0_x"], {})
     assert to_clear == []
+
+
+# --- WP4: aces_covered scoping (FilamentHub ace-state schema 2) ---------------
+
+def test_aces_covered_clears_covered_ace_with_no_winners():
+    # ACE 1 is covered but has no winners -> its stale label IS cleared
+    # (without aces_covered it would be left alone as "unknown").
+    winners = [_row(0, 0, 42)]
+    _, to_clear = plan_reconcile(winners, ["0_0", "1_3"], {}, aces_covered=[0, 1])
+    assert to_clear == [(1, 3)]
+
+
+def test_aces_covered_protects_uncovered_ace_even_with_winner():
+    # A winner on ACE 2 that is NOT covered must not let the planner prune ACE 2.
+    winners = [_row(0, 0, 42), _row(2, 0, 43)]
+    _, to_clear = plan_reconcile(winners, ["0_0", "2_0", "2_1"], {},
+                                 aces_covered=[0])
+    assert to_clear == []
+
+
+def test_aces_covered_empty_list_clears_nothing():
+    winners = [_row(0, 0, 42)]
+    _, to_clear = plan_reconcile(winners, ["0_0", "0_1"], {}, aces_covered=[])
+    assert to_clear == []
+
+
+def test_aces_covered_still_respects_disputes():
+    _, to_clear = plan_reconcile([], ["0_1", "0_2"], {},
+                                 disputed_keys={(0, 1)}, aces_covered=[0])
+    assert to_clear == [(0, 2)]
+
+
+def test_aces_covered_none_keeps_legacy_scoping():
+    winners = [_row(0, 0, 42)]
+    _, to_clear = plan_reconcile(winners, ["0_0", "0_1", "1_3"], {},
+                                 aces_covered=None)
+    assert to_clear == [(0, 1)]
+
+
+def test_plan_reconcile_passes_materials_db_to_mapping():
+    db = {"PLA": {"Generic": ["Matte"]}}
+    winners = [_row(0, 0, 42, material="PLA+", name="Matte Black")]
+    to_apply, _ = plan_reconcile(winners, [], {}, materials_db=db)
+    assert to_apply[0]["material"] == "PLA" and to_apply[0]["subtype"] == "Matte"
 
 
 def _obs(idx, slots):

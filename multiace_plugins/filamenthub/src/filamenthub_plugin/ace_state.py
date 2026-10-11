@@ -14,8 +14,11 @@ import httpx
 
 log = logging.getLogger("filamenthub.ace_state")
 
-# Must match FilamentHub scripts/sentinel/ace_state.py:ACE_STATE_SCHEMA.
-EXPECTED_ACE_STATE_SCHEMA = 1
+# FilamentHub scripts/sentinel/ace_state.py:ACE_STATE_SCHEMA. Schema 2 adds
+# ``aces_covered`` (the ACE indices FilamentHub tracks for this printer); the
+# slot/disputed row shape is unchanged from schema 1.
+SUPPORTED_ACE_STATE_SCHEMAS = (1, 2)
+EXPECTED_ACE_STATE_SCHEMA = max(SUPPORTED_ACE_STATE_SCHEMAS)
 
 
 class AceStateError(Exception):
@@ -66,9 +69,9 @@ class AceStateClient:
             raise AceStateError("FilamentHub ace-state returned non-JSON") from e
 
         schema = body.get("schema")
-        if schema != EXPECTED_ACE_STATE_SCHEMA:
-            log.warning("ace-state schema %r != expected %d; parsing best-effort",
-                        schema, EXPECTED_ACE_STATE_SCHEMA)
+        if schema not in SUPPORTED_ACE_STATE_SCHEMAS:
+            log.warning("ace-state schema %r not in supported %r; parsing best-effort",
+                        schema, SUPPORTED_ACE_STATE_SCHEMAS)
         body.setdefault("slots", [])
         body.setdefault("disputed", [])
         return body

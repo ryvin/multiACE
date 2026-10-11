@@ -174,7 +174,7 @@ def test_pull_applies_winner_and_clears_vacated(client):
     assert r.status_code == 200
     data = r.json()
     assert data["applied"] == [{"ace": 0, "slot": 0, "material": "PLA",
-                                "brand": "PolyTerra", "subtype": "PolyTerra Green",
+                                "brand": "PolyTerra", "subtype": "",
                                 "color": "#00ff00"}]
     assert data["cleared"] == [{"ace": 0, "slot": 2}]
     assert data["disputed"][0]["winner_spool_id"] == 42
@@ -205,7 +205,7 @@ def test_pull_prune_false_is_additive_only(client):
     assert r.status_code == 200
     data = r.json()
     assert data["applied"] == [{"ace": 0, "slot": 0, "material": "PLA",
-                                "brand": "PolyTerra", "subtype": "PolyTerra Green",
+                                "brand": "PolyTerra", "subtype": "",
                                 "color": "#00ff00"}]
     assert data["cleared"] == []          # nothing deleted
     assert data["stale"] == [{"ace": 0, "slot": 2}]  # reported, not acted on
