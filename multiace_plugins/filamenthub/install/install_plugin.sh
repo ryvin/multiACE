@@ -1,46 +1,59 @@
 #!/bin/sh
+# License: GPL-3.0
 # Deploy the FilamentHub plugin to the printer's persistent partition.
-# Usage (on printer): sh install_plugin.sh
-# Safe to run only when NO print is active (does a pip install + starts a service).
+# Usage (on printer, as root): sh install_plugin.sh      [FORCE=1 to bypass the print guard]
+# Idempotent. Refuses to run while Moonraker reports a print printing/paused.
 set -e
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR=/userdata/filamenthub-plugin
-NGINX_DROPIN=/etc/nginx/fluidd.d/multiace-plugin.conf
+. "$SRC/install/common.sh"
 
-echo "== Deploying to $APP_DIR =="
-mkdir -p "$APP_DIR"
-cp -r "$SRC/src" "$SRC/pyproject.toml" "$APP_DIR/"
+LOCAL_SITE=/home/lava/.local/lib/python3.11/site-packages
+DEPS_CHECK='import fastapi, uvicorn, httpx, pydantic; print(fastapi.__version__, pydantic.VERSION)'
 
-echo "== Checking system python3 deps (reused from decay71 — no venv/pip) =="
-PYTHONPATH="/home/lava/.local/lib/python3.11/site-packages" \
-  /usr/bin/python3 -c 'import fastapi,uvicorn,httpx,pydantic; print("  deps OK", fastapi.__version__, pydantic.VERSION)' \
-  || { echo "  ERROR: system python3 is missing fastapi/uvicorn/httpx/pydantic (decay71 web console must be installed first)"; exit 1; }
+require_root
+guard_print_state
+[ "$SRC" != "$APP_DIR" ] || die "run install_plugin.sh from a repo copy (e.g. /tmp/filamenthub), not from $APP_DIR; use $APP_DIR/install/restore.sh to re-create /etc pieces"
 
-echo "== Registering init script =="
-cp "$SRC/install/S66filamenthub-plugin" /etc/init.d/S66filamenthub-plugin
-chmod +x /etc/init.d/S66filamenthub-plugin
+log "== Deploying code to $APP_DIR =="
+mkdir -p "$APP_DIR/state" "$APP_DIR/install"
+stage="$APP_DIR/.src.new"
+rm -rf "$stage"
+cp -r "$SRC/src" "$stage"           # includes src/filamenthub_plugin/static
+rm -rf "$APP_DIR/src"
+mv "$stage" "$APP_DIR/src"
+cp "$SRC/pyproject.toml" "$APP_DIR/"
+for f in S66filamenthub-plugin install_plugin.sh restore.sh common.sh; do
+  tr -d '\r' <"$SRC/install/$f" >"$APP_DIR/install/$f"
+  chmod 755 "$APP_DIR/install/$f"
+done
 
-echo "== Verifying nginx /plugin/ route (required for the iframe) =="
-if grep -rqs "location /plugin/" /etc/nginx/ ; then
-  echo "  OK: an nginx 'location /plugin/' already exists (decay71 plugin routing present)."
+log "== Vendoring python deps into $APP_DIR/deps =="
+# -s: ignore the user site so the check proves deps/ (not ~/.local) satisfies imports.
+if PYTHONPATH="$LOCAL_SITE" "$PY" -s -c "$DEPS_CHECK" >/dev/null 2>&1; then
+  stage="$APP_DIR/.deps.new"
+  rm -rf "$stage"
+  cp -a "$LOCAL_SITE" "$stage"
+  if ! PYTHONPATH="$stage" "$PY" -s -c "$DEPS_CHECK" >/dev/null 2>&1; then
+    rm -rf "$stage"
+    die "copied $LOCAL_SITE but imports fail from the copy; deps/ left unchanged"
+  fi
+  rm -rf "$APP_DIR/deps"
+  mv "$stage" "$APP_DIR/deps"
+  log "vendored $LOCAL_SITE -> $APP_DIR/deps"
+elif PYTHONPATH="$APP_DIR/deps" "$PY" -s -c "$DEPS_CHECK" >/dev/null 2>&1; then
+  log "$LOCAL_SITE not importable; keeping existing $APP_DIR/deps (imports OK)"
 else
-  echo "  Adding $NGINX_DROPIN -> proxy /plugin/ to 127.0.0.1:7126"
-  cat > "$NGINX_DROPIN" <<'EOF'
-location /plugin/ {
-    proxy_pass http://127.0.0.1:7126;
-    proxy_set_header Host $host;
-    proxy_http_version 1.1;
-}
-EOF
-  nginx -t && { /etc/init.d/S50nginx reload 2>/dev/null || nginx -s reload; }
+  die "fastapi/uvicorn/httpx/pydantic not importable from $LOCAL_SITE and no usable $APP_DIR/deps.
+  Reinstall the decay71 multiACE web console (it pip-installs them for user lava), then re-run this script."
 fi
+log "deps: $(PYTHONPATH="$APP_DIR/deps" "$PY" -s -c "$DEPS_CHECK")"
 
-echo "== Starting plugin =="
-/etc/init.d/S66filamenthub-plugin restart
-sleep 2
-# Fetch with whatever the box has — PAXX ships wget, not always curl.
-if command -v curl >/dev/null 2>&1; then
-  curl -s http://127.0.0.1:8089/integration-manifest && echo && echo "Install OK."
-else
-  wget -qO- --timeout=5 http://127.0.0.1:8089/integration-manifest && echo && echo "Install OK."
-fi
+log "== Registering init script =="
+install_initd
+
+log "== nginx /plugin/ route =="
+ensure_nginx_dropin
+
+log "== Starting plugin =="
+start_and_probe
+log "Install OK."

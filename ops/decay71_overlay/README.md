@@ -67,7 +67,19 @@ and a non-root install skips the init and nginx steps. Do it with the printer id
    ssh root@$DAVINCI_U1_HOST 'cd /home/lava/multiace_web/frontend && cp -p app.js app.js.pre-overlay.bak && python3 /tmp/web_queue_batch_patch.py app.js && python3 /tmp/swap_park_patch.py app.js'
    ```
 
-7. Reboot. Verify:
+7. Re-run `multiace_plugins/filamenthub/install/restore.sh` if `/etc` was wiped.
+   A PAXX firmware update can wipe the overlay, as it did in Aug 2026. That removes
+   `/etc/init.d/S66filamenthub-plugin` and the nginx `/plugin/` drop-in. The plugin's
+   code, deps and state live on `/userdata` and survive, so restore only re-creates
+   the `/etc` pieces:
+
+   ```bash
+   ssh root@$DAVINCI_U1_HOST 'sh /userdata/filamenthub-plugin/install/restore.sh'
+   ```
+
+   It is idempotent and refuses to run while a print is `printing` or `paused`.
+   See `multiace_plugins/filamenthub/README.md`.
+8. Reboot. Verify:
    - klippy.log shows `[multiACE] Version <ver>` and `Connected to ACE 0` / `Connected to ACE 1`.
    - `head_source` is preserved.
    - `app.js` md5 equals the post-patch md5.
