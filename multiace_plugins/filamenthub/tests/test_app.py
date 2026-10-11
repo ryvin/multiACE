@@ -299,3 +299,145 @@ def test_pull_persists_desired(client, cfg):
     assert "reconciliation" in r.json()
     from filamenthub_plugin.desired_store import load_desired
     assert "0_0" in load_desired(cfg.desired_state_path)   # winner (ace0 slot0) persisted
+
+
+# --- WP2: profiles (/filaments, /assign-profile) ---------------------------
+
+def _filament_route():
+    return respx.get("http://fh.test/api/v1/filament").mock(return_value=httpx.Response(
+        200, json=[{"id": 3, "name": "Matte Black", "material": "PLA",
+                    "color_hex": "000000", "vendor": {"id": 2, "name": "Sunlu"},
+                    "settings_extruder_temp": 210, "settings_bed_temp": 60,
+                    "weight": 1000}]))
+
+
+@respx.mock
+def test_filaments_endpoint_lists_profiles(client):
+    _filament_route()
+    r = client.get("/filaments")
+    assert r.status_code == 200
+    assert r.json() == {"filaments": [{
+        "filament_id": 3, "name": "Matte Black", "vendor": "Sunlu",
+        "material": "PLA", "color": "#000000", "extruder_temp": 210,
+        "bed_temp": 60}]}
+
+
+@respx.mock
+def test_filaments_endpoint_502_when_unreachable(client):
+    respx.get("http://fh.test/api/v1/filament").mock(return_value=httpx.Response(500))
+    r = client.get("/filaments")
+    assert r.status_code == 502
+    assert "filamenthub" in r.json()["detail"].lower()
+
+
+@respx.mock
+def test_assign_profile_writes_override_and_desired_only(client, cfg):
+    from filamenthub_plugin.desired_store import load_desired
+    _filament_route()
+    ov_route = respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True, "key": "1_2"}))
+    spool_post = respx.post("http://fh.test/api/v1/spool").mock(
+        return_value=httpx.Response(200, json={"id": 99}))
+    spool_patch = respx.patch(url__regex=r"http://fh\.test/api/v1/spool/\d+").mock(
+        return_value=httpx.Response(200))
+    r = client.post("/assign-profile", json={"filament_id": 3, "ace": 1, "slot": 2})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["spool_id"] is None and body["location"] is None
+    sent = json.loads(ov_route.calls.last.request.content)
+    assert sent == {"ace": 1, "slot": 2, "material": "PLA", "brand": "Sunlu",
+                    "subtype": "Matte Black", "color": "#000000"}
+    assert body["override"] == {"ok": True, "key": "1_2"}
+    assert not spool_post.called and not spool_patch.called  # no FH location write
+    d = load_desired(cfg.desired_state_path)
+    assert d["1_2"]["filament_id"] == 3
+    assert d["1_2"]["spool_id"] is None
+    assert d["1_2"]["material"] == "PLA" and d["1_2"]["brand"] == "Sunlu"
+
+
+@respx.mock
+def test_assign_profile_preserves_other_desired_entries(client, cfg):
+    from filamenthub_plugin.desired_store import load_desired, save_desired
+    save_desired(cfg.desired_state_path, "davinci-u1",
+                 {"0_0": {"ace": 0, "slot": 0, "spool_id": 42, "material": "PETG"}})
+    _filament_route()
+    respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    r = client.post("/assign-profile", json={"filament_id": 3, "ace": 1, "slot": 2})
+    assert r.status_code == 200
+    d = load_desired(cfg.desired_state_path)
+    assert set(d) == {"0_0", "1_2"}
+
+
+@respx.mock
+def test_assign_profile_unknown_filament_404(client):
+    _filament_route()
+    r = client.post("/assign-profile", json={"filament_id": 999, "ace": 0, "slot": 0})
+    assert r.status_code == 404
+
+
+@respx.mock
+def test_assign_profile_502_when_filamenthub_unreachable(client):
+    respx.get("http://fh.test/api/v1/filament").mock(return_value=httpx.Response(500))
+    ov_route = respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    r = client.post("/assign-profile", json={"filament_id": 3, "ace": 1, "slot": 2})
+    assert r.status_code == 502
+    assert not ov_route.called
+
+
+@respx.mock
+def test_assign_profile_502_when_multiace_fails_and_desired_untouched(client, cfg):
+    from filamenthub_plugin.desired_store import load_desired
+    _filament_route()
+    respx.post("http://ma.test/api/slot-override").mock(return_value=httpx.Response(502))
+    r = client.post("/assign-profile", json={"filament_id": 3, "ace": 1, "slot": 2})
+    assert r.status_code == 502
+    assert "multiace" in r.json()["detail"].lower()
+    assert load_desired(cfg.desired_state_path) == {}
+
+
+@respx.mock
+def test_assign_profile_create_spool_creates_then_assigns(client, cfg):
+    from filamenthub_plugin.desired_store import load_desired
+    _filament_route()
+    create = respx.post("http://fh.test/api/v1/spool").mock(
+        return_value=httpx.Response(200, json={"id": 99}))
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(
+        200, json=[{"id": 99, "archived": False, "remaining_weight": 1000.0,
+                    "extra": {},
+                    "filament": {"id": 3, "name": "Matte Black", "material": "PLA",
+                                 "color_hex": "000000",
+                                 "vendor": {"name": "Sunlu"}}}]))
+    respx.get("http://fh.test/api/v1/spool/99").mock(return_value=httpx.Response(
+        200, json={"id": 99, "extra": {}}))
+    patch = respx.patch("http://fh.test/api/v1/spool/99").mock(
+        return_value=httpx.Response(200))
+    ov_route = respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True, "key": "1_2"}))
+    r = client.post("/assign-profile",
+                    json={"filament_id": 3, "ace": 1, "slot": 2, "create_spool": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["spool_id"] == 99
+    assert body["location"] == {"printer": "davinci-u1", "ace": 1, "slot": 2}
+    created = json.loads(create.calls.last.request.content)
+    assert created["filament_id"] == 3
+    assert json.loads(created["extra"]["card_uid"]).startswith("VIRT-")
+    assert patch.called and ov_route.called
+    d = load_desired(cfg.desired_state_path)
+    assert d["1_2"]["spool_id"] == 99 and d["1_2"]["filament_id"] == 3
+
+
+@respx.mock
+def test_assign_profile_create_spool_502_when_create_fails(client):
+    _filament_route()
+    respx.post("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(500))
+    ov_route = respx.post("http://ma.test/api/slot-override").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    r = client.post("/assign-profile",
+                    json={"filament_id": 3, "ace": 1, "slot": 2, "create_spool": True})
+    assert r.status_code == 502
+    assert "create" in r.json()["detail"].lower()
+    assert not ov_route.called
