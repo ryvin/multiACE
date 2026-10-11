@@ -9,22 +9,52 @@
 <body>
   <header class="fh-head">
     <h1>FilamentHub → ACE slots</h1>
-    <button id="pull" class="btn">Pull from FilamentHub</button>
-    <button id="refresh" class="btn">Refresh</button>
+    <div class="head-actions">
+      <button id="pull" class="btn" type="button">Pull from FilamentHub</button>
+      <button id="refresh" class="btn btn-ghost" type="button">Refresh</button>
+    </div>
   </header>
-  <p id="status" class="status" role="status"></p>
+  <p id="status" class="status" role="status" aria-live="polite"></p>
   <section id="disputes" class="disputes" aria-label="Disputed slots" hidden></section>
-  <section id="grid" class="grid" aria-label="ACE slots"></section>
+  <div id="grid" class="aces" aria-label="ACE slots"></div>
 
-  <dialog id="picker" class="picker">
-    <h2 id="picker-title">Pick a spool</h2>
-    <input id="filter" class="filter" type="search" placeholder="Filter by name / material / vendor…" autocomplete="off">
-    <ul id="spool-list" class="spool-list"></ul>
-    <menu class="picker-actions">
-      <button id="clear-slot" class="btn btn-ghost">Clear slot</button>
-      <button id="cancel" class="btn btn-ghost" value="cancel">Cancel</button>
-    </menu>
+  <dialog id="picker" class="picker" aria-labelledby="picker-title">
+    <div class="picker-head">
+      <h2 id="picker-title">Pick filament</h2>
+      <button id="close-picker" class="icon-btn" type="button" aria-label="Close">×</button>
+    </div>
+    <p id="picker-current" class="picker-current"></p>
+
+    <div class="tabs" role="tablist" aria-label="Pick from">
+      <button id="tab-spools" class="tab" type="button" role="tab"
+              aria-selected="true" aria-controls="panel-spools">Spools</button>
+      <button id="tab-profiles" class="tab" type="button" role="tab"
+              aria-selected="false" aria-controls="panel-profiles" tabindex="-1">Profiles</button>
+    </div>
+
+    <div id="panel-spools" class="tab-panel" role="tabpanel" aria-labelledby="tab-spools">
+      <input id="filter" class="filter" type="search" aria-label="Filter spools"
+             placeholder="Filter by name / material / vendor…" autocomplete="off">
+      <ul id="spool-list" class="pick-list"></ul>
+    </div>
+
+    <div id="panel-profiles" class="tab-panel" role="tabpanel" aria-labelledby="tab-profiles" hidden>
+      <input id="profile-filter" class="filter" type="search" aria-label="Filter profiles"
+             placeholder="Filter by name / material / vendor…" autocomplete="off">
+      <label class="create-spool">
+        <input id="create-spool" type="checkbox">
+        Also create a spool in FilamentHub
+      </label>
+      <div id="profile-list" class="pick-list"></div>
+    </div>
+
+    <div class="picker-actions">
+      <button id="clear-slot" class="btn btn-danger" type="button">Clear slot</button>
+      <button id="cancel" class="btn btn-ghost" type="button">Cancel</button>
+    </div>
   </dialog>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
 
   <script src="app.js"></script>
 </body>
