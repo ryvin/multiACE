@@ -462,4 +462,6 @@ $("#picker").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) closePicker();
 });
 
-render().then(() => pull(false));
+// No auto-pull on open: FilamentHub ace-state may be stale and would overwrite
+// correct slot labels (quad replenish matches on them). Pull is explicit only.
+render();

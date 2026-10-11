@@ -41,7 +41,7 @@ FILAMENTHUB_URL=http://192.168.1.174:3000 MULTIACE_PRINTER_ID=u1-b \
 
 ## Pull from FilamentHub (Phase 4)
 
-The **Pull from FilamentHub** button (and auto-pull on tab open) mirrors
+The **Pull from FilamentHub** button (explicit only; there is no auto-pull on tab open) mirrors
 FilamentHub's authoritative loaded configuration into multiACE's slot labels —
 **label-only, no filament motion**. It reads FilamentHub's
 `GET /fleet/api/ace-state?printer=<MULTIACE_PRINTER_ID>` seam (one winner per

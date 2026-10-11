@@ -44,9 +44,13 @@ def test_app_js_uses_relative_plugin_endpoints():
     assert not absolute.search(js)
 
 
-def test_app_js_keeps_auto_pull_additive():
+def test_app_js_never_pulls_on_open():
+    # FilamentHub's ace-state can be months stale (u1-b winners were July data on
+    # 2026-10-11); an automatic pull would overwrite correct slot labels that quad
+    # replenish matches backups on. Pull must be an explicit user action only.
     js = _app_js()
-    assert "pull(false)" in js
+    assert "pull(false)" not in js
+    assert "render().then(() => pull" not in js
 
 
 def test_app_js_never_assigns_innerhtml_with_data():
