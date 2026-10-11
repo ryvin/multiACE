@@ -1,4 +1,3 @@
-const MULTIACE_STATE = "/multiace/api/plugin-api/state";
 const PLUGIN = "";               // same dir: /plugin/filamenthub/
 const $ = (s) => document.querySelector(s);
 const setStatus = (m) => { $("#status").textContent = m || ""; };
@@ -18,23 +17,58 @@ async function jpost(url, body) {
   return r.json();
 }
 
-function slotCard(ace, slot, occupied, label, color) {
+// 0-based lane label matching the dashboard: A0…A3 / B0…B3.
+function laneLabel(ace, slot) {
+  return `${String.fromCharCode(65 + ace)}${slot}`;
+}
+
+function slotCard(row) {
+  const { ace, slot, recon_state, display_name, display_color, observed } = row;
   const el = document.createElement("button");
-  el.className = "slot" + (occupied ? "" : " empty");
+  el.className = "slot";
 
   const swatch = document.createElement("span");
   swatch.className = "swatch";
-  swatch.style.backgroundColor = color || "transparent";
+  swatch.style.backgroundColor = display_color || (observed && observed.color) || "transparent";
   el.appendChild(swatch);
 
   const name = document.createElement("span");
   name.className = "name";
-  name.textContent = label || "empty";
+
+  switch (recon_state) {
+    case "VERIFIED":
+      name.textContent = `${display_name} ✓`;
+      break;
+    case "ASSERTED": {
+      name.textContent = display_name;
+      const dot = document.createElement("span");
+      dot.className = "dot-unverified";
+      dot.title = "unverified";
+      name.appendChild(dot);
+      break;
+    }
+    case "EXPECTED_NOT_LOADED":
+      el.classList.add("ghost");
+      swatch.classList.add("desaturated");
+      name.textContent = `Expected: ${display_name} — not loaded`;
+      break;
+    case "UNKNOWN_LOADED":
+      el.classList.add("unknown");
+      name.textContent = "Filament present — unknown · tap to identify";
+      break;
+    case "CONFLICT":
+      el.classList.add("conflict");
+      name.textContent = `Tag: ${(observed && observed.material) || "?"} · Hub: ${display_name}`;
+      break;
+    default: // EMPTY
+      el.classList.add("empty");
+      name.textContent = "Empty";
+  }
   el.appendChild(name);
 
   const meta = document.createElement("span");
   meta.className = "meta";
-  meta.textContent = `ACE ${ace + 1} · slot ${slot + 1}`;
+  meta.textContent = laneLabel(ace, slot);
   el.appendChild(meta);
 
   el.addEventListener("click", () => openPicker(ace, slot));
@@ -44,28 +78,32 @@ function slotCard(ace, slot, occupied, label, color) {
 async function render() {
   setStatus("Loading…");
   try {
-    const [state, inv] = await Promise.all([
-      jget(MULTIACE_STATE), jget(`${PLUGIN}spools`)]);
+    const [slotsRes, inv] = await Promise.all([
+      jget(`${PLUGIN}slots`), jget(`${PLUGIN}spools`)]);
     spools = inv.spools || [];
     const grid = $("#grid"); grid.innerHTML = "";
-    (state.aces || []).forEach((ace) => {
-      const h = document.createElement("div");
-      h.className = "ace-group"; h.textContent = `ACE ${ace.idx + 1}`;
-      grid.appendChild(h);
-      (ace.slots || []).forEach((s) => {
-        const occupied = s.state !== "empty";
-        grid.appendChild(slotCard(ace.idx, s.idx,
-          occupied, s.material ? `${s.material}` : (occupied ? "loaded" : ""),
-          s.color));
-      });
+    let currentAce = null;
+    (slotsRes.slots || []).forEach((row) => {
+      if (row.ace !== currentAce) {
+        currentAce = row.ace;
+        const h = document.createElement("div");
+        h.className = "ace-group";
+        h.textContent = `ACE ${String.fromCharCode(65 + row.ace)}`;
+        grid.appendChild(h);
+      }
+      grid.appendChild(slotCard(row));
     });
-    setStatus(`${spools.length} spools in FilamentHub`);
+    let statusMsg = `${spools.length} spools in FilamentHub`;
+    if (slotsRes.observed_ok === false) {
+      statusMsg = `printer state unavailable — showing expected loadout · ${statusMsg}`;
+    }
+    setStatus(statusMsg);
   } catch (e) { setStatus(`Error: ${e.message}`); }
 }
 
 function openPicker(ace, slot) {
   target = { ace, slot };
-  $("#picker-title").textContent = `ACE ${ace + 1} · slot ${slot + 1}`;
+  $("#picker-title").textContent = laneLabel(ace, slot);
   $("#filter").value = "";
   renderSpoolList("");
   $("#picker").showModal();
@@ -127,7 +165,7 @@ function renderDisputes(disputed) {
   const ul = document.createElement("ul");
   disputed.forEach((d) => {
     const li = document.createElement("li");
-    li.textContent = `ACE ${d.ace + 1} · slot ${d.slot + 1}: spool ${d.spool_id} ` +
+    li.textContent = `${laneLabel(d.ace, d.slot)}: spool ${d.spool_id} ` +
                      `also claims this (winner: ${d.winner_spool_id})`;
     ul.appendChild(li);
   });
@@ -138,15 +176,24 @@ function renderDisputes(disputed) {
 // prune=false → additive-only, used by auto-pull-on-open so a transient seam
 // drop can't churn or delete valid labels.
 async function pull(prune = true) {
-  setStatus(prune ? "Pulling from FilamentHub…" : "Syncing labels…");
+  setStatus(prune ? "Pulling from FilamentHub…" : "Syncing labels from FilamentHub…");
   try {
     const res = await jpost(`${PLUGIN}pull`, { prune });
     renderDisputes(res.disputed);
-    const parts = [`applied ${res.applied.length}`];
-    if (prune) parts.push(`cleared ${res.cleared.length}`);
-    else if (res.stale && res.stale.length) parts.push(`${res.stale.length} stale (not cleared)`);
-    if (res.errors.length) parts.push(`errors ${res.errors.length}`);
-    setStatus(`${prune ? "Pull" : "Sync"} complete: ${parts.join(", ")}`);
+    let msg;
+    if (res.reconciliation) {
+      const r = res.reconciliation;
+      msg = `Pulled: ${r.verified + r.asserted} identified, ` +
+            `${r.expected_not_loaded} awaiting load, ${r.unknown_loaded} unidentified`;
+    } else {
+      const parts = [`applied ${res.applied.length}`];
+      if (prune) parts.push(`cleared ${res.cleared.length}`);
+      else if (res.stale && res.stale.length) parts.push(`${res.stale.length} stale (not cleared)`);
+      if (res.errors.length) parts.push(`errors ${res.errors.length}`);
+      msg = `${prune ? "Pull" : "Sync"} complete: ${parts.join(", ")}`;
+    }
+    if (res.warning) msg += ` — ${res.warning}`;
+    setStatus(msg);
     await render();   // refresh the grid to show the new labels
   } catch (e) {
     setStatus(`Pull failed: ${e.message}`);

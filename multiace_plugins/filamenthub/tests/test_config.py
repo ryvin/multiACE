@@ -30,3 +30,19 @@ def test_ace_state_url_explicit_override(monkeypatch):
     from filamenthub_plugin.config import load_config
     cfg = load_config()
     assert cfg.ace_state_url == "http://127.0.0.1:7127/api/ace-state"
+
+
+def test_desired_state_path_default(monkeypatch):
+    monkeypatch.setenv("FILAMENTHUB_URL", "http://fh.test")
+    monkeypatch.setenv("MULTIACE_PRINTER_ID", "u1-1")
+    monkeypatch.delenv("FILAMENTHUB_DESIRED_PATH", raising=False)
+    from filamenthub_plugin.config import load_config
+    assert load_config().desired_state_path == ".filamenthub_desired.json"
+
+
+def test_desired_state_path_override(monkeypatch):
+    monkeypatch.setenv("FILAMENTHUB_URL", "http://fh.test")
+    monkeypatch.setenv("MULTIACE_PRINTER_ID", "u1-1")
+    monkeypatch.setenv("FILAMENTHUB_DESIRED_PATH", "/tmp/d.json")
+    from filamenthub_plugin.config import load_config
+    assert load_config().desired_state_path == "/tmp/d.json"

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from .mapping import ace_state_row_to_override
+from .mapping import ace_state_row_to_override, normalize_color
 
 
 def _parse_key(key: str) -> tuple[int, int] | None:
@@ -56,3 +56,55 @@ def plan_reconcile(
             to_clear.append((ace, slot))
     to_clear.sort()
     return to_apply, to_clear
+
+
+def reconcile_slots(desired: dict[str, dict],
+                    observed_aces: list[dict]) -> list[dict]:
+    observed: dict[tuple[int, int], dict] = {}
+    for ace in observed_aces or []:
+        ai = int(ace.get("idx"))
+        for s in ace.get("slots") or []:
+            observed[(ai, int(s.get("idx")))] = s
+    keys = set(observed.keys())
+    for k in desired:
+        parsed = _parse_key(k)
+        if parsed is not None:
+            keys.add(parsed)
+    rows: list[dict] = []
+    for ace, slot in sorted(keys):
+        d = desired.get(f"{ace}_{slot}")
+        o = observed.get((ace, slot))
+        occupied = bool(o) and o.get("state") != "empty"
+        rfid_identity = bool(o) and o.get("rfid") == 1 and bool(
+            (o.get("material") or "") or (o.get("color") or ""))
+        if occupied and d:
+            if rfid_identity:
+                mat_ok = (o.get("material") or "") == (d.get("material") or "")
+                col_ok = normalize_color(o.get("color")) == normalize_color(d.get("color"))
+                state = "VERIFIED" if (mat_ok and col_ok) else "CONFLICT"
+            else:
+                state = "ASSERTED"
+        elif occupied:
+            state = "UNKNOWN_LOADED"
+        elif d:
+            state = "EXPECTED_NOT_LOADED"
+        else:
+            state = "EMPTY"
+        if d and state in ("VERIFIED", "ASSERTED", "CONFLICT", "EXPECTED_NOT_LOADED"):
+            name = d.get("subtype") or ""
+            material = d.get("material") or ""
+            color = normalize_color(d.get("color"))
+        elif state == "UNKNOWN_LOADED":
+            name = ""
+            material = (o.get("material") or "") if o else ""
+            color = normalize_color(o.get("color")) if o else ""
+        else:
+            name = material = color = ""
+        rows.append({
+            "ace": ace, "slot": slot, "recon_state": state,
+            "display_name": name, "display_material": material, "display_color": color,
+            "desired": d,
+            "observed": ({"state": o.get("state"), "material": o.get("material"),
+                          "color": o.get("color"), "rfid": o.get("rfid")} if o else None),
+        })
+    return rows

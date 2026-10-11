@@ -11,6 +11,15 @@ from filamenthub_plugin.multiace_client import MultiAceClient
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_get_state_returns_body():
+    respx.get("http://ma.test/api/plugin-api/state").mock(
+        return_value=httpx.Response(200, json={"aces": [{"idx": 0, "slots": []}]}))
+    body = await MultiAceClient("http://ma.test").get_state()
+    assert body["aces"][0]["idx"] == 0
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_set_override_posts_payload():
     route = respx.post("http://ma.test/api/slot-override").mock(
         return_value=httpx.Response(200, json={"ok": True, "key": "0_1"}))
