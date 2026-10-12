@@ -154,12 +154,21 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/unassign")
     async def unassign(req: UnassignReq):
+        key = f"{req.ace}_{req.slot}"
+        entry = load_desired(cfg.desired_state_path).get(key)
         sm = SpoolmanClient(cfg.filamenthub_url, cfg.printer_id)
-        try:
-            cleared = await sm.unassign_slot(req.ace, req.slot, raise_on_error=True)
-        except httpx.HTTPError as e:
-            log.warning("FilamentHub clear failed: %s", e)
-            raise HTTPException(status_code=502, detail="FilamentHub unreachable")
+        cleared = None
+        # The plugin's own record says which spool it placed here. Clear only
+        # that one; a profile-only label placed no spool, so touch none.
+        # Without a record, fall back to the first spool at the slot.
+        if entry is None or entry.get("spool_id") is not None:
+            try:
+                cleared = await sm.unassign_slot(
+                    req.ace, req.slot, raise_on_error=True,
+                    spool_id=None if entry is None else int(entry["spool_id"]))
+            except httpx.HTTPError as e:
+                log.warning("FilamentHub clear failed: %s", e)
+                raise HTTPException(status_code=502, detail="FilamentHub unreachable")
         ma = MultiAceClient(cfg.multiace_url)
         try:
             await ma.clear_override(req.ace, req.slot)

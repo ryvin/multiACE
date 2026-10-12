@@ -499,6 +499,54 @@ def test_unassign_removes_desired_entry(client, cfg):
     assert "1_2" not in desired and "0_0" in desired
 
 
+def _fh_spool_at(spool_id, ace, slot):
+    return {"id": spool_id, "archived": False, "remaining_weight": 800.0,
+            "extra": {"filamenthub": json.dumps(json.dumps(
+                {"schema": 1, "location":
+                 {"printer": "davinci-u1", "ace": ace, "slot": slot}}))},
+            "filament": {"name": "x", "material": "PLA", "color_hex": "ffffff",
+                         "vendor": {"name": "Generic"}}}
+
+
+@respx.mock
+def test_unassign_clears_the_spool_the_plugin_assigned_not_an_older_one(client, cfg):
+    # Live 2026-10-12: a stale July spool (112) still sits at the slot. The
+    # plugin assigned 130 there; Clear must release 130 and leave 112 alone.
+    save_desired(cfg.desired_state_path, cfg.printer_id,
+                 {"1_2": {"ace": 1, "slot": 2, "spool_id": 130, "filament_id": 5}})
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(
+        200, json=[_fh_spool_at(112, 1, 2), _fh_spool_at(130, 1, 2)]))
+    respx.get("http://fh.test/api/v1/spool/130").mock(return_value=httpx.Response(
+        200, json={"id": 130, "extra": {}}))
+    p130 = respx.patch("http://fh.test/api/v1/spool/130").mock(
+        return_value=httpx.Response(200))
+    p112 = respx.patch("http://fh.test/api/v1/spool/112").mock(
+        return_value=httpx.Response(200))
+    respx.delete("http://ma.test/api/slot-override/1/2").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    r = client.post("/unassign", json={"ace": 1, "slot": 2})
+    assert r.status_code == 200
+    assert r.json()["cleared_spool_id"] == 130
+    assert p130.called and not p112.called
+
+
+@respx.mock
+def test_unassign_after_profile_only_assign_touches_no_spool(client, cfg):
+    save_desired(cfg.desired_state_path, cfg.printer_id,
+                 {"1_2": {"ace": 1, "slot": 2, "spool_id": None, "filament_id": 5}})
+    respx.get("http://fh.test/api/v1/spool").mock(return_value=httpx.Response(
+        200, json=[_fh_spool_at(112, 1, 2)]))
+    p112 = respx.patch("http://fh.test/api/v1/spool/112").mock(
+        return_value=httpx.Response(200))
+    respx.delete("http://ma.test/api/slot-override/1/2").mock(
+        return_value=httpx.Response(200, json={"ok": True}))
+    r = client.post("/unassign", json={"ace": 1, "slot": 2})
+    assert r.status_code == 200
+    assert r.json()["cleared_spool_id"] is None
+    assert not p112.called
+    assert "1_2" not in load_desired(cfg.desired_state_path)
+
+
 @respx.mock
 def test_pull_clears_covered_ace_without_winners(client):
     body = _ace_state_body()

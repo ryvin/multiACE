@@ -216,16 +216,22 @@ class SpoolmanClient:
             await self._set_location(client, spool_id, location)
         return location
 
-    async def unassign_slot(self, ace: int, slot: int, *, raise_on_error: bool = False):
-        """Make a slot blank: clear the location of whatever spool is currently
-        bound to (ace, slot) on this printer. Returns the cleared spool_id, or
-        None if the slot was already empty.
+    async def unassign_slot(self, ace: int, slot: int, *, raise_on_error: bool = False,
+                            spool_id: int | None = None):
+        """Make a slot blank: clear the location of the spool bound to
+        (ace, slot) on this printer. Returns the cleared spool_id, or None if
+        nothing matched.
+
+        ``spool_id`` limits the clear to that one spool (the one the plugin
+        assigned). Several spools can claim one slot, e.g. a months-old
+        assignment left in FilamentHub; without it the first match is cleared.
 
         ``raise_on_error`` is forwarded to the internal ``list_spools()`` call
         so a FilamentHub outage can be surfaced instead of read as "empty"."""
         want = {"ace": int(ace), "slot": int(slot)}
         spools = await self.list_spools(raise_on_error=raise_on_error)
-        target = next((s for s in spools if s["location"] == want), None)
+        target = next((s for s in spools if s["location"] == want
+                       and (spool_id is None or s["spool_id"] == spool_id)), None)
         if target is None:
             return None
         async with httpx.AsyncClient(timeout=self._timeout) as client:
