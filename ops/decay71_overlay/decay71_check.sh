@@ -14,6 +14,7 @@ HOST="${1:-${DAVINCI_U1_HOST:-192.168.1.136}}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
 APP_JS_PATH="multiace/web/frontend/app.js"
+ACE_PY_PATH="multiace/klipper/extras/ace.py"
 
 resp="$(curl -fsS --max-time 30 "http://$HOST/multiace/api/update/check")" || {
     echo "ERROR: cannot reach http://$HOST/multiace/api/update/check" >&2; exit 1; }
@@ -39,5 +40,13 @@ for p in web_queue_batch_patch swap_park_patch; do
     echo "  $p against $latest: $state"
     case "$state" in unpatched|partial|patched) ;; *) rc=11 ;; esac
 done
+ace_tmp="$(mktemp)"; trap 'rm -f "$tmp" "$ace_tmp"' EXIT
+if git -C "$REPO" show "$latest:$ACE_PY_PATH" > "$ace_tmp" 2>/dev/null; then
+    state="$(python3 "$HERE/airlog_chew_patch.py" "$ace_tmp" --check || true)"
+else
+    state="missing"
+fi
+echo "  airlog_chew_patch against $latest: $state"
+case "$state" in unpatched|partial|patched) ;; *) rc=11 ;; esac
 echo "update available - follow 'Upgrading decay71' in $HERE/README.md"
 exit $rc

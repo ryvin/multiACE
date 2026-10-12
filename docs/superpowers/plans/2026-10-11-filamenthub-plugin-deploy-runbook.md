@@ -173,6 +173,37 @@ Save screenshots to `scratchpad/postprint/ui-*.png`. If `confirm()` is blocked b
 3. **Update memory:** rewrite `filamenthub-ace-state-puller.md` as live again, recording the deploy path, `restore.sh`, the no-auto-pull rule, printer id `u1-b`, and the FilamentHub stale-data caveat. Update the `MEMORY.md` line, then run `claude-sync.sh`.
 4. Commit, merge, push. Then the final report to the user.
 
+## Phase 8: Deploy the airlog relative-chew overlay (Lead only, user OK required)
+
+Added 2026-10-12, after a T3 tangle (ACE 2 slot 4) went unpaused. The patch is
+`ops/decay71_overlay/airlog_chew_patch.py`; see the overlay README. This is the
+**only** step in this runbook that restarts Klipper. That is an exception to the
+hard rules above, so it needs an explicit "yes" from the user after Phase 7.
+
+1. Re-run the Phase 0 print gate. Then back up to
+   `/userdata/multiace-backups/<ts>-pre-airlog-chew/`: `extras/ace.py` and `extended/ace.cfg`.
+2. Confirm the live `ace.py` md5 is `c5bd76c8e206037537f55f486457f6c2` (upstream v1.27b). If it
+   differs, stop: decay71 changed underneath us.
+3. Upload the patcher to `/tmp/`, then on the printer:
+   1. `python3 /tmp/airlog_chew_patch.py <ace.py> --check` must print `unpatched`.
+   2. `cp -p ace.py ace.py.pre-overlay.bak`.
+   3. Apply the patch. The md5 must become `ed09eaa98a2e9b9138079e270468d92c`.
+   4. `rm -rf __pycache__/ace.*.pyc`.
+4. Run `/etc/init.d/S60klipper restart`. Plain `RESTART` does not reload Python modules.
+5. Verify:
+   - klippy.log has `[multiACE] Version` with no config error.
+   - `printer/objects/query?ace` shows `airprint_detection true`.
+   - Both ACEs show as connected.
+   - `head_source` matches `ace.before.json`.
+6. Check it live on the next print, for example the replacement teeth. `multiace_wiggle.log` /
+   klippy.log should show `chew baseline armed head=N` once per head after about 10 fast windows,
+   and no `CHEW window ... (rel)` lines on a clean print.
+7. **Rollback:** restore `ace.py.pre-overlay.bak`, clear the pyc, and restart Klipper the same way.
+   Or keep the code and set `airlog_chew_rel_ratio: 0` in `[ace]`.
+8. Upstream: after 2-3 clean prints, or a caught chew, file the drafted issue
+   `../specs/2026-10-12-airlog-relative-chew-upstream-issue.md` on `decay71/multiACE`, using a file
+   body (`gh issue create -F`).
+
 ## Follow-ups (not in this run)
 
 - **Physical checks (user):**

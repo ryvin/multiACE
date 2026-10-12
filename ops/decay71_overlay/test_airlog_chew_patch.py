@@ -1,0 +1,249 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Tests for airlog_chew_patch.py against decay71's real ace.py.
+
+The replay test runs the PATCHED detector methods, extracted from the patched
+source, over every airlog window of the 2026-10-11/12 print in which the T3
+spool tangled (ACE 2 slot 4). Unpatched upstream never fires on that print;
+the patch must fire on T3 during the chew ramp and nowhere else.
+"""
+import ast
+import csv
+import gzip
+import logging
+import os
+import subprocess
+import sys
+
+import pytest
+
+HERE = os.path.dirname(__file__)
+sys.path.insert(0, HERE)
+import airlog_chew_patch as cp  # noqa: E402
+
+FIXTURE = os.path.join(HERE, "testdata", "airlog_2026-10-12_t3_tangle.csv.gz")
+ACE_PY = "multiace/klipper/extras/ace.py"
+
+
+@pytest.fixture(scope="module")
+def upstream():
+    real = os.environ.get("DECAY71_ACE_PY")
+    if real:
+        with open(real, encoding="utf-8") as f:
+            return f.read()
+    for ref in ("decay71/main", "v1.27b"):
+        try:
+            return subprocess.run(
+                ["git", "show", "%s:%s" % (ref, ACE_PY)], cwd=HERE,
+                check=True, capture_output=True, text=True).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    pytest.skip("no decay71 ace.py available")
+
+
+# ---------------------------------------------------------------- harness
+
+def _detector(source):
+    """Build a minimal object carrying the detector methods of `source`."""
+    tree = ast.parse(source)
+    consts = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id.startswith("AIRLOG_CHEW")):
+            consts[node.targets[0].id] = ast.literal_eval(node.value)
+    cls = next(n for n in tree.body
+               if isinstance(n, ast.ClassDef) and any(
+                   isinstance(f, ast.FunctionDef)
+                   and f.name == "_airlog_chew_eval" for f in n.body))
+    wanted = {"_airlog_chew_eval"} | {
+        f.name for f in cls.body
+        if isinstance(f, ast.FunctionDef) and f.name.startswith("_ov_chew")}
+    ns = dict(consts, logging=logging)
+    for f in cls.body:
+        if isinstance(f, ast.FunctionDef) and f.name in wanted:
+            exec(compile(ast.Module([f], []), "<ace.py>", "exec"), ns)
+
+    class Cfg:
+        def __init__(self, values=None):
+            self.values = values or {}
+
+        def get(self, name, default=None, **_):
+            return self.values.get(name, default)
+
+        getfloat = getint = get
+
+    class Det:
+        _swap_in_progress = False
+        _pickcheck_active = False
+        _swap_phase = "idle"
+        resistance_pause = False
+
+        def __init__(self):
+            self._airlog_chew_run = {}
+            self._airlog_chew_latched = set()
+            self.events = []
+
+        def _ace_event(self, name, **fields):  # upstream signature
+            self.events.append((name, fields))
+
+    for name in wanted:
+        setattr(Det, name, ns[name])
+    det = Det()
+    if hasattr(det, "_ov_chew_init"):
+        det._ov_chew_init(Cfg())
+    det.Cfg = Cfg
+    return det
+
+
+def _rows():
+    with gzip.open(FIXTURE, "rt") as f:
+        for r in csv.DictReader(f):
+            d = None if r["coil_delta"] == "-" else float(r["coil_delta"])
+            yield r["ts"], int(r["head"]), int(r["moving"]), float(r["vel_max"]), d
+
+
+def _replay(det, patched):
+    """Feed every window; return [(ts, head)] of each new latch."""
+    from datetime import datetime
+    fired, seen = [], set()
+    t0 = None
+    for ts, head, moving, vmax, delta in _rows():
+        t = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f").timestamp()
+        t0 = t0 if t0 is not None else t
+        if patched:
+            det._airlog_chew_eval(head, delta, moving, vmax, t - t0)
+        else:
+            det._airlog_chew_eval(head, delta, moving)
+        for h in det._airlog_chew_latched - seen:
+            fired.append((ts, h))
+            seen.add(h)
+    return fired
+
+
+# ---------------------------------------------------------------- patcher
+
+def test_upstream_is_unpatched(upstream):
+    assert cp.classify(upstream) == "unpatched"
+
+
+def test_patch_applies_and_is_idempotent(upstream):
+    out = cp.patch(upstream)
+    assert cp.classify(out) == "patched"
+    assert cp.patch(out) == out
+    compile(out, "ace.py", "exec")
+
+
+def test_unknown_text_is_refused(upstream):
+    broken = upstream.replace("AIRLOG_CHEW_MIN_MOVING = 3", "AIRLOG_CHEW_MIN_MOVING = 4")
+    assert cp.classify(broken) == "unknown"
+
+
+def test_cli_check_and_apply(tmp_path, upstream):
+    p = tmp_path / "ace.py"
+    p.write_text(upstream, encoding="utf-8")
+    script = os.path.join(HERE, "airlog_chew_patch.py")
+    chk = subprocess.run([sys.executable, script, str(p), "--check"],
+                         capture_output=True, text=True)
+    assert chk.stdout.strip() == "unpatched"
+    subprocess.run([sys.executable, script, str(p)], check=True,
+                   capture_output=True, text=True)
+    assert cp.classify(p.read_text(encoding="utf-8")) == "patched"
+
+
+# ---------------------------------------------------------------- behaviour
+
+def test_upstream_misses_the_tangle(upstream):
+    # Known-bad baseline: the shipped absolute rule never fires on this print.
+    assert _replay(_detector(upstream), patched=False) == []
+
+
+def test_patched_fires_on_t3_tangle_only(upstream):
+    fired = _replay(_detector(cp.patch(upstream)), patched=True)
+    assert fired == [("2026-10-12 12:13:49.390", 3)]
+
+
+def test_rel_ratio_zero_restores_upstream_behaviour(upstream):
+    det = _detector(cp.patch(upstream))
+    det._ov_chew_init(det.Cfg({"airlog_chew_rel_ratio": 0.}))
+    assert _replay(det, patched=True) == []
+
+
+def test_swap_window_resets_relative_run(upstream):
+    det = _detector(cp.patch(upstream))
+    for i in range(10):                      # warm a baseline of 1000
+        det._airlog_chew_eval(3, 1000., 5, 30., float(i * 10))
+    det._airlog_chew_eval(3, 6000., 5, 30., 100.)   # suspicious #1
+    det._swap_in_progress = True
+    det._airlog_chew_eval(3, 6000., 5, 30., 110.)   # swap: reset, not counted
+    det._swap_in_progress = False
+    det._airlog_chew_eval(3, 6000., 5, 30., 120.)   # suspicious #1 again
+    assert det._airlog_chew_latched == set()
+    det._airlog_chew_eval(3, 6000., 5, 30., 130.)   # #2 -> fires
+    assert det._airlog_chew_latched == {3}
+    assert det.events[-1][1].get("kind") == "rel"
+
+
+def test_slow_window_breaks_run_and_never_learns(upstream):
+    det = _detector(cp.patch(upstream))
+    for i in range(10):
+        det._airlog_chew_eval(3, 1000., 5, 30., float(i * 10))
+    base = det._ov_chew_base[3]
+    det._airlog_chew_eval(3, 6000., 5, 30., 100.)
+    det._airlog_chew_eval(3, 200., 5, 5., 110.)     # constant feed, vmax<10
+    det._airlog_chew_eval(3, 6000., 5, 30., 120.)
+    assert det._airlog_chew_latched == set()
+    assert det._ov_chew_base[3] == base
+
+
+def test_print_start_and_resume_reset(upstream):
+    out = cp.patch(upstream)
+    # Fresh print forgets baselines; resume from our pause keeps them.
+    fresh = out.split("if not _is_resume:", 1)[1].split("elif _src_head", 1)[0]
+    assert "self._ov_chew_base.clear()" in fresh
+    resume = out.split("elif _src_head is not None:", 1)[1].split(
+        "self._resistance_pause_source_head = None", 1)[0]
+    assert "self._ov_chew_resume(_src_head)" in resume
+
+
+def _warm(det, head=3, level=1000.):
+    for i in range(10):
+        det._airlog_chew_eval(head, level, 5, 30., float(i * 10))
+
+
+def test_resume_after_rel_pause_relearns_instead_of_looping(upstream):
+    # Review HIGH: a legit regime shift to >=2.5x must not re-pause after
+    # every resume. A rel pause re-learns that head's baseline on resume.
+    det = _detector(cp.patch(upstream))
+    _warm(det)
+    t = 100.
+    for _ in range(2):
+        det._airlog_chew_eval(3, 6000., 5, 30., t); t += 10
+    assert det._airlog_chew_latched == {3}
+    det._airlog_chew_latched.discard(3)      # what upstream's resume does
+    det._ov_chew_resume(3)
+    for _ in range(12):                      # same elevated level continues
+        det._airlog_chew_eval(3, 6000., 5, 30., t); t += 10
+    assert det._airlog_chew_latched == set()
+    assert det._ov_chew_base[3] == 6000.
+
+
+def test_resume_after_abs_pause_keeps_baseline(upstream):
+    det = _detector(cp.patch(upstream))
+    _warm(det)
+    det._ov_chew_kind[3] = "abs"
+    det._ov_chew_resume(3)
+    assert det._ov_chew_base[3] == 1000.
+
+
+def test_abs_chew_windows_never_train(upstream):
+    # Review MEDIUM: an abs-chew window (>= 25000) must not seed or drag
+    # the baseline, during warm-up or after.
+    det = _detector(cp.patch(upstream))
+    for i in range(9):
+        det._airlog_chew_eval(2, 12000., 5, 30., float(i * 10))
+    det._airlog_chew_eval(2, 30000., 5, 30., 90.)
+    assert 2 not in det._ov_chew_base        # 30000 not counted to warm-up
+    det._airlog_chew_eval(2, 12000., 5, 30., 100.)
+    assert det._ov_chew_base[2] == 12000.
+    det._airlog_chew_eval(2, 29000., 5, 30., 110.)
+    assert det._ov_chew_base[2] == 12000.
