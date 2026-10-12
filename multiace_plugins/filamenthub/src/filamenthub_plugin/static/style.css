@@ -14,6 +14,9 @@ button { font: inherit; }
   gap: var(--space); flex-wrap: wrap; }
 .head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 h1 { font-size: 1.15rem; margin: 0; }
+.back-link { flex-basis: 100%; display: inline-block; color: var(--accent); text-decoration: none;
+  font-size: .9rem; padding: 6px 0; min-height: 32px; }
+.back-link:hover, .back-link:focus-visible { text-decoration: underline; }
 .status { color: var(--muted); min-height: 1.2em; margin: 8px 0; }
 
 /* Buttons */

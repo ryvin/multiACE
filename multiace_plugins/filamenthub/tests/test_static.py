@@ -27,6 +27,18 @@ def test_root_serves_picker_with_profiles_tab(client):
     assert 'id="toast"' in html
 
 
+def test_index_links_back_to_multiace_console():
+    # Opened standalone (/plugin/filamenthub/) there is no console nav, and on
+    # a phone the console's tab bar scrolls away. The link must leave the
+    # iframe (target=_top) and stay relative so it works behind any prefix.
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    m = re.search(r'<a[^>]*id="back-multiace"[^>]*>', html)
+    assert m, "missing back link"
+    tag = m.group(0)
+    assert 'href="../../multiace/"' in tag
+    assert 'target="_top"' in tag
+
+
 def test_index_has_no_external_assets():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert not re.search(r'(src|href)="(https?:)?//', html)
