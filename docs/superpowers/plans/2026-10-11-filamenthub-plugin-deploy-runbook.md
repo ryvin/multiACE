@@ -46,7 +46,7 @@ Phases run in order. Phases 4 and 5 may run in parallel after Phase 3.
    - `printer/objects/query?ace` with `head_source`, `aces` and `gate_status` → `ace.before.json`
    - `GET http://localhost:3000/fleet/api/ace-state?printer=u1-b` → `acestate.before.json`
    - the FilamentHub spool list `GET http://localhost:3000/api/v1/spool` → `spools.before.json`
-3. Pick the **test slot**: the first slot whose gate reads `0` (empty). As of 2026-10-11 that is likely ACE 2 slot 2, internal ace=1 slot=1. If no slot is empty, stop and ask the user which slot may be relabelled temporarily.
+3. Pick the **test slot**: a slot that **no head is loaded from**. Check that no `head_source[*]` entry has that `ace_index`/`slot`, because relabelling a slot a head is loaded from rewrites that head's saved identity, which quad replenish matches on; this happened on 2026-10-12. Prefer a slot whose gate reads `0` (empty) and that has no FilamentHub ace-state winner. As of 2026-10-11 that is likely ACE 2 slot 2, internal ace=1 slot=1. If no slot is empty, stop and ask the user which slot may be relabelled temporarily.
 
 ## Phase 1: Recon pre-checks (read-only)
 
@@ -119,7 +119,7 @@ Use `http://192.168.1.136/plugin/filamenthub/`, or `127.0.0.1:8089` on the print
 3. **Assign with a new spool:** `POST assign-profile {…, create_spool:true}`. Then check:
    - a new spool exists with `extra.card_uid` starting `"VIRT-`
    - its `extra.filamenthub` is double-encoded, with `location.asserted_by == "user:assign"`
-   - its top-level `location` is `"u1-b/ace1 T<n>"`
+   - its top-level `location` is `"u1-b/ace<a> T<n>"` for ace > 0, or `"u1-b T<n>"` for ace 0 (n is the internal slot index, the same as in `spoolman.py`)
    - the ace-state winner for `T` is that spool
 4. **Clear:** `POST unassign {T}`. Then check:
    - the override for `T` is gone

@@ -92,3 +92,21 @@ Parallelism:
 - nginx still has no `/plugin/` location.
 - `auth_check` exists.
 - `/api/materials` on 127.0.0.1:7126 works without auth.
+
+## Deployed 2026-10-12
+
+Deployed via the post-print runbook (`2026-10-11-filamenthub-plugin-deploy-runbook.md`). Plugin commit `5472c56` is on the printer at `/userdata/filamenthub-plugin`, with `S66filamenthub-plugin` and the nginx `/plugin/` drop-in (`auth_request /auth_check`). The plugin is listed in `/api/integrations` and renders as the console's FilamentHub tab.
+
+The unverified assumptions above are now resolved:
+- **deps:** present (fastapi 0.143.0, pydantic 2.14.0) and vendored into `deps/`.
+- **nginx:** had no `/plugin/` location before the install.
+- **`auth_check`:** exists.
+- **`/api/materials`:** answers locally without auth.
+
+Found live and fixed: `/unassign` cleared the first spool at a slot, so a stale July spool could be released. It now clears only the spool the plugin assigned (from its desired-state entry), and none after a profile-only label.
+
+Open follow-ups:
+- **The slot card's "Verified" badge is circular.** decay71 reports `rfid: 1` for override-only slots, so every assign shows as Verified instead of Asserted (`reconcile.py`).
+- **Cleared card text:** the card reads "Unknown", and the picker header still says "· RFID".
+- **`assign_spool` doesn't release the previous spool at the slot,** so the slot becomes disputed in FilamentHub.
+- **Testing rule:** never use a slot a head is loaded from as the test slot. Relabelling it rewrites that head's `head_source` identity.

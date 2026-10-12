@@ -16,7 +16,7 @@ re-check the patch against the new release.
 
 decay71 **1.27b** (installed from `multiace-v1.27b.tar.gz`, sha256 `948b508c…`).
 `app.js` md5: upstream `d7500b9b…`, with both overlays `ac33ce40…`.
-`klippy/extras/ace.py` md5: upstream `c5bd76c8…` (live as of 2026-10-12), with `airlog_chew_patch` `ed09eaa9…` (built and tested, **not yet deployed**: Klipper must restart, so it waits for an idle printer).
+`klippy/extras/ace.py` md5: upstream `c5bd76c8…` (live as of 2026-10-12), with `airlog_chew_patch` `ed09eaa9…` (**deployed 2026-10-12 17:35**, backup `/userdata/multiace-backups/<ts>-pre-airlog-chew/` plus `extras/ace.py.pre-overlay.bak`; Klipper restarted, both ACEs reconnected).
 Pre-upgrade backup: `/userdata/multiace-backups/20261011-103811-pre-1.27b/`.
 
 Local settings we carry across upgrades (in `[ace]` of `extended/ace.cfg` unless noted):
