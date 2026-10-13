@@ -10,16 +10,20 @@ The other heads legitimately reach 21-31k in the same print, so the absolute
 threshold can't simply be lowered.
 
 This adds a RELATIVE rule next to the unchanged absolute one. Each head learns
-its own baseline from DYNAMIC windows (vel_max >= airlog_chew_vmax_min). The
+its own baseline from COUNTED windows: fast ones (vel_max >=
+airlog_chew_vmax_min) or ones whose speed varies (vel_max - vel_mean >=
+airlog_chew_vary_min). Constant-speed feed, like a first layer, reads
+structurally low and is ignored. The varying-speed path was added 2026-10-13:
+gating on speed alone left T0-T2 unarmed for a whole slow print. The
 seed is the median of the first airlog_chew_warmup unsuspicious windows,
 followed by an EMA with weight airlog_chew_alpha. A window is suspicious when
 coil_delta >= airlog_chew_rel_floor AND >= airlog_chew_rel_ratio x that
-baseline. AIRLOG_CHEW_WINDOWS consecutive suspicious dynamic windows of the
+baseline. AIRLOG_CHEW_WINDOWS consecutive suspicious counted windows of the
 same head fire the existing warn / pause path (pause only with Air-Print
 Detection on).
 
 The following break a run:
-- a slow (constant-feed) window
+- an uncounted (constant-speed, slow) window
 - a swap or pick-check
 - more than airlog_chew_max_gap s since the head's last counted window
 
@@ -29,8 +33,14 @@ relative-rule pause re-learns that head's baseline, so a legitimate level
 shift can't pause the print again after every resume. After an absolute
 pause the baseline is kept.
 
-Backtest on that print (testdata/, test_airlog_chew_patch.py): fires on T3 at
-12:13:49, ~11 min before the filament stopped, and nowhere else. Every knob
+Backtests (testdata/, test_airlog_chew_patch.py):
+- 10-12 Iron Lung: fires on T3 at 12:13:49, ~11 min before the filament
+  stopped, and nowhere else. Every ratio from 2.7 to 3.6 gives that result;
+  2.6 false-fires on T2 (constant-feed to normal regime shift). Default 3.1.
+- 10-13 Shield (slow print): all four heads arm a baseline; healthy T0/T1
+  never fire. Its two real failures (T2 blocked by a leftover fragment, T3
+  broken and anchored inside the ACE) give the coil no back-pressure and are
+  not detectable by this rule. Every knob
 is an optional [ace] option. Set airlog_chew_rel_ratio: 0 to get upstream
 behaviour back. No live low-side ("flow lost") check is included, because
 the low side was not separable from normal printing in that data.
@@ -46,11 +56,12 @@ CONSTS = (
     "AIRLOG_CHEW_MIN_MOVING = 3\n"
     + MARKER + " (defaults; each is an optional [ace] option, lower-case).\n"
     "# Head-relative rule: see ops/decay71_overlay/airlog_chew_patch.py.\n"
-    "AIRLOG_CHEW_REL_RATIO = 2.5   # x head baseline; 0 = relative rule off\n"
+    "AIRLOG_CHEW_REL_RATIO = 3.1   # x head baseline; 0 = relative rule off\n"
     "AIRLOG_CHEW_REL_FLOOR = 4000.  # delta must also clear this\n"
     "AIRLOG_CHEW_WARMUP = 10       # dynamic windows before the rule arms\n"
     "AIRLOG_CHEW_ALPHA = 0.1       # baseline EMA weight after warm-up\n"
-    "AIRLOG_CHEW_VMAX_MIN = 10.    # window is dynamic iff vel_max >= this\n"
+    "AIRLOG_CHEW_VMAX_MIN = 10.    # window is dynamic if vel_max >= this\n"
+    "AIRLOG_CHEW_VARY_MIN = 0.5    # ...or vel_max - vel_mean >= this; 0 = off\n"
     "AIRLOG_CHEW_MAX_GAP = 600.    # s of head silence that breaks a run\n"
 )
 
@@ -71,6 +82,8 @@ METHODS = (
     "            'airlog_chew_alpha', AIRLOG_CHEW_ALPHA, minval=0., maxval=1.)\n"
     "        self.airlog_chew_vmax_min = config.getfloat(\n"
     "            'airlog_chew_vmax_min', AIRLOG_CHEW_VMAX_MIN, minval=0.)\n"
+    "        self.airlog_chew_vary_min = config.getfloat(\n"
+    "            'airlog_chew_vary_min', AIRLOG_CHEW_VARY_MIN, minval=0.)\n"
     "        self.airlog_chew_max_gap = config.getfloat(\n"
     "            'airlog_chew_max_gap', AIRLOG_CHEW_MAX_GAP, minval=0.)\n"
     "        self._ov_chew_base = {}     # head -> baseline (after warm-up)\n"
@@ -93,7 +106,8 @@ METHODS = (
     "            self._ov_chew_base.pop(head, None)\n"
     "            self._ov_chew_warm.pop(head, None)\n"
     "\n"
-    "    def _ov_chew_window(self, head, delta, nmove, vmax, eventtime):\n"
+    "    def _ov_chew_window(self, head, delta, nmove, vmax, eventtime,\n"
+    "                        vmean=None):\n"
     "        \"\"\"" + MARKER.lstrip('# ') + ": score one closed window. Returns the\n"
     "        longer of the absolute run (upstream rule, unchanged) and the\n"
     "        head-relative run (patch docstring). Never raises.\"\"\"\n"
@@ -109,7 +123,8 @@ METHODS = (
     "            self._airlog_chew_run.pop(head, None)\n"
     "        rel_run = 0\n"
     "        try:\n"
-    "            rel_run, base = self._ov_chew_rel(head, delta, vmax, eventtime)\n"
+    "            rel_run, base = self._ov_chew_rel(head, delta, vmax, eventtime,\n"
+    "                                              vmean)\n"
     "        except Exception:\n"
     "            logging.exception('[multiACE] airlog rel-chew eval failed')\n"
     "            self._ov_chew_rel_reset(head)\n"
@@ -125,13 +140,20 @@ METHODS = (
     "                    run, AIRLOG_CHEW_WINDOWS, kind))\n"
     "        return run\n"
     "\n"
-    "    def _ov_chew_rel(self, head, delta, vmax, eventtime):\n"
+    "    def _ov_chew_rel(self, head, delta, vmax, eventtime, vmean=None):\n"
     "        \"\"\"Head-relative rule. Returns (run, baseline).\"\"\"\n"
     "        base = self._ov_chew_base.get(head)\n"
-    "        if (self.airlog_chew_rel_ratio <= 0 or vmax is None\n"
-    "                or vmax < self.airlog_chew_vmax_min):\n"
-    "            # Constant-feed windows read structurally low: they neither\n"
-    "            # learn nor count, and they BREAK a run (reset, not skip).\n"
+    "        # A window counts when it is fast OR its speed varies. Constant-\n"
+    "        # speed feed (first layer: vel_mean == vel_max) reads structurally\n"
+    "        # low; slow prints still vary, and gating on speed alone left\n"
+    "        # T0-T2 unarmed for a whole print (2026-10-13).\n"
+    "        counted = vmax is not None and (\n"
+    "            vmax >= self.airlog_chew_vmax_min\n"
+    "            or (self.airlog_chew_vary_min > 0 and vmean is not None\n"
+    "                and vmax - vmean >= self.airlog_chew_vary_min))\n"
+    "        if self.airlog_chew_rel_ratio <= 0 or not counted:\n"
+    "            # Uncounted windows neither learn nor count, and they BREAK\n"
+    "            # a run (reset, not skip).\n"
     "            self._ov_chew_rel_run.pop(head, None)\n"
     "            return 0, base\n"
     "        last = self._ov_chew_last.get(head)\n"
@@ -173,14 +195,15 @@ EDITS = [
     (
         "                self._airlog_chew_eval(head, delta, st['nmove'])\n",
         "                self._airlog_chew_eval(head, delta, st['nmove'],\n"
-        "                                       st['vmax'], eventtime)  "
+        "                                       st['vmax'], eventtime,\n"
+        "                                       st['vsum'] / st['n'])  "
         + MARKER + "\n",
     ),
     (
         "    def _airlog_chew_eval(self, head, delta, nmove):\n",
         METHODS
         + "    def _airlog_chew_eval(self, head, delta, nmove, vmax=None,\n"
-        "                          eventtime=None):  " + MARKER + "\n",
+        "                          eventtime=None, vmean=None):  " + MARKER + "\n",
     ),
     (
         "                # phases have their own verdicts. Reset, don't count.\n"
@@ -205,7 +228,7 @@ EDITS = [
         "            self._ace_event('airlog_chew', head=head, delta=int(delta),\n"
         "                            run=run)\n",
         "            run = self._ov_chew_window(head, delta, nmove, vmax,\n"
-        "                                       eventtime)  " + MARKER + "\n"
+        "                                       eventtime, vmean)  " + MARKER + "\n"
         "            if run < AIRLOG_CHEW_WINDOWS or head in self._airlog_chew_latched:\n"
         "                return\n"
         "            self._airlog_chew_latched.add(head)\n"

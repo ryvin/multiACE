@@ -21,6 +21,14 @@ sys.path.insert(0, HERE)
 import airlog_chew_patch as cp  # noqa: E402
 
 FIXTURE = os.path.join(HERE, "testdata", "airlog_2026-10-12_t3_tangle.csv.gz")
+# 2026-10-13 Shield print, two attempts: T2 blocked by a leftover fragment, T3
+# broken + anchored inside ACE 2. Slow print: almost no vel_max >= 10 windows.
+# T0/T1 were healthy -> any latch on them is a false positive. The blockages
+# give the coil no back-pressure, so firing on T2/T3 is not required.
+FIXTURE_B = os.path.join(HERE, "testdata", "airlog_2026-10-13_shield_blockages.csv.gz")
+# User pauses: windows inside these are manual handling, not printing.
+PAUSES_B = [("2026-10-13 03:26:53", "2026-10-13 03:49:38"),
+            ("2026-10-13 05:22:26", "2026-10-13 23:59:59")]
 ACE_PY = "multiace/klipper/extras/ace.py"
 
 
@@ -95,23 +103,26 @@ def _detector(source):
     return det
 
 
-def _rows():
-    with gzip.open(FIXTURE, "rt") as f:
+def _rows(fixture=FIXTURE, pauses=()):
+    with gzip.open(fixture, "rt") as f:
         for r in csv.DictReader(f):
+            if any(a <= r["ts"] < b for a, b in pauses):
+                continue
             d = None if r["coil_delta"] == "-" else float(r["coil_delta"])
-            yield r["ts"], int(r["head"]), int(r["moving"]), float(r["vel_max"]), d
+            yield (r["ts"], int(r["head"]), int(r["moving"]), float(r["vel_max"]),
+                   d, float(r["vel_mean"]))
 
 
-def _replay(det, patched):
+def _replay(det, patched, fixture=FIXTURE, pauses=()):
     """Feed every window; return [(ts, head)] of each new latch."""
     from datetime import datetime
     fired, seen = [], set()
     t0 = None
-    for ts, head, moving, vmax, delta in _rows():
+    for ts, head, moving, vmax, delta, vmean in _rows(fixture, pauses):
         t = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f").timestamp()
         t0 = t0 if t0 is not None else t
         if patched:
-            det._airlog_chew_eval(head, delta, moving, vmax, t - t0)
+            det._airlog_chew_eval(head, delta, moving, vmax, t - t0, vmean)
         else:
             det._airlog_chew_eval(head, delta, moving)
         for h in det._airlog_chew_latched - seen:
@@ -160,6 +171,43 @@ def test_upstream_misses_the_tangle(upstream):
 def test_patched_fires_on_t3_tangle_only(upstream):
     fired = _replay(_detector(cp.patch(upstream)), patched=True)
     assert fired == [("2026-10-12 12:13:49.390", 3)]
+
+
+def test_slow_print_arms_every_head_without_false_positives(upstream):
+    # 2026-10-13: the vel_max >= 10 gate left T0-T2 with 2-8 windows, so their
+    # baselines never armed and the relative rule was blind. Varying-speed
+    # windows must count too; healthy T0/T1 must still never latch.
+    det = _detector(cp.patch(upstream))
+    fired = _replay(det, patched=True, fixture=FIXTURE_B, pauses=PAUSES_B)
+    assert sorted(det._ov_chew_base) == [0, 1, 2, 3]
+    assert [f for f in fired if f[1] in (0, 1)] == []
+
+
+def test_vary_gate_off_is_blind_on_slow_print(upstream):
+    # Known-bad baseline for the test above: with the varying-speed path
+    # disabled (deployed 10-12 behaviour) T0-T2 never arm.
+    det = _detector(cp.patch(upstream))
+    det._ov_chew_init(det.Cfg({"airlog_chew_vary_min": 0.,
+                               "airlog_chew_rel_ratio": 2.5}))
+    _replay(det, patched=True, fixture=FIXTURE_B, pauses=PAUSES_B)
+    assert sorted(det._ov_chew_base) == [3]
+
+
+def test_constant_feed_window_neither_learns_nor_counts(upstream):
+    det = _detector(cp.patch(upstream))
+    for i in range(10):
+        det._airlog_chew_eval(2, 1000., 5, 5., float(i * 10), 2.0)  # varying
+    base = det._ov_chew_base[2]
+    # Two constant-speed windows at a level that WOULD be suspicious (6x)
+    # if counted: no learning, no run, no latch.
+    det._airlog_chew_eval(2, 6000., 5, 5., 100., 5.0)
+    det._airlog_chew_eval(2, 6000., 5, 5., 110., 5.0)
+    assert det._ov_chew_base[2] == base
+    assert det._ov_chew_rel_run.get(2) is None
+    assert det._airlog_chew_latched == set()
+    # The same level with varying speed does count.
+    det._airlog_chew_eval(2, 6000., 5, 5., 120., 2.0)
+    assert det._ov_chew_rel_run.get(2) == 1
 
 
 def test_rel_ratio_zero_restores_upstream_behaviour(upstream):
