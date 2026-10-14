@@ -14,7 +14,10 @@ its own baseline from COUNTED windows: fast ones (vel_max >=
 airlog_chew_vmax_min) or ones whose speed varies (vel_max - vel_mean >=
 airlog_chew_vary_min). Constant-speed feed, like a first layer, reads
 structurally low and is ignored. The varying-speed path was added 2026-10-13:
-gating on speed alone left T0-T2 unarmed for a whole slow print. The
+gating on speed alone left T0-T2 unarmed for a whole slow print.
+Baselines are kept per vel_max BAND (<airlog_chew_band_lo, lo..hi, >=hi;
+4/10 mm/s). Added 2026-10-14: a baseline learned at ~1 mm/s judged 6-8 mm/s
+windows and paused T1 eight times on one print. The
 seed is the median of the first airlog_chew_warmup unsuspicious windows,
 followed by an EMA with weight airlog_chew_alpha. A window is suspicious when
 coil_delta >= airlog_chew_rel_floor AND >= airlog_chew_rel_ratio x that
@@ -37,7 +40,9 @@ Backtests (testdata/, test_airlog_chew_patch.py):
 - 10-12 Iron Lung: fires on T3 at 12:13:49, ~11 min before the filament
   stopped, and nowhere else. Every ratio from 2.7 to 3.6 gives that result;
   2.6 false-fires on T2 (constant-feed to normal regime shift). Default 3.1.
-- 10-13 Shield (slow print): all four heads arm a baseline; healthy T0/T1
+- 10-14 Logo Shield: speed bands cut 9 pauses to 3 (T1 03:33, T2 06:52,
+  T2 16:39); a single baseline per head (bands 0/0) gives 9.
+- 10-13 Shield (slow print): T0, T1 and T3 arm a baseline; healthy T0/T1
   never fire. Its two real failures (T2 blocked by a leftover fragment, T3
   broken and anchored inside the ACE) give the coil no back-pressure and are
   not detectable by this rule. Every knob
@@ -62,6 +67,8 @@ CONSTS = (
     "AIRLOG_CHEW_ALPHA = 0.1       # baseline EMA weight after warm-up\n"
     "AIRLOG_CHEW_VMAX_MIN = 10.    # window is dynamic if vel_max >= this\n"
     "AIRLOG_CHEW_VARY_MIN = 0.5    # ...or vel_max - vel_mean >= this; 0 = off\n"
+    "AIRLOG_CHEW_BAND_LO = 4.      # per-head baselines per vel_max band:\n"
+    "AIRLOG_CHEW_BAND_HI = 10.     #  <lo | lo..hi | >=hi; 0/0 = one band\n"
     "AIRLOG_CHEW_MAX_GAP = 600.    # s of head silence that breaks a run\n"
 )
 
@@ -84,10 +91,14 @@ METHODS = (
     "            'airlog_chew_vmax_min', AIRLOG_CHEW_VMAX_MIN, minval=0.)\n"
     "        self.airlog_chew_vary_min = config.getfloat(\n"
     "            'airlog_chew_vary_min', AIRLOG_CHEW_VARY_MIN, minval=0.)\n"
+    "        self.airlog_chew_band_lo = config.getfloat(\n"
+    "            'airlog_chew_band_lo', AIRLOG_CHEW_BAND_LO, minval=0.)\n"
+    "        self.airlog_chew_band_hi = config.getfloat(\n"
+    "            'airlog_chew_band_hi', AIRLOG_CHEW_BAND_HI, minval=0.)\n"
     "        self.airlog_chew_max_gap = config.getfloat(\n"
     "            'airlog_chew_max_gap', AIRLOG_CHEW_MAX_GAP, minval=0.)\n"
-    "        self._ov_chew_base = {}     # head -> baseline (after warm-up)\n"
-    "        self._ov_chew_warm = {}     # head -> warm-up deltas\n"
+    "        self._ov_chew_base = {}     # (head, band) -> baseline\n"
+    "        self._ov_chew_warm = {}     # (head, band) -> warm-up deltas\n"
     "        self._ov_chew_rel_run = {}  # head -> consecutive suspicious\n"
     "        self._ov_chew_last = {}     # head -> time of last dynamic window\n"
     "        self._ov_chew_kind = {}     # head -> 'abs'/'rel' of the run\n"
@@ -103,8 +114,19 @@ METHODS = (
     "        # (the absolute rule still guards it while it re-warms).\n"
     "        self._ov_chew_rel_reset(head)\n"
     "        if self._ov_chew_kind.pop(head, None) == 'rel':\n"
-    "            self._ov_chew_base.pop(head, None)\n"
-    "            self._ov_chew_warm.pop(head, None)\n"
+    "            for d in (self._ov_chew_base, self._ov_chew_warm):\n"
+    "                for k in [k for k in d if k[0] == head]:\n"
+    "                    del d[k]\n"
+    "\n"
+    "    def _ov_chew_band(self, vmax):  " + MARKER + "\n"
+    "        # A baseline learned at ~1 mm/s must never judge a 6-8 mm/s window\n"
+    "        # (2026-10-14: 8 false pauses on T1, each when it sped up).\n"
+    "        lo, hi = self.airlog_chew_band_lo, self.airlog_chew_band_hi\n"
+    "        if lo <= 0 and hi <= 0:\n"
+    "            return 0\n"
+    "        if lo > 0 and vmax < lo:\n"
+    "            return 0\n"
+    "        return 1 if hi > 0 and vmax < hi else 2\n"
     "\n"
     "    def _ov_chew_window(self, head, delta, nmove, vmax, eventtime,\n"
     "                        vmean=None):\n"
@@ -142,7 +164,8 @@ METHODS = (
     "\n"
     "    def _ov_chew_rel(self, head, delta, vmax, eventtime, vmean=None):\n"
     "        \"\"\"Head-relative rule. Returns (run, baseline).\"\"\"\n"
-    "        base = self._ov_chew_base.get(head)\n"
+    "        key = (head, self._ov_chew_band(vmax or 0.))\n"
+    "        base = self._ov_chew_base.get(key)\n"
     "        # A window counts when it is fast OR its speed varies. Constant-\n"
     "        # speed feed (first layer: vel_mean == vel_max) reads structurally\n"
     "        # low; slow prints still vary, and gating on speed alone left\n"
@@ -171,20 +194,20 @@ METHODS = (
     "        if delta >= AIRLOG_CHEW_DELTA:\n"
     "            return 0, base        # absolute-chew windows never train\n"
     "        if base is None:\n"
-    "            warm = self._ov_chew_warm.setdefault(head, [])\n"
+    "            warm = self._ov_chew_warm.setdefault(key, [])\n"
     "            warm.append(delta)\n"
     "            if len(warm) >= self.airlog_chew_warmup:\n"
     "                # Median seed: one early spike must not become the\n"
     "                # reference (T3's first dynamic window read 5724).\n"
-    "                self._ov_chew_base[head] = sorted(warm)[len(warm) // 2]\n"
-    "                self._ov_chew_warm.pop(head, None)\n"
+    "                self._ov_chew_base[key] = sorted(warm)[len(warm) // 2]\n"
+    "                self._ov_chew_warm.pop(key, None)\n"
     "                logging.info('[multiACE] [airlog] chew baseline armed '\n"
     "                             'head=%d base=%.0f'\n"
-    "                             % (head, self._ov_chew_base[head]))\n"
+    "                             % (head, self._ov_chew_base[key]))\n"
     "        else:\n"
     "            a = self.airlog_chew_alpha\n"
-    "            self._ov_chew_base[head] = (1. - a) * base + a * delta\n"
-    "        return 0, self._ov_chew_base.get(head)\n"
+    "            self._ov_chew_base[key] = (1. - a) * base + a * delta\n"
+    "        return 0, self._ov_chew_base.get(key)\n"
     "\n"
 )
 

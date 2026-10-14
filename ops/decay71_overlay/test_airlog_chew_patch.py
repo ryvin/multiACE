@@ -179,7 +179,10 @@ def test_slow_print_arms_every_head_without_false_positives(upstream):
     # windows must count too; healthy T0/T1 must still never latch.
     det = _detector(cp.patch(upstream))
     fired = _replay(det, patched=True, fixture=FIXTURE_B, pauses=PAUSES_B)
-    assert sorted(det._ov_chew_base) == [0, 1, 2, 3]
+    # T2 (the blocked head) logged only ~16 counted windows, split across
+    # speed bands, so no band reaches warm-up; every head that printed a
+    # normal amount arms.
+    assert {0, 1, 3} <= {h for h, _ in det._ov_chew_base}
     assert [f for f in fired if f[1] in (0, 1)] == []
 
 
@@ -190,24 +193,75 @@ def test_vary_gate_off_is_blind_on_slow_print(upstream):
     det._ov_chew_init(det.Cfg({"airlog_chew_vary_min": 0.,
                                "airlog_chew_rel_ratio": 2.5}))
     _replay(det, patched=True, fixture=FIXTURE_B, pauses=PAUSES_B)
-    assert sorted(det._ov_chew_base) == [3]
+    assert sorted({h for h, _ in det._ov_chew_base}) == [3]
 
 
 def test_constant_feed_window_neither_learns_nor_counts(upstream):
     det = _detector(cp.patch(upstream))
     for i in range(10):
         det._airlog_chew_eval(2, 1000., 5, 5., float(i * 10), 2.0)  # varying
-    base = det._ov_chew_base[2]
+    base = det._ov_chew_base[(2, 1)]
     # Two constant-speed windows at a level that WOULD be suspicious (6x)
     # if counted: no learning, no run, no latch.
     det._airlog_chew_eval(2, 6000., 5, 5., 100., 5.0)
     det._airlog_chew_eval(2, 6000., 5, 5., 110., 5.0)
-    assert det._ov_chew_base[2] == base
+    assert det._ov_chew_base[(2, 1)] == base
     assert det._ov_chew_rel_run.get(2) is None
     assert det._airlog_chew_latched == set()
     # The same level with varying speed does count.
     det._airlog_chew_eval(2, 6000., 5, 5., 120., 2.0)
     assert det._ov_chew_rel_run.get(2) == 1
+
+
+FIXTURE_C = os.path.join(HERE, "testdata", "airlog_2026-10-14_logo_shield_fp.csv.gz")
+# Fresh print starts (UTC, Moonraker history) inside fixture C.
+STARTS_C = ["2026-10-13 09:10:19", "2026-10-14 00:31:07", "2026-10-14 16:15:14"]
+
+
+def _replay_with_resume(det, fixture, starts):
+    """Like a user: every latch is a pause that is resumed straight away."""
+    from datetime import datetime
+    starts, fires = list(starts), []
+    for ts, head, moving, vmax, delta, vmean in _rows(fixture):
+        while starts and ts >= starts[0]:
+            for d in (det._ov_chew_base, det._ov_chew_warm, det._ov_chew_rel_run,
+                      det._ov_chew_last, det._airlog_chew_run):
+                d.clear()
+            det._airlog_chew_latched.clear()
+            starts.pop(0)
+        t = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f").timestamp()
+        det._airlog_chew_eval(head, delta, moving, vmax, t, vmean)
+        if head in det._airlog_chew_latched:
+            fires.append((ts, head))
+            det._airlog_chew_latched.discard(head)
+            det._ov_chew_resume(head)
+    return fires
+
+
+def test_speed_jumps_do_not_pause_logo_shield(upstream):
+    # 2026-10-14: the single-baseline rule paused 9 times, 8 on T1, each when
+    # T1 sped up (vel_max ~2 -> 6-8) after learning its baseline at ~1 mm/s.
+    # Per-speed-band baselines cut that to 3 while still catching 10-12's
+    # tangle (test_patched_fires_on_t3_tangle_only).
+    fires = _replay_with_resume(_detector(cp.patch(upstream)), FIXTURE_C, STARTS_C)
+    assert len(fires) <= 3, fires
+
+
+def test_single_baseline_known_bad_on_logo_shield(upstream):
+    # Known-bad for the test above: bands off (one baseline per head).
+    det = _detector(cp.patch(upstream))
+    det._ov_chew_init(det.Cfg({"airlog_chew_band_lo": 0., "airlog_chew_band_hi": 0.}))
+    assert len(_replay_with_resume(det, FIXTURE_C, STARTS_C)) >= 8
+
+
+def test_slow_band_baseline_never_judges_faster_windows(upstream):
+    det = _detector(cp.patch(upstream))
+    for i in range(10):                     # learn at ~2 mm/s: base 1000
+        det._airlog_chew_eval(1, 1000., 5, 2., float(i * 10), 1.0)
+    for i in range(2):                      # speeds up: 7000 at 7 mm/s
+        det._airlog_chew_eval(1, 7000., 5, 7., 100. + i * 10, 3.0)
+    assert det._airlog_chew_latched == set()
+    assert (1, 1) not in det._ov_chew_base  # mid band still warming up
 
 
 def test_rel_ratio_zero_restores_upstream_behaviour(upstream):
@@ -235,12 +289,12 @@ def test_slow_window_breaks_run_and_never_learns(upstream):
     det = _detector(cp.patch(upstream))
     for i in range(10):
         det._airlog_chew_eval(3, 1000., 5, 30., float(i * 10))
-    base = det._ov_chew_base[3]
+    base = det._ov_chew_base[(3, 2)]
     det._airlog_chew_eval(3, 6000., 5, 30., 100.)
     det._airlog_chew_eval(3, 200., 5, 5., 110.)     # constant feed, vmax<10
     det._airlog_chew_eval(3, 6000., 5, 30., 120.)
     assert det._airlog_chew_latched == set()
-    assert det._ov_chew_base[3] == base
+    assert det._ov_chew_base[(3, 2)] == base
 
 
 def test_print_start_and_resume_reset(upstream):
@@ -272,7 +326,7 @@ def test_resume_after_rel_pause_relearns_instead_of_looping(upstream):
     for _ in range(12):                      # same elevated level continues
         det._airlog_chew_eval(3, 6000., 5, 30., t); t += 10
     assert det._airlog_chew_latched == set()
-    assert det._ov_chew_base[3] == 6000.
+    assert det._ov_chew_base[(3, 2)] == 6000.
 
 
 def test_resume_after_abs_pause_keeps_baseline(upstream):
@@ -280,7 +334,7 @@ def test_resume_after_abs_pause_keeps_baseline(upstream):
     _warm(det)
     det._ov_chew_kind[3] = "abs"
     det._ov_chew_resume(3)
-    assert det._ov_chew_base[3] == 1000.
+    assert det._ov_chew_base[(3, 2)] == 1000.
 
 
 def test_abs_chew_windows_never_train(upstream):
@@ -290,8 +344,8 @@ def test_abs_chew_windows_never_train(upstream):
     for i in range(9):
         det._airlog_chew_eval(2, 12000., 5, 30., float(i * 10))
     det._airlog_chew_eval(2, 30000., 5, 30., 90.)
-    assert 2 not in det._ov_chew_base        # 30000 not counted to warm-up
+    assert (2, 2) not in det._ov_chew_base        # 30000 not counted to warm-up
     det._airlog_chew_eval(2, 12000., 5, 30., 100.)
-    assert det._ov_chew_base[2] == 12000.
+    assert det._ov_chew_base[(2, 2)] == 12000.
     det._airlog_chew_eval(2, 29000., 5, 30., 110.)
-    assert det._ov_chew_base[2] == 12000.
+    assert det._ov_chew_base[(2, 2)] == 12000.
