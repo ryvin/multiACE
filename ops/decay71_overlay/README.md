@@ -16,7 +16,7 @@ re-check the patch against the new release.
 
 decay71 **1.27b** (installed from `multiace-v1.27b.tar.gz`, sha256 `948b508c…`).
 `app.js` md5: upstream `d7500b9b…`, with both overlays `ac33ce40…`.
-`klippy/extras/ace.py` md5: upstream `c5bd76c8…`. The 2026-10-12 `airlog_chew_patch` (`ed09eaa9…`) was deployed 10-12 17:35. The 10-13 revision with the varying-speed gate and ratio 3.1 gives `af888682…` and was **deployed 2026-10-13 07:57 UTC** (backup `/userdata/multiace-backups/20261013-075652-pre-rs25-vary/`). **To update an already-patched printer,** start from `ace.py.pre-overlay.bak`, which is upstream: the new patcher reports the older patched file as `unknown` by design. So: `cp -p ace.py.pre-overlay.bak ace.py`, then apply the patch, clear `__pycache__/ace.*.pyc`, and restart Klipper while idle.
+`klippy/extras/ace.py` md5: upstream `c5bd76c8…`. The 2026-10-12 `airlog_chew_patch` (`ed09eaa9…`) was deployed 10-12 17:35. The 10-13 revision with the varying-speed gate and ratio 3.1 gives `af888682…` and was **deployed 2026-10-13 07:57 UTC** (backup `/userdata/multiace-backups/20261013-075652-pre-rs25-vary/`). The 10-14 speed-band revision gives `7e62b24a…` and was **deployed 2026-10-15 14:36 UTC** (backup `/userdata/multiace-backups/20261015-143617-pre-speed-bands/`). **To update an already-patched printer,** start from `ace.py.pre-overlay.bak`, which is upstream: the new patcher reports the older patched file as `unknown` by design. So: `cp -p ace.py.pre-overlay.bak ace.py`, then apply the patch, clear `__pycache__/ace.*.pyc`, and restart Klipper while idle.
 Pre-upgrade backup: `/userdata/multiace-backups/20261011-103811-pre-1.27b/`.
 
 Local settings we carry across upgrades (in `[ace]` of `extended/ace.cfg` unless noted):
