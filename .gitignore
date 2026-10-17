@@ -33,3 +33,9 @@ venv/
 .DS_Store
 Thumbs.db
 /.decay71-ref/
+
+# Local artifacts (session screenshots, printer backups, editor backups)
+/*.png
+/multiace_backups/
+/CLAUDE.md.bak.*
+/multiace_web/screenshots/live-*.png
